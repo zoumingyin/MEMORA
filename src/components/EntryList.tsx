@@ -17,6 +17,13 @@ function todoAllDone(entry: Entry): boolean {
   return entry.kind === 'todo' && entry.items.length > 0 && entry.items.every((item) => item.done)
 }
 
+/** 已完成判定：待办全部勾选，或提醒已全部处理（归入下方「已完成」分组） */
+function entryDone(entry: Entry): boolean {
+  if (entry.kind === 'todo') return todoAllDone(entry)
+  if (entry.kind === 'reminder') return reminderStatus(entry).allNotified
+  return false
+}
+
 /** 提醒状态：最近待提醒闹钟时间；全部已提醒视为处理完 */
 function reminderStatus(entry: Entry): { at: number; allNotified: boolean } {
   if (entry.kind !== 'reminder') return { at: 0, allNotified: true }
@@ -133,18 +140,15 @@ export function EntryList({ selectedId, onSelect }: EntryListProps) {
   const filtered = filterEntries(entries, search, tagFilter, timeRange)
   const list = sortEntries(filter, filtered, sortBy)
 
-  // 分组视图：待办分类与「全部」都拆「进行中/其他」与「已完成（待办）」两组，
-  // 待办勾选完成后自动归入下方「已完成」区
-  const isTodoFilter = filter === 'todo'
-  const activeRows = isTodoFilter
-    ? list.filter((entry) => entry.kind === 'todo' && !todoAllDone(entry))
-    : list.filter((entry) => !(entry.kind === 'todo' && todoAllDone(entry)))
-  const doneRows = list.filter((entry) => entry.kind === 'todo' && todoAllDone(entry))
+  // 分组视图：待办/提醒拆「进行中/其他」与「已完成」两组，
+  // 待办勾选完成、提醒标记已处理后自动归入下方「已完成」区
+  const activeRows = list.filter((entry) => !entryDone(entry))
+  const doneRows = list.filter((entry) => entryDone(entry))
 
   const renderRow = (entry: Entry) => {
     const icon = KIND_ICON[entry.kind]
     const meta = rowMeta(entry, now)
-    const doneClass = entry.kind === 'todo' && todoAllDone(entry) ? 'done' : ''
+    const doneClass = entryDone(entry) ? 'done' : ''
     return (
       <button
         key={entry.id}

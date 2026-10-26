@@ -106,7 +106,7 @@ export function PomodoroDialog({
 
         <div className="pomodoro-settings">
           <div className="pomodoro-setting">
-            <span>专注时长</span>
+            <span>专注</span>
             <Select
               size="small"
               value={workMinutes}
@@ -118,7 +118,7 @@ export function PomodoroDialog({
             />
           </div>
           <div className="pomodoro-setting">
-            <span>休息时长</span>
+            <span>休息</span>
             <Select
               size="small"
               value={breakMinutes}

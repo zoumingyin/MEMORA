@@ -1,22 +1,16 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { Input } from "antd";
 import {
-  Magnet,
-  Minus,
-  PanelRightClose,
   Pin,
+  Search,
   Settings,
   Timer,
   X,
   Zap,
 } from "lucide-react";
 import { useWindowStore } from "../store/useWindowStore";
-import {
-  closeWindow,
-  currentWorkArea,
-  getBounds,
-  minimizeWindow,
-} from "../window/tauriWindow";
-import { collapseToStrip, detectDockEdge } from "../window/edgeDock";
+import { useEntryStore } from "../store/useEntryStore";
+import { closeWindow } from "../window/tauriWindow";
 import { SettingsDialog } from "./SettingsDialog";
 import { QuickCapture } from "./QuickCapture";
 import { PomodoroDialog } from "./PomodoroDialog";
@@ -29,33 +23,66 @@ interface TitleBarProps {
 }
 
 export function TitleBar({ quickOpen, setQuickOpen }: TitleBarProps) {
-  const { alwaysOnTop, edgeDocking, docked } = useWindowStore();
-  const { setAlwaysOnTop, setEdgeDocking, setDock } = useWindowStore();
+  const { alwaysOnTop } = useWindowStore();
+  const { setAlwaysOnTop } = useWindowStore();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [pomodoroOpen, setPomodoroOpen] = useState(false);
   const pomodoro = usePomodoro();
   const pomodoroLabel = pomodoro.getRemainingLabel();
+  const search = useEntryStore((state) => state.search);
+  const setSearch = useEntryStore((state) => state.setSearch);
+  /** 搜索框展开状态：点击搜索图标展开，点击空白区域收起 */
+  const [searchOpen, setSearchOpen] = useState(false);
 
-  /** 收纳到当前贴近边缘；未贴近边缘时默认右侧 */
-  const handleCollapse = async () => {
-    const bounds = await getBounds();
-    if (!bounds) return;
-    const workArea = await currentWorkArea();
-    if (!workArea) return;
-    let edge = useWindowStore.getState().dockedEdge;
-    if (!edge) edge = detectDockEdge(bounds, workArea) ?? "right";
-    setDock(edge, bounds, true);
-    await collapseToStrip(edge, bounds, workArea);
-  };
+  // 点击搜索框/图标以外的区域时收起搜索框
+  useEffect(() => {
+    if (!searchOpen) return;
+    const onMouseDown = (event: MouseEvent) => {
+      const target = event.target as HTMLElement;
+      if (
+        target.closest(".titlebar-search") ||
+        target.closest(".search-toggle")
+      ) {
+        return;
+      }
+      setSearchOpen(false);
+    };
+    document.addEventListener("mousedown", onMouseDown);
+    return () => document.removeEventListener("mousedown", onMouseDown);
+  }, [searchOpen]);
 
   return (
     <header className="titlebar" data-tauri-drag-region="deep">
-      <div className="titlebar-title">
+      <div className="titlebar-title text-12px">
         <span className="dot" />
         便签
       </div>
 
-      <div className="titlebar-actions" data-tauri-drag-region="false">
+      <div
+        className={`titlebar-search${searchOpen ? " open" : ""}`}
+        data-tauri-drag-region="false"
+      >
+        <Input
+          className="titlebar-search-input"
+          allowClear
+          size="small"
+          autoFocus={searchOpen}
+          placeholder="搜索标题或内容"
+          value={search}
+          onChange={(event) => setSearch(event.target.value)}
+        />
+      </div>
+
+      <div className="titlebar-actions " data-tauri-drag-region="false">
+        <button
+          type="button"
+          className={`titlebar-btn search-toggle ${searchOpen ? "active" : ""}`}
+          title="搜索"
+          onClick={() => setSearchOpen((open) => !open)}
+        >
+          <Search size={15} />
+        </button>
+
         <button
           type="button"
           className={`titlebar-btn ${alwaysOnTop ? "active" : ""}`}
@@ -63,15 +90,6 @@ export function TitleBar({ quickOpen, setQuickOpen }: TitleBarProps) {
           onClick={() => void setAlwaysOnTop(!alwaysOnTop)}
         >
           <Pin size={15} />
-        </button>
-
-        <button
-          type="button"
-          className={`titlebar-btn ${edgeDocking ? "active" : ""}`}
-          title={edgeDocking ? "关闭边缘吸附" : "开启边缘吸附"}
-          onClick={() => setEdgeDocking(!edgeDocking)}
-        >
-          <Magnet size={15} />
         </button>
 
         <button
@@ -102,25 +120,6 @@ export function TitleBar({ quickOpen, setQuickOpen }: TitleBarProps) {
           onClick={() => setQuickOpen(true)}
         >
           <Zap size={15} />
-        </button>
-
-        <button
-          type="button"
-          className={`titlebar-btn ${docked ? "active" : ""}`}
-          title={docked ? "展开便签" : "收纳到屏幕边缘"}
-          disabled={docked}
-          onClick={() => void handleCollapse()}
-        >
-          <PanelRightClose size={15} />
-        </button>
-
-        <button
-          type="button"
-          className="titlebar-btn"
-          title="最小化"
-          onClick={() => void minimizeWindow()}
-        >
-          <Minus size={15} />
         </button>
 
         <button

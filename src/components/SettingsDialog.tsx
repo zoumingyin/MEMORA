@@ -1,6 +1,10 @@
-import { Modal, Switch } from "antd";
+import { Modal, Switch, Tree } from "antd";
+import type { TreeDataNode } from "antd";
 import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
-import { open as dialogOpen, save as dialogSave } from "@tauri-apps/plugin-dialog";
+import {
+  open as dialogOpen,
+  save as dialogSave,
+} from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useRef, useState } from "react";
 import { isTauriRuntime } from "../repository";
@@ -13,6 +17,8 @@ import {
   saveCloseBehavior,
   type CloseAction,
 } from "../window/closeBehavior";
+import { currentWorkArea, getBounds } from "../window/tauriWindow";
+import { collapseToStrip, detectDockEdge } from "../window/edgeDock";
 
 interface SettingsDialogProps {
   open: boolean;
@@ -21,9 +27,95 @@ interface SettingsDialogProps {
 
 const CLOSE_ACTION_LABEL: { value: CloseAction | null; label: string }[] = [
   { value: null, label: "每次询问" },
-  { value: "hide", label: "最小化到后台" },
+  { value: "hide", label: "最小化" },
   { value: "quit", label: "退出应用" },
 ];
+
+/** 设置树：分组 → 条目，左侧树导航（可折叠）、右侧内容区 */
+interface SettingNode {
+  key: string;
+  label: string;
+  hint: string;
+}
+
+interface SettingGroup {
+  key: string;
+  label: string;
+  children: SettingNode[];
+}
+
+/** 设置树节点数据（antd Tree）：叶子 key 与内容区渲染一一对应 */
+const SETTING_TREE: SettingGroup[] = [
+  {
+    key: "appearance",
+    label: "外观",
+    children: [
+      {
+        key: "opacity",
+        label: "背景透明度",
+        hint: "文字保持不透明，≤55% 自动切暗色",
+      },
+    ],
+  },
+  {
+    key: "window",
+    label: "窗口行为",
+    children: [
+      { key: "pin", label: "窗口置顶", hint: "常驻其他程序最上层" },
+      { key: "edge", label: "边缘吸附", hint: "拖拽贴近屏幕边缘自动停靠" },
+      { key: "collapse", label: "收纳到屏幕", hint: "收起为屏幕边缘窄条" },
+      { key: "close", label: "关闭窗口时", hint: "点 X 或 Alt+F4 后的行为" },
+    ],
+  },
+  {
+    key: "startup",
+    label: "启动与后台",
+    children: [
+      {
+        key: "autostart",
+        label: "开机自启动",
+        hint: "登录 Windows 后自动启动",
+      },
+    ],
+  },
+  {
+    key: "data",
+    label: "数据管理",
+    children: [
+      { key: "export", label: "导出数据", hint: "全部条目导出为 JSON 文件" },
+      {
+        key: "import",
+        label: "导入数据",
+        hint: "从 JSON 合并导入，跳过重复条目",
+      },
+      {
+        key: "backup",
+        label: "备份数据库",
+        hint: "完整复制 SQLite 数据库文件（桌面版）",
+      },
+      {
+        key: "restore",
+        label: "恢复数据库",
+        hint: "用备份覆盖当前数据库，重启后生效",
+      },
+    ],
+  },
+];
+
+/** 可折叠设置树的节点数据；仅叶子可被选中切换内容 */
+const SETTING_TREE_DATA: TreeDataNode[] = SETTING_TREE.map((group) => ({
+  key: group.key,
+  title: group.label,
+  children: group.children.map((node) => ({
+    key: node.key,
+    title: node.label,
+  })),
+}));
+
+/** 叶子节点 key 集合（分组 key 不渲染内容） */
+const SETTING_LEAF_KEYS = new Set(
+  SETTING_TREE.flatMap((group) => group.children.map((node) => node.key))
+);
 
 /** 导出文件格式：版本 + 导出时间 + 全量条目 */
 interface ExportFile {
@@ -37,7 +129,9 @@ function isValidEntry(value: unknown): value is Entry {
   const entry = value as Record<string, unknown>;
   return (
     typeof entry.id === "string" &&
-    (entry.kind === "note" || entry.kind === "reminder" || entry.kind === "todo") &&
+    (entry.kind === "note" ||
+      entry.kind === "reminder" ||
+      entry.kind === "todo") &&
     typeof entry.title === "string" &&
     typeof entry.content === "string" &&
     typeof entry.createdAt === "number" &&
@@ -57,12 +151,17 @@ function parseExportFile(raw: string): Entry[] {
 }
 
 /**
- * 软件设置入口（标题栏齿轮按钮）：背景透明度、关闭窗口时行为、开机自启动、置顶、边缘吸附。
+ * 软件设置入口（标题栏齿轮按钮）：树形分组展示。
+ * 外观 / 窗口行为（置顶、边缘吸附、收纳到屏幕边缘、关闭行为）/ 启动与后台 / 数据管理。
+ * 边缘吸附与收纳到屏幕边缘自标题栏移入此处集中管理。
  * 关闭行为持久化 `bianqian.closeBehavior.v1`；开机自启动走 tauri-plugin-autostart。
  */
 export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
   const { alwaysOnTop, opacity, edgeDocking } = useWindowStore();
-  const { setAlwaysOnTop, setOpacity, setEdgeDocking } = useWindowStore();
+  const { setAlwaysOnTop, setOpacity, setEdgeDocking, setDock } =
+    useWindowStore();
+  // 当前树节点：默认定位到「背景透明度」
+  const [activeKey, setActiveKey] = useState("opacity");
   // 关闭窗口时的默认行为：null=每次询问；hide/quit=记住并直接执行
   const [closeAction, setCloseAction] = useState<CloseAction | null>(() => {
     const behavior = loadCloseBehavior();
@@ -140,7 +239,9 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
         setDataStatus(`已导出 ${payload.entries.length} 条（浏览器下载）`);
       }
     } catch (error) {
-      setDataStatus(`导出失败：${error instanceof Error ? error.message : String(error)}`);
+      setDataStatus(
+        `导出失败：${error instanceof Error ? error.message : String(error)}`
+      );
     } finally {
       setBusy(false);
     }
@@ -172,9 +273,13 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
       }
       const entries = parseExportFile(raw ?? "");
       const imported = await useEntryStore.getState().importEntries(entries);
-      setDataStatus(`导入完成：新增 ${imported} 条，跳过 ${entries.length - imported} 条重复`);
+      setDataStatus(
+        `导入完成：新增 ${imported} 条，跳过 ${entries.length - imported} 条重复`
+      );
     } catch (error) {
-      setDataStatus(`导入失败：${error instanceof Error ? error.message : String(error)}`);
+      setDataStatus(
+        `导入失败：${error instanceof Error ? error.message : String(error)}`
+      );
     } finally {
       setBusy(false);
     }
@@ -198,7 +303,9 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
       await invoke("backup_db", { destPath: dest });
       setDataStatus(`数据库已备份到 ${dest}`);
     } catch (error) {
-      setDataStatus(`备份失败：${error instanceof Error ? error.message : String(error)}`);
+      setDataStatus(
+        `备份失败：${error instanceof Error ? error.message : String(error)}`
+      );
     } finally {
       setBusy(false);
     }
@@ -223,9 +330,223 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
       await invoke("restore_db", { srcPath: picked });
       setDataStatus("数据库已恢复，重启应用后生效");
     } catch (error) {
-      setDataStatus(`恢复失败：${error instanceof Error ? error.message : String(error)}`);
+      setDataStatus(
+        `恢复失败：${error instanceof Error ? error.message : String(error)}`
+      );
     } finally {
       setBusy(false);
+    }
+  };
+
+  /** 收纳到屏幕边缘：收纳为窄条并关闭设置（原标题栏入口，已移入设置） */
+  const handleCollapseToEdge = async () => {
+    const bounds = await getBounds();
+    if (!bounds) return;
+    const workArea = await currentWorkArea();
+    if (!workArea) return;
+    let edge = useWindowStore.getState().dockedEdge;
+    if (!edge) edge = detectDockEdge(bounds, workArea) ?? "right";
+    setDock(edge, bounds, true);
+    await collapseToStrip(edge, bounds, workArea);
+    onClose();
+  };
+
+  /** 渲染当前选中节点的设置内容 */
+  const renderContent = (key: string) => {
+    switch (key) {
+      case "opacity":
+        return (
+          <div className="settings-item grid">
+            <div className="settings-item-main">
+              <span className="settings-item-label">背景透明度</span>
+              <span className="settings-item-hint">
+                文字保持不透明，≤55% 自动切暗色
+              </span>
+            </div>
+            <div className="settings-opacity-control">
+              <input
+                type="range"
+                min={0}
+                max={100}
+                step={1}
+                value={Math.round(opacity * 100)}
+                onChange={(event) =>
+                  setOpacity(Number(event.target.value) / 100)
+                }
+              />
+              <span className="settings-opacity-value">
+                {Math.round(opacity * 100)}%
+              </span>
+            </div>
+          </div>
+        );
+      case "pin":
+        return (
+          <div className="settings-item">
+            <div className="settings-item-main">
+              <span className="settings-item-label">窗口置顶</span>
+              <span className="settings-item-hint">常驻其他程序最上层</span>
+            </div>
+            <Switch
+              size="small"
+              checked={alwaysOnTop}
+              onChange={(value) => void setAlwaysOnTop(value)}
+            />
+          </div>
+        );
+      case "edge":
+        return (
+          <div className="settings-item">
+            <div className="settings-item-main">
+              <span className="settings-item-label">边缘吸附</span>
+              <span className="settings-item-hint">
+                拖拽贴近屏幕边缘自动停靠
+              </span>
+            </div>
+            <Switch
+              size="small"
+              checked={edgeDocking}
+              onChange={(value) => setEdgeDocking(value)}
+            />
+          </div>
+        );
+      case "collapse":
+        return (
+          <div className="settings-item grid">
+            <div className="settings-item-main ">
+              <span className="settings-item-label">收纳到屏幕边缘</span>
+              <span className="settings-item-hint">
+                收起为屏幕边缘窄条，点击窄条展开
+              </span>
+            </div>
+            <button
+              type="button"
+              className="data-action-btn w-25"
+              onClick={() => void handleCollapseToEdge()}
+            >
+              收纳
+            </button>
+          </div>
+        );
+      case "close":
+        return (
+          <div className="settings-item grid ">
+            <div className="settings-item-main">
+              <span className="settings-item-label">关闭窗口时</span>
+              <span className="settings-item-hint">
+                点 X 或 Alt+F4 后的行为
+              </span>
+            </div>
+            <div className="close-behavior-options">
+              {CLOSE_ACTION_LABEL.map(({ value, label }) => (
+                <button
+                  key={label}
+                  type="button"
+                  className={`close-behavior-option ${
+                    closeAction === value ? "active" : ""
+                  }`}
+                  onClick={() => handleCloseBehavior(value)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+        );
+      case "autostart":
+        return (
+          <div className="settings-item">
+            <div className="settings-item-main">
+              <span className="settings-item-label">开机自启动</span>
+              <span className="settings-item-hint">
+                登录 Windows 后自动启动
+              </span>
+            </div>
+            <Switch
+              size="small"
+              checked={autostart}
+              onChange={(value) => void handleAutostart(value)}
+            />
+          </div>
+        );
+      case "export":
+        return (
+          <div className="settings-item grid">
+            <div className="settings-item-main">
+              <span className="settings-item-label">导出数据</span>
+              <span className="settings-item-hint">
+                全部条目导出为 JSON 文件
+              </span>
+            </div>
+            <button
+              type="button"
+              className="data-action-btn w-25"
+              disabled={busy}
+              onClick={() => void handleExport()}
+            >
+              导出
+            </button>
+          </div>
+        );
+      case "import":
+        return (
+          <div className="settings-item grid">
+            <div className="settings-item-main">
+              <span className="settings-item-label">导入数据</span>
+              <span className="settings-item-hint">
+                从 JSON 合并导入，跳过重复条目
+              </span>
+            </div>
+            <button
+              type="button"
+              className="data-action-btn w-25"
+              disabled={busy}
+              onClick={() => void handleImport()}
+            >
+              导入
+            </button>
+          </div>
+        );
+      case "backup":
+        return (
+          <div className="settings-item grid">
+            <div className="settings-item-main">
+              <span className="settings-item-label">备份数据库</span>
+              <span className="settings-item-hint">
+                完整复制 SQLite 数据库文件（桌面版）
+              </span>
+            </div>
+            <button
+              type="button"
+              className="data-action-btn w-25"
+              disabled={busy}
+              onClick={() => void handleBackupDb()}
+            >
+              备份
+            </button>
+          </div>
+        );
+      case "restore":
+        return (
+          <div className="settings-item grid">
+            <div className="settings-item-main">
+              <span className="settings-item-label">恢复数据库</span>
+              <span className="settings-item-hint">
+                用备份覆盖当前数据库，重启后生效
+              </span>
+            </div>
+            <button
+              type="button"
+              className="data-action-btn danger w-25"
+              disabled={busy}
+              onClick={() => void handleRestoreDb()}
+            >
+              恢复
+            </button>
+          </div>
+        );
+      default:
+        return null;
     }
   };
 
@@ -236,153 +557,35 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
       title="设置"
       centered
       footer={null}
-      width={380}
+      width={560}
     >
-      <div className="settings-list">
-        <div className="settings-item">
-          <div className="settings-item-main">
-            <span className="settings-item-label">背景透明度</span>
-            <span className="settings-item-hint">文字保持不透明，≤55% 自动切暗色</span>
-          </div>
-          <div className="settings-opacity-control">
-            <input
-              type="range"
-              min={0}
-              max={100}
-              step={1}
-              value={Math.round(opacity * 100)}
-              onChange={(event) => setOpacity(Number(event.target.value) / 100)}
-            />
-            <span className="settings-opacity-value">
-              {Math.round(opacity * 100)}%
-            </span>
-          </div>
-        </div>
-
-        <div className="settings-item">
-          <div className="settings-item-main">
-            <span className="settings-item-label">关闭窗口时</span>
-            <span className="settings-item-hint">点 X 或 Alt+F4 后的行为</span>
-          </div>
-          <div className="close-behavior-options">
-            {CLOSE_ACTION_LABEL.map(({ value, label }) => (
-              <button
-                key={label}
-                type="button"
-                className={`close-behavior-option ${
-                  closeAction === value ? "active" : ""
-                }`}
-                onClick={() => handleCloseBehavior(value)}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <div className="settings-item">
-          <div className="settings-item-main">
-            <span className="settings-item-label">开机自启动</span>
-            <span className="settings-item-hint">登录 Windows 后自动启动</span>
-          </div>
-          <Switch
-            size="small"
-            checked={autostart}
-            onChange={(value) => void handleAutostart(value)}
+      <div className="settings-tree">
+        <div className="settings-tree-nav">
+          <Tree
+            showLine
+            defaultExpandAll
+            blockNode
+            selectedKeys={[activeKey]}
+            onSelect={(keys) => {
+              const key = keys[0] as string | undefined;
+              if (key && SETTING_LEAF_KEYS.has(key)) setActiveKey(key);
+            }}
+            treeData={SETTING_TREE_DATA}
           />
         </div>
-
-        <div className="settings-item">
-          <div className="settings-item-main">
-            <span className="settings-item-label">窗口置顶</span>
-            <span className="settings-item-hint">常驻其他程序最上层</span>
-          </div>
-          <Switch
-            size="small"
-            checked={alwaysOnTop}
-            onChange={(value) => void setAlwaysOnTop(value)}
-          />
+        <div className="settings-tree-content">
+          {renderContent(activeKey)}
+          {dataStatus && <div className="data-status">{dataStatus}</div>}
         </div>
-
-        <div className="settings-item">
-          <div className="settings-item-main">
-            <span className="settings-item-label">边缘吸附</span>
-            <span className="settings-item-hint">拖拽贴近屏幕边缘自动停靠</span>
-          </div>
-          <Switch
-            size="small"
-            checked={edgeDocking}
-            onChange={(value) => setEdgeDocking(value)}
-          />
-        </div>
-
-        <div className="settings-section-title">数据管理</div>
-        <div className="settings-item">
-          <div className="settings-item-main">
-            <span className="settings-item-label">导出数据</span>
-            <span className="settings-item-hint">全部条目导出为 JSON 文件</span>
-          </div>
-          <button
-            type="button"
-            className="data-action-btn"
-            disabled={busy}
-            onClick={() => void handleExport()}
-          >
-            导出
-          </button>
-        </div>
-        <div className="settings-item">
-          <div className="settings-item-main">
-            <span className="settings-item-label">导入数据</span>
-            <span className="settings-item-hint">从 JSON 合并导入，跳过重复条目</span>
-          </div>
-          <button
-            type="button"
-            className="data-action-btn"
-            disabled={busy}
-            onClick={() => void handleImport()}
-          >
-            导入
-          </button>
-        </div>
-        <div className="settings-item">
-          <div className="settings-item-main">
-            <span className="settings-item-label">备份数据库</span>
-            <span className="settings-item-hint">完整复制 SQLite 数据库文件（桌面版）</span>
-          </div>
-          <button
-            type="button"
-            className="data-action-btn"
-            disabled={busy}
-            onClick={() => void handleBackupDb()}
-          >
-            备份
-          </button>
-        </div>
-        <div className="settings-item">
-          <div className="settings-item-main">
-            <span className="settings-item-label">恢复数据库</span>
-            <span className="settings-item-hint">用备份覆盖当前数据库，重启后生效</span>
-          </div>
-          <button
-            type="button"
-            className="data-action-btn danger"
-            disabled={busy}
-            onClick={() => void handleRestoreDb()}
-          >
-            恢复
-          </button>
-        </div>
-        {dataStatus && <div className="data-status">{dataStatus}</div>}
-        {/* 预览环境（浏览器 localStorage）导入用的隐藏文件选择器 */}
-        <input
-          ref={previewFileRef}
-          type="file"
-          accept=".json,application/json"
-          style={{ display: "none" }}
-          onChange={() => void handleImport()}
-        />
       </div>
+      {/* 预览环境（浏览器 localStorage）导入用的隐藏文件选择器 */}
+      <input
+        ref={previewFileRef}
+        type="file"
+        accept=".json,application/json"
+        style={{ display: "none" }}
+        onChange={() => void handleImport()}
+      />
     </Modal>
   );
 }

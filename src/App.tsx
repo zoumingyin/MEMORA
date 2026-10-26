@@ -52,8 +52,8 @@ const DARK_TOKENS: Record<string, string> = {
   "--panel-rgb": "32, 34, 40",
   "--panel-soft-rgb": "42, 45, 52",
   "--field-rgb": "46, 49, 56",
-  "--text": "#f0ede6",
-  "--text-muted": "#a9a39a",
+  "--text": "#f6f3ed",
+  "--text-muted": "#c9c3b8",
   "--border": "rgba(236, 230, 220, 0.16)",
   /* 控件边框（暗色）：可见但不刺眼的暖白 */
   "--control-border": "rgba(236, 230, 220, 0.3)",
@@ -91,19 +91,26 @@ export default function App() {
   // 「+ 新建」的类型选择弹窗
   const [createOpen, setCreateOpen] = useState(false);
 
-  // 分层不透明度：面板跟随滑条，标题结构层与文字衬底保留下限，避免低透明度下失读
-  const chromeAlpha = Math.max(opacity, 0.7);
-  const surfaceAlpha = Math.max(opacity, 0.86);
-
-  // 低透明度（≤0.55）自动切换暗色玻璃变体：暗色面板 + 浅色文字，
-  // 在黑壁纸/暗背景上保持文字与控件可读
+  // 低透明度（≤0.55）自动切换暗色玻璃变体：暗色面板 + 浅色文字
   const darkGlass = opacity <= 0.55;
-  // 面板大背景透明度跟随滑条（亮/暗一致，下限 0.4 避免完全透底失读）；
-  // 暗色面板 RGB 本身是深色，浅色实心文字在其上对比足够，无需 0.85 实心钳制
-  const panelAlpha = Math.max(opacity, 0.4);
+
+  // 分层不透明度：面板跟随滑条，标题结构层与文字衬底保留下限，避免低透明度下失读。
+  // 暗色玻璃模式下，浅色文字必须落在「足够深的实色底」上才可读——
+  // 若面板不透明度过低，在浅色/白色壁纸上会合成出浅色背景，导致浅色文字几乎不可见。
+  // 因此暗色模式把各层不透明度抬到足够深的下限（≈0.95+），保证浅色文字对比度达标；
+  // 用户滑杆仅控制亮色模式下的通透感，亮色模式保持原有下限不变。
+  const panelAlpha = darkGlass
+    ? Math.max(opacity, 0.95)
+    : Math.max(opacity, 0.4);
+  const chromeAlpha = darkGlass
+    ? Math.max(opacity, 0.97)
+    : Math.max(opacity, 0.7);
+  const surfaceAlpha = darkGlass
+    ? Math.max(opacity, 0.98)
+    : Math.max(opacity, 0.86);
   const glassTokens = useMemo(
     () => (darkGlass ? DARK_TOKENS : LIGHT_TOKENS),
-    [darkGlass],
+    [darkGlass]
   );
 
   // 暗色/亮色变量同步到 :root（documentElement）——仅注入 main 内联变量时，
@@ -136,7 +143,7 @@ export default function App() {
       currentKind;
     document.documentElement.style.setProperty(
       "--kind-accent",
-      KIND_COLOR[kind],
+      KIND_COLOR[kind]
     );
   }, [selectedId, currentKind, entries]);
 
@@ -153,9 +160,11 @@ export default function App() {
       if (savedBounds) void restoreBounds(savedBounds);
       // 透明窗口最大化渲染异常（任务栏有图标但界面空白）。
       // 若上次退出/双击拖拽区后窗口处于最大化，启动时统一还原为普通尺寸。
-      void getCurrentWindow().isMaximized().then((maximized) => {
-        if (maximized) void getCurrentWindow().unmaximize();
-      });
+      void getCurrentWindow()
+        .isMaximized()
+        .then((maximized) => {
+          if (maximized) void getCurrentWindow().unmaximize();
+        });
     }
 
     let disposed = false;
@@ -199,7 +208,10 @@ export default function App() {
     if (isTauriRuntime()) {
       const trayPromise = listen("tray:new-note", () => {
         const entryState = useEntryStore.getState();
-        const kind = entryState.filter === "all" ? entryState.currentKind : entryState.filter;
+        const kind =
+          entryState.filter === "all"
+            ? entryState.currentKind
+            : entryState.filter;
         const input: NewEntryInput = { title: "", content: "" };
         if (kind === "reminder") input.remindAt = Date.now() + 3600_000;
         void entryState.addEntry(input).then((entry) => {
@@ -327,75 +339,72 @@ export default function App() {
   // antd 主题集中控制：暗色/亮色算法 + 全局 token + 组件级配置。
   // 此前散落的 CSS !important 覆盖（下拉选中项 / primary 阴影 / 各输入控件边框 / focus ring）全部收敛到此处，
   // 暗色模式用 darkAlgorithm 让所有 antd 控件自动切深色背景 + 浅色文字。
-  const antdThemeConfig = useMemo(
-    () => {
-      const primary = KIND_COLOR[kindClass];
-      const controlBorder = darkGlass
-        ? "rgba(236, 230, 220, 0.3)"
-        : "rgba(96, 84, 64, 0.28)";
-      return {
-        algorithm: darkGlass
-          ? antdTheme.darkAlgorithm
-          : antdTheme.defaultAlgorithm,
-        token: {
-          colorPrimary: primary,
-          colorInfo: primary,
-          // 控件边框统一色（普通 / 聚焦 / hover）
-          colorBorder: controlBorder,
-          colorBorderSecondary: darkGlass
-            ? "rgba(236, 230, 220, 0.14)"
-            : "rgba(96, 84, 64, 0.14)",
-          // 去掉 focus ring（主色光晕）
-          controlOutline: "transparent",
-          controlOutlineWidth: 0,
-          borderRadius: 8,
-          ...(darkGlass
-            ? {
-                colorText: "#f0ede6",
-                colorTextSecondary: "#a9a39a",
-                colorTextTertiary: "#8d877e",
-                colorTextPlaceholder: "#8d877e",
-                // 下拉 / 弹层背景：暗色实底
-                colorBgElevated: "rgba(34, 36, 42, 0.97)",
-                colorBgContainer: "transparent",
-                colorFillTertiary: "rgba(236, 230, 220, 0.10)",
-                colorFillQuaternary: "rgba(236, 230, 220, 0.05)",
-              }
-            : {}),
+  const antdThemeConfig = useMemo(() => {
+    const primary = KIND_COLOR[kindClass];
+    const controlBorder = darkGlass
+      ? "rgba(236, 230, 220, 0.3)"
+      : "rgba(96, 84, 64, 0.28)";
+    return {
+      algorithm: darkGlass
+        ? antdTheme.darkAlgorithm
+        : antdTheme.defaultAlgorithm,
+      token: {
+        colorPrimary: primary,
+        colorInfo: primary,
+        // 控件边框统一色（普通 / 聚焦 / hover）
+        colorBorder: controlBorder,
+        colorBorderSecondary: darkGlass
+          ? "rgba(236, 230, 220, 0.14)"
+          : "rgba(96, 84, 64, 0.14)",
+        // 去掉 focus ring（主色光晕）
+        controlOutline: "transparent",
+        controlOutlineWidth: 0,
+        borderRadius: 8,
+        ...(darkGlass
+          ? {
+              colorText: "#f6f3ed",
+              colorTextSecondary: "#c9c3b8",
+              colorTextTertiary: "#b8b2a7",
+              colorTextPlaceholder: "#b8b2a7",
+              // 下拉 / 弹层背景：暗色实底
+              colorBgElevated: "rgba(34, 36, 42, 0.97)",
+              colorBgContainer: "transparent",
+              colorFillTertiary: "rgba(236, 230, 220, 0.10)",
+              colorFillQuaternary: "rgba(236, 230, 220, 0.05)",
+            }
+          : {}),
+      },
+      components: {
+        Select: {
+          // 选中项主题色浅底 + 主色文字（替代原发白的 colorPrimaryBg）
+          optionSelectedBg: `color-mix(in srgb, ${primary} 18%, transparent)`,
+          optionSelectedColor: primary,
+          optionActiveBg: darkGlass
+            ? "rgba(255, 255, 255, 0.08)"
+            : "rgba(0, 0, 0, 0.05)",
         },
-        components: {
-          Select: {
-            // 选中项主题色浅底 + 主色文字（替代原发白的 colorPrimaryBg）
-            optionSelectedBg: `color-mix(in srgb, ${primary} 18%, transparent)`,
-            optionSelectedColor: primary,
-            optionActiveBg: darkGlass
-              ? "rgba(255, 255, 255, 0.08)"
-              : "rgba(0, 0, 0, 0.05)",
-          },
-          Input: {
-            activeBorderColor: controlBorder,
-            hoverBorderColor: controlBorder,
-          },
-          InputNumber: {
-            activeBorderColor: controlBorder,
-            hoverBorderColor: controlBorder,
-          },
-          DatePicker: {
-            activeBorderColor: controlBorder,
-            hoverBorderColor: controlBorder,
-          },
-          // primary 按钮去掉默认主色浅底投影（暗色界面上的白横条）
-          Button: {
-            primaryShadow: "none",
-          },
-          Modal: {
-            titleFontSize: 15,
-          },
+        Input: {
+          activeBorderColor: controlBorder,
+          hoverBorderColor: controlBorder,
         },
-      } as const;
-    },
-    [darkGlass, kindClass],
-  );
+        InputNumber: {
+          activeBorderColor: controlBorder,
+          hoverBorderColor: controlBorder,
+        },
+        DatePicker: {
+          activeBorderColor: controlBorder,
+          hoverBorderColor: controlBorder,
+        },
+        // primary 按钮去掉默认主色浅底投影（暗色界面上的白横条）
+        Button: {
+          primaryShadow: "none",
+        },
+        Modal: {
+          titleFontSize: 15,
+        },
+      },
+    } as const;
+  }, [darkGlass, kindClass]);
 
   if (docked) return <DockBar />;
 
@@ -452,25 +461,30 @@ export default function App() {
             <aside
               className={`note-list-pane p-x-2${view === "calendar" ? " calendar-mode" : ""}`}
             >
-              <CategoryTabs />
               {view === "calendar" ? (
-                <CalendarPane onSelect={handleSelect} />
+                <>
+                  <CategoryTabs />
+                  <CalendarPane onSelect={handleSelect} />
+                </>
               ) : (
                 <>
-                  <SearchBar />
+                  <div className="list-filter-row">
+                    <CategoryTabs />
+                    <SearchBar />
+                  </div>
                   <div className="list-header w-full">
-              <span className="list-title">
-                {filter === "all" ? "全部笔记" : KIND_LABEL[filter]}
-              </span>
-              <Button
-                type="primary"
-                shape="circle"
-                size="small"
-                icon={<PlusOutlined />}
-                title="新建一条"
-                onClick={handleCreate}
-              />
-                </div>
+                    <span className="list-title">
+                      {filter === "all" ? "全部笔记" : KIND_LABEL[filter]}
+                    </span>
+                    <Button
+                      type="primary"
+                      shape="circle"
+                      size="small"
+                      icon={<PlusOutlined />}
+                      title="新建一条"
+                      onClick={handleCreate}
+                    />
+                  </div>
                   <EntryList selectedId={selectedId} onSelect={handleSelect} />
                 </>
               )}

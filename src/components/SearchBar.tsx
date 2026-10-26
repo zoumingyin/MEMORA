@@ -1,5 +1,4 @@
-import { Input, Select } from "antd";
-import { SearchOutlined } from "@ant-design/icons";
+import { Select } from "antd";
 import { useMemo } from "react";
 import { useEntryStore } from "../store/useEntryStore";
 
@@ -19,10 +18,8 @@ function useTagOptions() {
   }, [entries]);
 }
 
-/** 列表搜索区：全局搜索（标题+内容）、时间范围、标签筛选、排序 */
+/** 列表筛选区：时间范围、排序、标签筛选（搜索框已并入标题栏） */
 export function SearchBar() {
-  const search = useEntryStore((state) => state.search);
-  const setSearch = useEntryStore((state) => state.setSearch);
   const tagFilter = useEntryStore((state) => state.tagFilter);
   const setTagFilter = useEntryStore((state) => state.setTagFilter);
   const timeRange = useEntryStore((state) => state.timeRange);
@@ -33,15 +30,6 @@ export function SearchBar() {
 
   return (
     <div className="search-bar" data-tauri-drag-region="false">
-      <Input
-        className="search-input"
-        allowClear
-        size="small"
-        prefix={<SearchOutlined style={{ fontSize: 12 }} />}
-        placeholder="搜索标题或内容"
-        value={search}
-        onChange={(event) => setSearch(event.target.value)}
-      />
       <div className="search-filters">
         <Select
           className="search-select"
