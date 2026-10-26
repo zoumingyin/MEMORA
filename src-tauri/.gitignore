@@ -1,0 +1,6 @@
+# Rust 构建产物
+target/
+gen/
+
+# Tauri 2 生成的资源（图标除外，图标入库）
+**/*.rs.bk

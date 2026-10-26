@@ -1,0 +1,28 @@
+[package]
+name = "bianqian"
+version = "0.1.0"
+description = "桌面便签工具：备忘、提醒、待办"
+edition = "2021"
+
+[lib]
+name = "bianqian_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri-plugin-sql = { version = "2", features = ["sqlite"] }
+tauri-plugin-notification = "2"
+tauri-plugin-autostart = "2"
+tauri-plugin-single-instance = "2"
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-clipboard-manager = "2"
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[features]
+# 生产构建或 devPath 指向本地文件且内置 dev server 关闭时启用
+default = []

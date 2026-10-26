@@ -1,0 +1,12 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "reminder-dialog",
+  "description": "到期提醒弹窗窗口能力：确认后写库标记已通知并关闭自身窗口",
+  "windows": ["reminder-*"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-close",
+    "sql:default",
+    "sql:allow-execute"
+  ]
+}
