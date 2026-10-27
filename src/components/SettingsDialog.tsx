@@ -51,9 +51,14 @@ const SETTING_TREE: SettingGroup[] = [
     label: "外观",
     children: [
       {
+        key: "theme",
+        label: "主题",
+        hint: "亮色 / 暗色主题切换",
+      },
+      {
         key: "opacity",
         label: "背景透明度",
-        hint: "文字保持不透明，≤55% 自动切暗色",
+        hint: "仅调整背景透明程度，不影响主题",
       },
     ],
   },
@@ -157,11 +162,11 @@ function parseExportFile(raw: string): Entry[] {
  * 关闭行为持久化 `bianqian.closeBehavior.v1`；开机自启动走 tauri-plugin-autostart。
  */
 export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
-  const { alwaysOnTop, opacity, edgeDocking } = useWindowStore();
-  const { setAlwaysOnTop, setOpacity, setEdgeDocking, setDock } =
+  const { alwaysOnTop, opacity, edgeDocking, theme } = useWindowStore();
+  const { setAlwaysOnTop, setOpacity, setEdgeDocking, setDock, setTheme } =
     useWindowStore();
-  // 当前树节点：默认定位到「背景透明度」
-  const [activeKey, setActiveKey] = useState("opacity");
+  // 当前树节点：默认定位到「主题」
+  const [activeKey, setActiveKey] = useState("theme");
   // 关闭窗口时的默认行为：null=每次询问；hide/quit=记住并直接执行
   const [closeAction, setCloseAction] = useState<CloseAction | null>(() => {
     const behavior = loadCloseBehavior();
@@ -354,13 +359,31 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
   /** 渲染当前选中节点的设置内容 */
   const renderContent = (key: string) => {
     switch (key) {
+      case "theme":
+        return (
+          <div className="settings-item">
+            <div className="settings-item-main">
+              <span className="settings-item-label">主题</span>
+              <span className="settings-item-hint">
+                亮色 / 暗色主题切换，与背景透明度互不影响
+              </span>
+            </div>
+            <Switch
+              size="small"
+              checked={theme === "dark"}
+              onChange={(checked) => setTheme(checked ? "dark" : "light")}
+              checkedChildren="暗色"
+              unCheckedChildren="亮色"
+            />
+          </div>
+        );
       case "opacity":
         return (
           <div className="settings-item grid">
             <div className="settings-item-main">
               <span className="settings-item-label">背景透明度</span>
               <span className="settings-item-hint">
-                文字保持不透明，≤55% 自动切暗色
+                仅调整背景透明程度，不影响主题
               </span>
             </div>
             <div className="settings-opacity-control">

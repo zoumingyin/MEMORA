@@ -47,7 +47,7 @@ const KIND_COLOR: Record<EntryKind, string> = {
   todo: "#57a878",
 };
 
-/** 暗色玻璃变体 CSS 变量（透明度极低时注入 :root；切回亮色时全部移除恢复默认） */
+/** 暗色玻璃变体 CSS 变量（暗色主题时注入 :root；切回亮色时全部移除恢复默认） */
 const DARK_TOKENS: Record<string, string> = {
   "--panel-rgb": "32, 34, 40",
   "--panel-soft-rgb": "42, 45, 52",
@@ -81,6 +81,7 @@ export default function App() {
   const setSelectedId = useEntryStore((state) => state.setSelectedId);
   const removeEntry = useEntryStore((state) => state.removeEntry);
   const opacity = useWindowStore((state) => state.opacity);
+  const theme = useWindowStore((state) => state.theme);
   // 响应式视口：窄窗口（<620px）切换单栏（列表 ↔ 详情）
   const { isNarrow } = useViewport();
   // 窄窗口单栏模式：是否正在查看详情（true 时列表页被详情替换）
@@ -92,16 +93,22 @@ export default function App() {
   // 「+ 新建」的类型选择弹窗
   const [createOpen, setCreateOpen] = useState(false);
 
-  // 极低透明度（≤0.2）才自动切换暗色玻璃变体：深色面板 + 浅色文字
-  // 默认亮色模式（深色文字），保证浅色/白色壁纸上的可读性
-  const darkGlass = opacity <= 0.2;
+  // 主题由设置项手动切换（亮色 / 暗色），与背景透明度互不影响；
+  // 暗色主题：深色面板 + 浅色文字；默认亮色主题（深色文字），保证浅色/白色壁纸上的可读性
+  const darkGlass = theme === "dark";
 
   // 分层不透明度：面板跟随滑条，标题结构层与文字衬底保留下限，避免低透明度下失读。
-  // 暗色/亮色共用同一套下限：暗色模式下深色底 + 浅色文字本身有对比度，
-  // 透明度调低后背景变透，文字依然可读（比亮色模式下白底细字的宽容度更高）。
-  const panelAlpha = Math.max(opacity, 0.3);
-  const chromeAlpha = Math.max(opacity, 0.5);
-  const surfaceAlpha = Math.max(opacity, 0.6);
+  // 暗色主题深底浅字本身对比度高：下限放宽（0.15/0.2/0.25），透明度随滑条平滑变化；
+  // 亮色主题白底深字：保底下限较高（0.3/0.5/0.6），防止低透明度下白底细字失读。
+  const panelAlpha = darkGlass
+    ? Math.max(opacity, 0.15)
+    : Math.max(opacity, 0.3);
+  const chromeAlpha = darkGlass
+    ? Math.max(opacity, 0.2)
+    : Math.max(opacity, 0.5);
+  const surfaceAlpha = darkGlass
+    ? Math.max(opacity, 0.25)
+    : Math.max(opacity, 0.6);
   const glassTokens = useMemo(
     () => (darkGlass ? DARK_TOKENS : LIGHT_TOKENS),
     [darkGlass]

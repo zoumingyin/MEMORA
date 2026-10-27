@@ -21,11 +21,11 @@
   --shadow-lift: 0 22px 56px rgba(60, 48, 30, 0.36);
 
   /* 背景 RGB 分量：配合 --panel-alpha 只让背景半透明，文字颜色保持实色 */
-  /* 面板背景不透明度（0.25 ~ 1），由窗口 store 注入，默认不透明 */
+  /* 面板背景不透明度（0 ~ 1），由窗口 store 注入并覆盖，默认不透明 */
   --panel-alpha: 1;
-  /* 结构层（标题栏 / 弹层 / 窄条）最低衬底下限 0.70，由前端按面板值取大后注入 */
+  /* 结构层（标题栏 / 弹层 / 窄条）：App 注入 max(opacity, 0.5)；此处为注入前的兜底值 */
   --chrome-alpha: 0.7;
-  /* 文字衬底（输入框 / 详情内容区）最低不透明度 0.86，由前端按面板值取大后注入 */
+  /* 文字衬底（输入框 / 详情内容区）：App 注入 max(opacity, 0.6)；此处为注入前的兜底值 */
   --surface-alpha: 0.86;
   /* 文字不再叠加光晕：玻璃感（模糊/光晕）会让人感觉文字发虚，改为纯实色显示 */
   --text-halo: none;
@@ -541,7 +541,7 @@ textarea {
   color: var(--text-muted);
 }
 
-/* 左侧列表栏 */
+/* 左侧列表栏：跟随结构层不透明度（--chrome-alpha），透明度调低时随滑块变化 */
 .note-list-pane {
   display: flex;
   flex-direction: column;
@@ -549,7 +549,7 @@ textarea {
   width: 180px;
   flex: none;
   border-right: 1px solid var(--border);
-  background: rgba(var(--panel-soft-rgb), 0.4);
+  background: rgba(var(--panel-soft-rgb), var(--chrome-alpha));
 }
 
 /* 分类筛选（antd Segmented）：容器与计数徽标（下拉边框/选中项/primary 阴影均由 antd 主题控制） */
@@ -2290,7 +2290,7 @@ textarea {
   opacity: 0.75;
 }
 
-/* 暗色玻璃模式（透明度 ≤55%，documentElement.dark-glass）：提亮空态与提示文字。
+/* 暗色主题（设置中手动切换，documentElement.dark-glass）：提亮空态与提示文字。
    此前 antd Empty 描述 / PRESENTED_IMAGE_SIMPLE 插画、detail-empty 图标与副文案在深色面板上
    叠 opacity 后对比度过低，几乎不可读。 */
 :root.dark-glass .ant-empty-description {

@@ -429,6 +429,53 @@ export function MarkdownEditor({
     }
   };
 
+  /** 取当前编辑器选区纯文本（比 window.getSelection 更可靠，且不依赖焦点状态） */
+  const getSelectedText = (): string => {
+    if (!editor) return "";
+    const { from, to } = editor.state.selection;
+    if (from === to) return "";
+    return editor.state.doc.textBetween(from, to, "\n");
+  };
+
+  /** 复制：优先用 Clipboard API 写入选中文本（替代已弃用的 document.execCommand("copy")） */
+  const copySelection = async (): Promise<void> => {
+    const write = navigator.clipboard?.writeText?.bind(navigator.clipboard);
+    if (!write) return;
+    const text = getSelectedText();
+    if (!text) return;
+    try {
+      await write(text);
+    } catch {
+      // 环境不支持或权限被拒：与原 execCommand 静默失败行为一致
+    }
+  };
+
+  /** 剪切：复制选中文本后删除编辑器内选区（替代已弃用的 document.execCommand("cut")） */
+  const cutSelection = async (): Promise<void> => {
+    const write = navigator.clipboard?.writeText?.bind(navigator.clipboard);
+    if (!write) return;
+    const text = getSelectedText();
+    if (!text) return;
+    try {
+      await write(text);
+      editor?.chain().focus().deleteSelection().run();
+    } catch {
+      // 环境不支持或权限被拒：静默忽略
+    }
+  };
+
+  /** 粘贴：读取剪贴板文本并插入光标处（替代已弃用的 document.execCommand("paste")） */
+  const pasteFromClipboard = async (): Promise<void> => {
+    const read = navigator.clipboard?.readText?.bind(navigator.clipboard);
+    if (!read) return;
+    try {
+      const text = await read();
+      if (text) editor?.chain().focus().insertContent(text).run();
+    } catch {
+      // 权限被拒或环境不支持：静默忽略
+    }
+  };
+
   const onImageFile = (event: React.ChangeEvent<HTMLInputElement>): void => {
     const file = event.target.files?.[0];
     event.target.value = "";
@@ -726,7 +773,7 @@ export function MarkdownEditor({
                 <div
                   className="md-ctx-item "
                   onClick={() => {
-                    document.execCommand("copy");
+                    void copySelection();
                     closeCtxMenu();
                   }}
                 >
@@ -739,7 +786,7 @@ export function MarkdownEditor({
                 <div
                   className="md-ctx-item"
                   onClick={() => {
-                    document.execCommand("cut");
+                    void cutSelection();
                     closeCtxMenu();
                   }}
                 >
@@ -752,7 +799,7 @@ export function MarkdownEditor({
                 <div
                   className="md-ctx-item"
                   onClick={() => {
-                    document.execCommand("paste");
+                    void pasteFromClipboard();
                     closeCtxMenu();
                   }}
                 >
