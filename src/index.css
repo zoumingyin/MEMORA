@@ -452,7 +452,11 @@ textarea {
     width: 220px;
   }
 }
-
+@media (min-width: 620px) {
+  .detail-pane {
+    margin-top: 15px;
+  }
+}
 /* 响应式弹窗：窄窗口下所有 antd Modal 不超过视口宽度（inline width 会被 max-width 收住） */
 @media (max-width: 620px) {
   .ant-modal {
@@ -1661,40 +1665,15 @@ textarea {
   margin: 0 2px;
 }
 
-/* 文字颜色色板 */
+/* 文字颜色（antd ColorPicker） */
 .md-color-wrap {
   position: relative;
   display: inline-flex;
+  align-items: center;
 }
 
 .md-color-trigger {
   color: var(--kind-accent);
-}
-
-.md-color-palette {
-  position: absolute;
-  top: 100%;
-  left: 0;
-  z-index: 50;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 5px 6px;
-  margin-top: 2px;
-  border-radius: 8px;
-  background: rgba(var(--panel-soft-rgb), 0.98);
-  border: 1px solid var(--border);
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.25);
-}
-
-.md-color-dot {
-  width: 16px;
-  height: 16px;
-  border: none;
-  border-radius: 50%;
-  cursor: pointer;
-  padding: 0;
-  box-shadow: inset 0 0 0 1px rgba(128, 128, 128, 0.35);
 }
 
 .md-color-clear {
@@ -1709,6 +1688,46 @@ textarea {
 
 .md-color-clear:hover {
   color: var(--text);
+}
+
+/* 右键菜单内 antd 拾色器弹层：盖过右键菜单遮罩（1500）与菜单（1501） */
+.md-ctx-color-picker.ant-popover {
+  z-index: 1600 !important;
+}
+
+/* 右键菜单内拾色器触发器（渐变预览块） */
+.md-ctx-color-trigger {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 28px;
+  padding: 0 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--text);
+  cursor: pointer;
+  transition: background 0.12s;
+}
+
+.md-ctx-color-trigger:hover {
+  background: var(--hover-fill);
+}
+
+.md-ctx-color-trigger::before {
+  content: "";
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
+  border: 1px solid rgba(128, 128, 128, 0.35);
+  background: linear-gradient(
+    135deg,
+    #ff4d4f,
+    #ff7a45,
+    #fadb14,
+    #52c41a,
+    #1677ff,
+    #722ed1
+  );
 }
 
 .detail-content:focus {
@@ -2205,6 +2224,19 @@ textarea {
   cursor: pointer;
   transition: -webkit-filter 0.15s;
   transition: filter 0.15s;
+  transition: filter 0.15s, -webkit-filter 0.15s;
+  transition:
+    filter 0.15s,
+    -webkit-filter 0.15s;
+  transition:
+    filter 0.15s,
+    -webkit-filter 0.15s;
+  transition:
+    filter 0.15s,
+    -webkit-filter 0.15s;
+  transition:
+    filter 0.15s,
+    -webkit-filter 0.15s;
   transition:
     filter 0.15s,
     -webkit-filter 0.15s;
@@ -2479,6 +2511,110 @@ textarea {
   color: #ffffff !important;
   opacity: 0.9;
 }
+:root.dark-glass .detail-pane .ant-input::-webkit-input-placeholder,
+:root.dark-glass
+  .detail-pane
+  .ant-input-affix-wrapper::-webkit-input-placeholder {
+  color: #ffffff !important;
+  opacity: 0.9;
+}
+:root.dark-glass .detail-pane .ant-input::-moz-placeholder,
+:root.dark-glass .detail-pane .ant-input-affix-wrapper::-moz-placeholder {
+  color: #ffffff !important;
+  opacity: 0.9;
+}
+:root.dark-glass .detail-pane .ant-input:-ms-input-placeholder,
+:root.dark-glass .detail-pane .ant-input-affix-wrapper:-ms-input-placeholder {
+  color: #ffffff !important;
+  opacity: 0.9;
+}
+:root.dark-glass .detail-pane .ant-input::-ms-input-placeholder,
+:root.dark-glass .detail-pane .ant-input-affix-wrapper::-ms-input-placeholder {
+  color: #ffffff !important;
+  opacity: 0.9;
+}
+:root.dark-glass .detail-pane .ant-input::-webkit-input-placeholder,
+:root.dark-glass
+  .detail-pane
+  .ant-input-affix-wrapper::-webkit-input-placeholder {
+  color: #ffffff !important;
+  opacity: 0.9;
+}
+:root.dark-glass .detail-pane .ant-input::-moz-placeholder,
+:root.dark-glass .detail-pane .ant-input-affix-wrapper::-moz-placeholder {
+  color: #ffffff !important;
+  opacity: 0.9;
+}
+:root.dark-glass .detail-pane .ant-input:-ms-input-placeholder,
+:root.dark-glass .detail-pane .ant-input-affix-wrapper:-ms-input-placeholder {
+  color: #ffffff !important;
+  opacity: 0.9;
+}
+:root.dark-glass .detail-pane .ant-input::-ms-input-placeholder,
+:root.dark-glass .detail-pane .ant-input-affix-wrapper::-ms-input-placeholder {
+  color: #ffffff !important;
+  opacity: 0.9;
+}
+:root.dark-glass .detail-pane .ant-input::-webkit-input-placeholder,
+:root.dark-glass
+  .detail-pane
+  .ant-input-affix-wrapper::-webkit-input-placeholder {
+  color: #ffffff !important;
+  opacity: 0.9;
+}
+:root.dark-glass .detail-pane .ant-input::-moz-placeholder,
+:root.dark-glass .detail-pane .ant-input-affix-wrapper::-moz-placeholder {
+  color: #ffffff !important;
+  opacity: 0.9;
+}
+:root.dark-glass .detail-pane .ant-input:-ms-input-placeholder,
+:root.dark-glass .detail-pane .ant-input-affix-wrapper:-ms-input-placeholder {
+  color: #ffffff !important;
+  opacity: 0.9;
+}
+:root.dark-glass .detail-pane .ant-input::-ms-input-placeholder,
+:root.dark-glass .detail-pane .ant-input-affix-wrapper::-ms-input-placeholder {
+  color: #ffffff !important;
+  opacity: 0.9;
+}
+:root.dark-glass .detail-pane .ant-input::-webkit-input-placeholder,
+:root.dark-glass
+  .detail-pane
+  .ant-input-affix-wrapper::-webkit-input-placeholder {
+  color: #ffffff !important;
+  opacity: 0.9;
+}
+:root.dark-glass .detail-pane .ant-input::-moz-placeholder,
+:root.dark-glass .detail-pane .ant-input-affix-wrapper::-moz-placeholder {
+  color: #ffffff !important;
+  opacity: 0.9;
+}
+:root.dark-glass .detail-pane .ant-input:-ms-input-placeholder,
+:root.dark-glass .detail-pane .ant-input-affix-wrapper:-ms-input-placeholder {
+  color: #ffffff !important;
+  opacity: 0.9;
+}
+:root.dark-glass .detail-pane .ant-input::-ms-input-placeholder,
+:root.dark-glass .detail-pane .ant-input-affix-wrapper::-ms-input-placeholder {
+  color: #ffffff !important;
+  opacity: 0.9;
+}
+:root.dark-glass .detail-pane .ant-input::-webkit-input-placeholder, :root.dark-glass .detail-pane .ant-input-affix-wrapper::-webkit-input-placeholder {
+  color: #ffffff !important;
+  opacity: 0.9;
+}
+:root.dark-glass .detail-pane .ant-input::-moz-placeholder, :root.dark-glass .detail-pane .ant-input-affix-wrapper::-moz-placeholder {
+  color: #ffffff !important;
+  opacity: 0.9;
+}
+:root.dark-glass .detail-pane .ant-input:-ms-input-placeholder, :root.dark-glass .detail-pane .ant-input-affix-wrapper:-ms-input-placeholder {
+  color: #ffffff !important;
+  opacity: 0.9;
+}
+:root.dark-glass .detail-pane .ant-input::-ms-input-placeholder, :root.dark-glass .detail-pane .ant-input-affix-wrapper::-ms-input-placeholder {
+  color: #ffffff !important;
+  opacity: 0.9;
+}
 :root.dark-glass .detail-pane .ant-input::placeholder,
 :root.dark-glass .detail-pane .ant-input-affix-wrapper::placeholder {
   color: #ffffff !important;
@@ -2531,7 +2667,7 @@ textarea {
 .md-ctx-menu {
   position: fixed;
   z-index: 1501;
-  min-width: 220px;
+  min-width: 160px;
   padding: 6px;
   border-radius: 10px;
   border: 1px solid var(--border);
@@ -2614,12 +2750,13 @@ textarea {
   align-items: center;
   justify-content: space-between;
   height: 30px;
-  padding: 0 8px;
+  padding: 0 4px;
   border-radius: 6px;
   color: var(--text);
   cursor: pointer;
   transition: background 0.12s;
   position: relative;
+  font-size: 12px;
 }
 
 .md-ctx-item:hover {

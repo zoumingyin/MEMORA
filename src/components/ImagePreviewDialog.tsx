@@ -5,9 +5,6 @@ import {
   RightOutlined,
   ZoomInOutlined,
   ZoomOutOutlined,
-  SaveOutlined,
-  DownloadOutlined,
-  PrinterOutlined,
   FullscreenOutlined,
   MinusOutlined,
   BorderOutlined,
@@ -135,14 +132,6 @@ export function ImagePreviewDialog() {
   const resetZoom = (): void => setZoom(100)
   const rotateLeft = (): void => setRotation((r) => r - 90)
   const rotateRight = (): void => setRotation((r) => r + 90)
-
-  const handleDownload = (): void => {
-    const src = params.images[current]
-    const a = document.createElement('a')
-    a.href = src
-    a.download = `image-${current + 1}.png`
-    a.click()
-  }
 
   // ESC 关闭
   useEffect(() => {

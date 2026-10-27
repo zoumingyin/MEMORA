@@ -14,7 +14,6 @@ import { marked } from "marked";
 import DOMPurify from "dompurify";
 import TurndownService from "turndown";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { currentMonitor, getCurrentWindow } from "@tauri-apps/api/window";
 import { isTauriRuntime } from "../repository";
 import {
   BoldOutlined,
@@ -33,12 +32,12 @@ import {
   SnippetsOutlined,
   CheckSquareOutlined,
   FontColorsOutlined,
-  BgColorsOutlined,
   FontSizeOutlined,
   SmileOutlined,
   KeyOutlined,
 } from "@ant-design/icons";
 import { ColorPicker } from "antd";
+import EmojiPicker, { type EmojiAnchor } from "./EmojiPicker";
 import { countMarkdownWords } from "../utils/markdown";
 
 /** 危险协议：跳过导航，避免 XSS */
@@ -60,26 +59,7 @@ const FONT_COLORS = [
   { label: "白", value: "#f4f1ea" },
 ];
 
-/** 完整颜色面板（右键菜单用）：两排颜色 + 标准色 */
-const COLOR_PALETTE = [
-  "#000000",
-  "#4d4d4d",
-  "#999999",
-  "#e6e6e6",
-  "#ffffff",
-  "#ff0000",
-  "#ff9900",
-  "#ffff00",
-  "#00ff00",
-  "#00ffff",
-  "#0066ff",
-  "#9900ff",
-  "#ff00ff",
-  "#ff6699",
-  "#663300",
-];
-
-/** 标准色（底部一排） */
+/** 标准色（拾色器 presets 用） */
 const STANDARD_COLORS = [
   "#e5484d",
   "#f2994a",
@@ -235,7 +215,7 @@ function createTurndown(): TurndownService {
 /**
  * 所见即所得富文本 Markdown 编辑器（TipTap）：
  * 顶部工具条（标题/加粗/斜体/删除线/下划线/颜色/字号/列表/引用/代码/链接/撤销重做）
- * + 选中文字浮动工具条 + 底部字数统计。
+ * + 底部字数统计。
  * 数据仍以 Markdown 文本存储：外部 value 为 Markdown，编辑实时转回 Markdown；
  * 颜色/字号/下划线等富文本扩展属性以内嵌 HTML（span/u）形式保留在 Markdown 中。
  */
@@ -244,8 +224,17 @@ export function MarkdownEditor({
   onChange,
   placeholder,
 }: MarkdownEditorProps) {
-  const [fbar, setFbar] = useState<{ top: number; left: number } | null>(null);
   const [colorOpen, setColorOpen] = useState(false);
+  /** 工具栏 antd 拾色器当前颜色（打开时读取选区颜色，拖动时跟随） */
+  const [colorValue, setColorValue] = useState<string | undefined>(undefined);
+  /** 右键菜单内拾色器的弹层打开状态（防止鼠标移入弹层时误关子菜单） */
+  const [ctxColorPickerOpen, setCtxColorPickerOpen] = useState(false);
+  /** 右键菜单内拾色器的初始颜色（打开子菜单时读取选区颜色） */
+  const [ctxColorValue, setCtxColorValue] = useState<string | undefined>(
+    undefined
+  );
+  /** 表情选择面板锚点（工具栏按钮 / 右键菜单项触发），null 表示面板关闭 */
+  const [emojiAnchor, setEmojiAnchor] = useState<EmojiAnchor | null>(null);
   const [linkDraft, setLinkDraft] = useState(false);
   const [linkUrl, setLinkUrl] = useState("");
   // 右键上下文菜单
@@ -368,6 +357,12 @@ export function MarkdownEditor({
     setCtxSubmenu(null);
   };
 
+  /** 插入表情到光标处并关闭面板 */
+  const insertEmoji = (emoji: string): void => {
+    editor?.chain().focus().insertContent(emoji).run();
+    setEmojiAnchor(null);
+  };
+
   /** 标记加载失败的图片，便于 CSS 显示破损占位（error 不冒泡，用捕获阶段监听） */
   useEffect(() => {
     const root = editorRef.current;
@@ -411,26 +406,6 @@ export function MarkdownEditor({
       isInternalUpdate.current = true;
       onChange(htmlToMarkdown(html));
     },
-    onSelectionUpdate: ({ editor: current }) => {
-      const { from, to } = current.state.selection;
-      if (from !== to && current.isFocused) {
-        const selection = window.getSelection();
-        const box = editorRef.current?.getBoundingClientRect();
-        if (selection && selection.rangeCount > 0 && box) {
-          const rect = selection.getRangeAt(0).getBoundingClientRect();
-          setFbar({
-            top: Math.max(rect.top - box.top - 36, 4),
-            left: rect.left - box.left + rect.width / 2,
-          });
-        }
-      } else {
-        setFbar(null);
-      }
-    },
-    onBlur: () => {
-      setFbar(null);
-      setColorOpen(false);
-    },
     editorProps: {
       attributes: {
         class: "md-prose",
@@ -467,14 +442,10 @@ export function MarkdownEditor({
     editor?.commands.focus();
   };
 
-  const applyColor = (color: string | null): void => {
-    if (color) {
-      editor?.chain().focus().setColor(color).run();
-    } else {
-      editor?.chain().focus().unsetColor().run();
-    }
+  /** 清除文字颜色（工具栏“默认”按钮 / 拾色器 allowClear） */
+  const clearColor = (): void => {
+    editor?.chain().focus().unsetColor().run();
     setColorOpen(false);
-    setFbar(null);
   };
 
   const applyFontSize = (size: string | null): void => {
@@ -483,7 +454,6 @@ export function MarkdownEditor({
     } else {
       editor?.chain().focus().setMark("textStyle", { fontSize: null }).run();
     }
-    setFbar(null);
   };
 
   const applyLink = (): void => {
@@ -492,7 +462,6 @@ export function MarkdownEditor({
       | string
       | undefined;
     setLinkUrl(currentHref ?? "");
-    setFbar(null);
     setLinkDraft(true);
   };
 
@@ -509,7 +478,6 @@ export function MarkdownEditor({
       editor?.chain().focus().unsetLink().run();
     }
     setLinkDraft(false);
-    setFbar(null);
   };
 
   const cancelLink = (): void => {
@@ -641,56 +609,6 @@ export function MarkdownEditor({
     { key: "link", title: "链接", label: <LinkOutlined />, onClick: applyLink },
   ];
 
-  /** 浮动工具条按钮（选中文字时出现） */
-  const fbarTools: Array<{
-    key: string;
-    title: string;
-    label: React.ReactNode;
-    active?: boolean;
-    onClick: () => void;
-  }> = [
-    {
-      key: "fb-bold",
-      title: "加粗",
-      label: <BoldOutlined />,
-      active: toolActive("bold"),
-      onClick: () => run(() => editor?.chain().focus().toggleBold().run()),
-    },
-    {
-      key: "fb-italic",
-      title: "斜体",
-      label: <ItalicOutlined />,
-      active: toolActive("italic"),
-      onClick: () => run(() => editor?.chain().focus().toggleItalic().run()),
-    },
-    {
-      key: "fb-strike",
-      title: "删除线",
-      label: <StrikethroughOutlined />,
-      active: toolActive("strike"),
-      onClick: () => run(() => editor?.chain().focus().toggleStrike().run()),
-    },
-    {
-      key: "fb-underline",
-      title: "下划线",
-      label: <UnderlineOutlined />,
-      active: toolActive("underline"),
-      onClick: () => run(() => editor?.chain().focus().toggleUnderline().run()),
-    },
-    {
-      key: "fb-small",
-      title: "小字号",
-      label: "A-",
-      onClick: () => applyFontSize("11px"),
-    },
-    {
-      key: "fb-large",
-      title: "大字号",
-      label: "A+",
-      onClick: () => applyFontSize("18px"),
-    },
-  ];
-
   return (
     <div className="md-editor" ref={editorRef} data-tauri-drag-region="false">
       <div className="md-editor-bar">
@@ -707,7 +625,25 @@ export function MarkdownEditor({
               {tool.label}
             </button>
           ))}
-          {/* 文字颜色色板 */}
+          {/* 插入表情：antd + unocss 表情选择面板 */}
+          <button
+            type="button"
+            className={`md-tool${emojiAnchor ? " active" : ""}`}
+            title="插入表情"
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={(event) => {
+              const rect = event.currentTarget.getBoundingClientRect();
+              setEmojiAnchor({
+                left: rect.left,
+                top: rect.top,
+                width: rect.width,
+                height: rect.height,
+              });
+            }}
+          >
+            <SmileOutlined />
+          </button>
+          {/* 文字颜色：antd 拾色器 */}
           <div className="md-color-wrap">
             <button
               type="button"
@@ -718,40 +654,65 @@ export function MarkdownEditor({
             >
               <PictureOutlined />
             </button>
-            <button
-              type="button"
-              className={`md-tool md-color-trigger${colorOpen ? " active" : ""}`}
-              title="文字颜色"
-              onMouseDown={(event) => event.preventDefault()}
-              onClick={() => setColorOpen((open) => !open)}
+            <ColorPicker
+              open={colorOpen}
+              onOpenChange={(open) => {
+                setColorOpen(open);
+                if (open) {
+                  setColorValue(
+                    editor?.getAttributes("textStyle").color as
+                      | string
+                      | undefined
+                  );
+                }
+              }}
+              value={colorValue}
+              format="hex"
+              disabledAlpha
+              allowClear
+              presets={[
+                { label: "常用色", colors: FONT_COLORS.map((c) => c.value) },
+                { label: "标准色", colors: STANDARD_COLORS },
+              ]}
+              onChange={(value) => {
+                if (value.cleared) {
+                  editor?.commands.unsetColor();
+                  return;
+                }
+                const hex = value.toHexString();
+                setColorValue(hex);
+                editor?.commands.setColor(hex);
+              }}
+              onChangeComplete={(value) => {
+                if (value.cleared) {
+                  editor?.chain().focus().unsetColor().run();
+                } else {
+                  editor?.chain().focus().setColor(value.toHexString()).run();
+                }
+                setColorOpen(false);
+              }}
+              onClear={clearColor}
             >
-              A
-            </button>
-            {colorOpen && (
-              <div
-                className="md-color-palette"
+              <button
+                type="button"
+                className={`md-tool md-color-trigger${
+                  colorOpen ? " active" : ""
+                }`}
+                title="文字颜色（antd 拾色器）"
                 onMouseDown={(event) => event.preventDefault()}
               >
-                {FONT_COLORS.map((color) => (
-                  <button
-                    key={color.value}
-                    type="button"
-                    className="md-color-dot"
-                    title={color.label}
-                    style={{ background: color.value }}
-                    onClick={() => applyColor(color.value)}
-                  />
-                ))}
-                <button
-                  type="button"
-                  className="md-color-clear"
-                  title="清除颜色"
-                  onClick={() => applyColor(null)}
-                >
-                  默认
-                </button>
-              </div>
-            )}
+                A
+              </button>
+            </ColorPicker>
+            <button
+              type="button"
+              className="md-color-clear"
+              title="清除文字颜色"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={clearColor}
+            >
+              默认
+            </button>
           </div>
         </div>
         {linkDraft && (
@@ -781,7 +742,6 @@ export function MarkdownEditor({
                 onClick={() => {
                   editor?.chain().focus().unsetLink().run();
                   setLinkDraft(false);
-                  setFbar(null);
                 }}
               >
                 移除链接
@@ -817,404 +777,326 @@ export function MarkdownEditor({
       </div>
 
       {/* 右键上下文菜单 - 挂载到 body，不被编辑器容器的 overflow 截断 */}
-      {ctxMenu && createPortal(
-        <>
-          <div
-            className="md-ctx-mask"
-            onClick={closeCtxMenu}
-            onContextMenu={(e) => {
-              e.preventDefault();
-              closeCtxMenu();
-            }}
-          />
-          <div
-            className="md-ctx-menu"
-            style={{ top: ctxMenu.top, left: ctxMenu.left }}
-            onMouseLeave={() => setCtxSubmenu(null)}
-          >
-            <div className="flex">
-              {/* 复制 */}
-              <div
-                className="md-ctx-item"
-                onClick={() => {
-                  document.execCommand("copy");
-                  closeCtxMenu();
-                }}
-              >
-                <span className="md-ctx-label ">
-                  <CopyOutlined />
-                  复制
-                </span>
-              </div>
-              {/* 剪切 */}
-              <div
-                className="md-ctx-item"
-                onClick={() => {
-                  document.execCommand("cut");
-                  closeCtxMenu();
-                }}
-              >
-                <span className="md-ctx-label">
-                  <ScissorOutlined />
-                  剪切
-                </span>
-              </div>
-              {/* 粘贴 */}
-              <div
-                className="md-ctx-item"
-                onClick={() => {
-                  document.execCommand("paste");
-                  closeCtxMenu();
-                }}
-              >
-                <span className="md-ctx-label">
-                  <SnippetsOutlined />
-                  粘贴
-                </span>
-              </div>
-              {/* 全选 */}
-              <div
-                className="md-ctx-item"
-                onClick={() => {
-                  editor?.chain().focus().selectAll().run();
-                  closeCtxMenu();
-                }}
-              >
-                <span className="md-ctx-label">
-                  <CheckSquareOutlined />
-                  全选
-                </span>
-              </div>
-            </div>
-            <div className="md-ctx-sep" />
-            <div className="flex">
-              {/* 加粗 */}
-              <div
-                className={`md-ctx-item${toolActive("bold") ? " active" : ""}`}
-                onClick={() => {
-                  run(() => editor?.chain().focus().toggleBold().run());
-                  closeCtxMenu();
-                }}
-              >
-                <span className="md-ctx-label">
-                  <span className="md-ctx-b">B</span>
-                  加粗
-                </span>
-              </div>
-              {/* 中划线 */}
-              <div
-                className={`md-ctx-item${toolActive("strike") ? " active" : ""}`}
-                onClick={() => {
-                  run(() => editor?.chain().focus().toggleStrike().run());
-                  closeCtxMenu();
-                }}
-              >
-                <span className="md-ctx-label">
-                  <span className="md-ctx-s">S</span>
-                  中划线
-                </span>
-              </div>
-              {/* 倾斜 */}
-              <div
-                className={`md-ctx-item${toolActive("italic") ? " active" : ""}`}
-                onClick={() => {
-                  run(() => editor?.chain().focus().toggleItalic().run());
-                  closeCtxMenu();
-                }}
-              >
-                <span className="md-ctx-label">
-                  <span className="md-ctx-i">I</span>
-                  倾斜
-                </span>
-              </div>
-              {/* 下划线 */}
-              <div
-                className={`md-ctx-item${toolActive("underline") ? " active" : ""}`}
-                onClick={() => {
-                  run(() => editor?.chain().focus().toggleUnderline().run());
-                  closeCtxMenu();
-                }}
-              >
-                <span className="md-ctx-label">
-                  <span className="md-ctx-u">U</span>
-                  下划线
-                </span>
-              </div>
-            </div>
-            <div className="md-ctx-sep" />
-            {/* 文字颜色 */}
+      {ctxMenu &&
+        createPortal(
+          <>
             <div
-              className="md-ctx-item"
-              onMouseEnter={() => setCtxSubmenu("color")}
+              className="md-ctx-mask"
+              onClick={closeCtxMenu}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                closeCtxMenu();
+              }}
+            />
+            <div
+              className="md-ctx-menu"
+              style={{ top: ctxMenu.top, left: ctxMenu.left }}
+              onMouseLeave={() => {
+                // 拾色器弹层打开时（弹层在菜单外部），不关闭子菜单，避免移入取色面板时菜单消失
+                if (!ctxColorPickerOpen) setCtxSubmenu(null);
+              }}
             >
-              <span className="md-ctx-label">
-                <FontColorsOutlined style={{ color: "#e5484d" }} />
-                文字颜色
-              </span>
-              <span className="md-ctx-arrow">›</span>
-              {ctxSubmenu === "color" && (
+              <div className="flex">
+                {/* 复制 */}
                 <div
-                  className="md-ctx-submenu submenu-up"
-                  onMouseEnter={() => setCtxSubmenu("color")}
+                  className="md-ctx-item "
+                  onClick={() => {
+                    document.execCommand("copy");
+                    closeCtxMenu();
+                  }}
                 >
-                  <button
-                    type="button"
-                    className="md-ctx-color-item"
-                    onClick={() => {
-                      applyColor(null);
-                      closeCtxMenu();
+                  <span className="md-ctx-label grid">
+                    <CopyOutlined className="justify-center" />
+                    复制
+                  </span>
+                </div>
+                {/* 剪切 */}
+                <div
+                  className="md-ctx-item"
+                  onClick={() => {
+                    document.execCommand("cut");
+                    closeCtxMenu();
+                  }}
+                >
+                  <span className="md-ctx-label grid">
+                    <ScissorOutlined className="justify-center" />
+                    剪切
+                  </span>
+                </div>
+                {/* 粘贴 */}
+                <div
+                  className="md-ctx-item"
+                  onClick={() => {
+                    document.execCommand("paste");
+                    closeCtxMenu();
+                  }}
+                >
+                  <span className="md-ctx-label grid">
+                    <SnippetsOutlined className="justify-center" />
+                    粘贴
+                  </span>
+                </div>
+                {/* 全选 */}
+                <div
+                  className="md-ctx-item"
+                  onClick={() => {
+                    editor?.chain().focus().selectAll().run();
+                    closeCtxMenu();
+                  }}
+                >
+                  <span className="md-ctx-label grid">
+                    <CheckSquareOutlined className="justify-center" />
+                    全选
+                  </span>
+                </div>
+              </div>
+              <div className="md-ctx-sep" />
+              <div className="flex">
+                {/* 加粗 */}
+                <div
+                  className={`md-ctx-item${toolActive("bold") ? " active" : ""}`}
+                  onClick={() => {
+                    run(() => editor?.chain().focus().toggleBold().run());
+                    closeCtxMenu();
+                  }}
+                >
+                  <span className="md-ctx-label grid">
+                    <span className="md-ctx-b text-center">B</span>
+                    加粗
+                  </span>
+                </div>
+                {/* 中划线 */}
+                <div
+                  className={`md-ctx-item${toolActive("strike") ? " active" : ""}`}
+                  onClick={() => {
+                    run(() => editor?.chain().focus().toggleStrike().run());
+                    closeCtxMenu();
+                  }}
+                >
+                  <span className="md-ctx-label grid">
+                    <span className="md-ctx-s text-center">S</span>
+                    中划线
+                  </span>
+                </div>
+                {/* 倾斜 */}
+                <div
+                  className={`md-ctx-item${toolActive("italic") ? " active" : ""}`}
+                  onClick={() => {
+                    run(() => editor?.chain().focus().toggleItalic().run());
+                    closeCtxMenu();
+                  }}
+                >
+                  <span className="md-ctx-label grid">
+                    <span className="md-ctx-i text-center">I</span>
+                    倾斜
+                  </span>
+                </div>
+                {/* 下划线 */}
+                <div
+                  className={`md-ctx-item${toolActive("underline") ? " active" : ""}`}
+                  onClick={() => {
+                    run(() => editor?.chain().focus().toggleUnderline().run());
+                    closeCtxMenu();
+                  }}
+                >
+                  <span className="md-ctx-label grid">
+                    <span className="md-ctx-u text-center">U</span>
+                    下划线
+                  </span>
+                </div>
+              </div>
+              <div className="md-ctx-sep" />
+              {/* 文字颜色 */}
+              <div
+                className="md-ctx-item"
+                onMouseEnter={() => setCtxSubmenu("color")}
+              >
+                <span className="md-ctx-label">
+                  <FontColorsOutlined style={{ color: "#e5484d" }} />
+                  文字颜色
+                </span>
+                <span className="md-ctx-arrow">›</span>
+                {ctxSubmenu === "color" && (
+                  <div
+                    className="md-ctx-submenu submenu-up"
+                    onMouseEnter={() => {
+                      setCtxSubmenu("color");
+                      setCtxColorPickerOpen(false);
+                      setCtxColorValue(
+                        editor?.getAttributes("textStyle").color as
+                          | string
+                          | undefined
+                      );
                     }}
                   >
-                    <span style={{ display: "inline-block", width: "16px", height: "16px", background: "#000000", borderRadius: "3px", marginRight: "8px" }} />
-                    默认字体颜色
-                  </button>
-                  <div className="md-ctx-sep" />
-                  <div style={{ padding: "8px" }}>
-                    <div style={{ display: "grid", gridTemplateColumns: "repeat(10, 1fr)", gap: "4px" }}>
-                      {[
-                        "#000000", "#404040", "#808080", "#bfbfbf", "#ffffff",
-                        "#000080", "#0000ff", "#0080ff", "#80c0ff", "#e0f0ff",
-                        "#804000", "#ff8000", "#ffc000", "#ffe080", "#fff0e0",
-                        "#008000", "#00ff00", "#80ff80", "#e0ffe0", "#f0fff0",
-                        "#800000", "#ff0000", "#ff8080", "#ffe0e0", "#fff0f0",
-                        "#800080", "#ff00ff", "#ff80ff", "#ffe0ff", "#fff0ff",
-                      ].map((c) => (
-                        <button
-                          key={c}
-                          type="button"
-                          title={c}
-                          onClick={() => {
-                            applyColor(c);
-                            closeCtxMenu();
-                          }}
-                          style={{
-                            width: "16px",
-                            height: "16px",
-                            borderRadius: "3px",
-                            border: "1px solid rgba(0,0,0,0.1)",
-                            background: c,
-                            cursor: "pointer",
-                          }}
-                        />
-                      ))}
-                    </div>
-                  </div>
-                  <div className="md-ctx-sep" />
-                  <div style={{ padding: "0 8px 8px 8px" }}>
-                    <div style={{ display: "grid", gridTemplateColumns: "repeat(10, 1fr)", gap: "4px" }}>
-                      {[
-                        "#ff0000", "#ff9900", "#ffff00", "#00ff00", "#00ffff",
-                        "#0066ff", "#9900ff", "#ff00ff", "#ff6699", "#663300",
-                      ].map((c) => (
-                        <button
-                          key={c}
-                          type="button"
-                          title={c}
-                          onClick={() => {
-                            applyColor(c);
-                            closeCtxMenu();
-                          }}
-                          style={{
-                            width: "16px",
-                            height: "16px",
-                            borderRadius: "3px",
-                            border: "1px solid rgba(0,0,0,0.1)",
-                            background: c,
-                            cursor: "pointer",
-                          }}
-                        />
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              )}
-            </div>
-            {/* 文字背景色 */}
-            <div
-              className="md-ctx-item"
-              onMouseEnter={() => setCtxSubmenu("bg")}
-            >
-              <span className="md-ctx-label">
-                <BgColorsOutlined style={{ color: "#f2994a" }} />
-                文字背景色
-              </span>
-              <span className="md-ctx-arrow">›</span>
-              {ctxSubmenu === "bg" && (
-                <div
-                  className="md-ctx-submenu submenu-up"
-                  onMouseEnter={() => setCtxSubmenu("bg")}
-                >
-                  <button
-                    type="button"
-                    className="md-ctx-color-item"
-                    onClick={() => {
-                      editor
-                        ?.chain()
-                        .focus()
-                        .setMark("textStyle", { backgroundColor: null })
-                        .run();
-                      closeCtxMenu();
-                    }}
-                  >
-                    <span style={{ display: "inline-block", width: "16px", height: "16px", background: "#ffffff", borderRadius: "3px", marginRight: "8px", border: "1px solid rgba(0,0,0,0.1)" }} />
-                    默认背景颜色
-                  </button>
-                  <div className="md-ctx-sep" />
-                  <div style={{ padding: "8px" }}>
-                    <div style={{ display: "grid", gridTemplateColumns: "repeat(10, 1fr)", gap: "4px" }}>
-                      {[
-                        "#000000", "#404040", "#808080", "#bfbfbf", "#ffffff",
-                        "#000080", "#0000ff", "#0080ff", "#80c0ff", "#e0f0ff",
-                        "#804000", "#ff8000", "#ffc000", "#ffe080", "#fff0e0",
-                        "#008000", "#00ff00", "#80ff80", "#e0ffe0", "#f0fff0",
-                        "#800000", "#ff0000", "#ff8080", "#ffe0e0", "#fff0f0",
-                        "#800080", "#ff00ff", "#ff80ff", "#ffe0ff", "#fff0ff",
-                      ].map((c) => (
-                        <button
-                          key={c}
-                          type="button"
-                          title={c}
-                          onClick={() => {
-                            editor
-                              ?.chain()
-                              .focus()
-                              .setMark("textStyle", { backgroundColor: c })
-                              .run();
-                            closeCtxMenu();
-                          }}
-                          style={{
-                            width: "16px",
-                            height: "16px",
-                            borderRadius: "3px",
-                            border: "1px solid rgba(0,0,0,0.1)",
-                            background: c,
-                            cursor: "pointer",
-                          }}
-                        />
-                      ))}
-                    </div>
-                  </div>
-                  <div className="md-ctx-sep" />
-                  <div style={{ padding: "0 8px 8px 8px" }}>
-                    <div style={{ display: "grid", gridTemplateColumns: "repeat(10, 1fr)", gap: "4px" }}>
-                      {[
-                        "#ff0000", "#ff9900", "#ffff00", "#00ff00", "#00ffff",
-                        "#0066ff", "#9900ff", "#ff00ff", "#ff6699", "#663300",
-                      ].map((c) => (
-                        <button
-                          key={c}
-                          type="button"
-                          title={c}
-                          onClick={() => {
-                            editor
-                              ?.chain()
-                              .focus()
-                              .setMark("textStyle", { backgroundColor: c })
-                              .run();
-                            closeCtxMenu();
-                          }}
-                          style={{
-                            width: "16px",
-                            height: "16px",
-                            borderRadius: "3px",
-                            border: "1px solid rgba(0,0,0,0.1)",
-                            background: c,
-                            cursor: "pointer",
-                          }}
-                        />
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              )}
-            </div>
-            {/* 文字大小 */}
-            <div
-              className="md-ctx-item"
-              onMouseEnter={() => setCtxSubmenu("size")}
-            >
-              <span className="md-ctx-label">
-                <FontSizeOutlined />
-                文字大小
-              </span>
-              <span className="md-ctx-arrow">›</span>
-              {ctxSubmenu === "size" && (
-                <div
-                  className="md-ctx-submenu submenu-up"
-                  onMouseEnter={() => setCtxSubmenu("size")}
-                >
-                  {FONT_SIZES.map((size) => (
                     <button
-                      key={size}
                       type="button"
                       className="md-ctx-color-item"
                       onClick={() => {
-                        applyFontSize(`${size}px`);
+                        editor?.chain().focus().unsetColor().run();
                         closeCtxMenu();
                       }}
                     >
-                      {size}
+                      <span
+                        style={{
+                          display: "inline-block",
+                          width: "16px",
+                          height: "16px",
+                          background: "#000000",
+                          borderRadius: "3px",
+                          marginRight: "8px",
+                        }}
+                      />
+                      默认字体颜色
                     </button>
-                  ))}
-                  <div className="md-ctx-sep" />
-                  <button
-                    type="button"
-                    className="md-ctx-color-item"
-                    onClick={() => {
-                      applyFontSize(null);
-                      closeCtxMenu();
-                    }}
+                    <div className="md-ctx-sep" />
+                    <div style={{ padding: "4px" }}>
+                      <ColorPicker
+                        rootClassName="md-ctx-color-picker"
+                        defaultValue={ctxColorValue}
+                        format="hex"
+                        disabledAlpha
+                        allowClear
+                        presets={[
+                          {
+                            label: "常用色",
+                            colors: FONT_COLORS.map((c) => c.value),
+                          },
+                          { label: "标准色", colors: STANDARD_COLORS },
+                        ]}
+                        onOpenChange={setCtxColorPickerOpen}
+                        onChange={(value) => {
+                          if (value.cleared) {
+                            editor?.commands.unsetColor();
+                            return;
+                          }
+                          editor?.commands.setColor(value.toHexString());
+                        }}
+                        onChangeComplete={(value) => {
+                          if (value.cleared) {
+                            editor?.chain().focus().unsetColor().run();
+                          } else {
+                            editor
+                              ?.chain()
+                              .focus()
+                              .setColor(value.toHexString())
+                              .run();
+                          }
+                          closeCtxMenu();
+                        }}
+                        onClear={() => {
+                          editor?.chain().focus().unsetColor().run();
+                          closeCtxMenu();
+                        }}
+                      >
+                        <div
+                          className="md-ctx-color-trigger"
+                          title="打开 antd 拾色器"
+                        >
+                          自定义颜色
+                        </div>
+                      </ColorPicker>
+                    </div>
+                  </div>
+                )}
+              </div>
+              {/* 文字大小 */}
+              <div
+                className="md-ctx-item"
+                onMouseEnter={() => setCtxSubmenu("size")}
+              >
+                <span className="md-ctx-label">
+                  <FontSizeOutlined />
+                  文字大小
+                </span>
+                <span className="md-ctx-arrow">›</span>
+                {ctxSubmenu === "size" && (
+                  <div
+                    className="md-ctx-submenu submenu-up"
+                    onMouseEnter={() => setCtxSubmenu("size")}
                   >
-                    默认 (13px)
-                  </button>
-                </div>
-              )}
+                    {FONT_SIZES.map((size) => (
+                      <button
+                        key={size}
+                        type="button"
+                        className="md-ctx-color-item"
+                        onClick={() => {
+                          applyFontSize(`${size}px`);
+                          closeCtxMenu();
+                        }}
+                      >
+                        {size}
+                      </button>
+                    ))}
+                    <div className="md-ctx-sep" />
+                    <button
+                      type="button"
+                      className="md-ctx-color-item"
+                      onClick={() => {
+                        applyFontSize(null);
+                        closeCtxMenu();
+                      }}
+                    >
+                      默认 (13px)
+                    </button>
+                  </div>
+                )}
+              </div>
+              <div className="md-ctx-sep" />
+              {/* 插入图片 */}
+              <div
+                className="md-ctx-item"
+                onClick={() => {
+                  fileInputRef.current?.click();
+                  closeCtxMenu();
+                }}
+              >
+                <span className="md-ctx-label">
+                  <PictureOutlined />
+                  插入图片
+                </span>
+              </div>
+              {/* 插入表情 */}
+              <div
+                className="md-ctx-item"
+                onClick={(event) => {
+                  const rect = event.currentTarget.getBoundingClientRect();
+                  setEmojiAnchor({
+                    left: rect.left,
+                    top: rect.top,
+                    width: rect.width,
+                    height: rect.height,
+                  });
+                  closeCtxMenu();
+                }}
+              >
+                <span className="md-ctx-label">
+                  <SmileOutlined />
+                  插入表情
+                </span>
+              </div>
+              <div className="md-ctx-sep" />
+              {/* 快捷键介绍 */}
+              <div
+                className="md-ctx-item"
+                title="快捷键：Ctrl+B 加粗 / Ctrl+I 斜体 / Ctrl+U 下划线 / Ctrl+Z 撤销"
+              >
+                <span className="md-ctx-label">
+                  <KeyOutlined />
+                  快捷键介绍
+                </span>
+              </div>
             </div>
-            <div className="md-ctx-sep" />
-            {/* 插入图片 */}
-            <div
-              className="md-ctx-item"
-              onClick={() => {
-                fileInputRef.current?.click();
-                closeCtxMenu();
-              }}
-            >
-              <span className="md-ctx-label">
-                <PictureOutlined />
-                插入图片
-              </span>
-            </div>
-            {/* 插入表情 */}
-            <div
-              className="md-ctx-item"
-              onClick={() => {
-                const emoji = prompt("输入表情或符号：", "😊");
-                if (emoji) {
-                  editor?.chain().focus().insertContent(emoji).run();
-                }
-                closeCtxMenu();
-              }}
-            >
-              <span className="md-ctx-label">
-                <SmileOutlined />
-                插入表情
-              </span>
-            </div>
-            <div className="md-ctx-sep" />
-            {/* 快捷键介绍 */}
-            <div
-              className="md-ctx-item"
-              title="快捷键：Ctrl+B 加粗 / Ctrl+I 斜体 / Ctrl+U 下划线 / Ctrl+Z 撤销"
-            >
-              <span className="md-ctx-label">
-                <KeyOutlined />
-                快捷键介绍
-              </span>
-            </div>
-          </div>
-        </>,
-        document.body
-      )}
+          </>,
+          document.body
+        )}
+
+      {/* 表情选择面板（portal 到 body，独立于右键菜单） */}
+      <EmojiPicker
+        anchor={emojiAnchor}
+        onClose={() => setEmojiAnchor(null)}
+        onPick={insertEmoji}
+      />
     </div>
   );
 }
