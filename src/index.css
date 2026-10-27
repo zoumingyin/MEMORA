@@ -1208,78 +1208,6 @@ textarea {
   flex-wrap: wrap;
 }
 
-/* 链接内联输入条（不弹窗） */
-.md-linkbar {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 6px;
-  width: 100%;
-  background: var(--panel-soft, rgba(255, 255, 255, 0.06));
-  border-radius: 8px;
-}
-
-.md-link-input {
-  flex: 1;
-  min-width: 0;
-  height: 26px;
-  padding: 0 8px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--field-bg, rgba(255, 255, 255, 0.08));
-  color: var(--text);
-  font-size: 12.5px;
-  outline: none;
-}
-
-.md-link-input:focus {
-  border-color: var(--accent, #5b7cfa);
-}
-
-.md-link-input::-webkit-input-placeholder {
-  color: var(--text-muted);
-}
-
-.md-link-input::-moz-placeholder {
-  color: var(--text-muted);
-}
-
-.md-link-input:-ms-input-placeholder {
-  color: var(--text-muted);
-}
-
-.md-link-input::-ms-input-placeholder {
-  color: var(--text-muted);
-}
-
-.md-link-input::placeholder {
-  color: var(--text-muted);
-}
-
-.md-link-btn {
-  height: 26px;
-  padding: 0 10px;
-  border: none;
-  border-radius: 6px;
-  background: var(--hover-fill);
-  color: var(--text);
-  font-size: 12px;
-  cursor: pointer;
-  transition:
-    background 0.15s,
-    color 0.15s;
-}
-
-.md-link-btn:hover {
-  background: var(--accent, #5b7cfa);
-  color: #fff;
-}
-
-.md-link-btn-danger:hover {
-  background: #e5484d;
-  color: #fff;
-}
-
 .md-editor-tools {
   display: flex;
   align-items: center;
@@ -1537,14 +1465,14 @@ textarea {
   padding: 10px 14px;
   outline: none;
   font-size: 13px;
-  line-height: 1.7;
+  line-height: 1.6;
   color: var(--text);
   overflow-wrap: break-word;
   word-break: break-word;
 }
 
 .md-prose p {
-  margin: 6px 0;
+  margin: 2px 0;
 }
 
 .md-prose h1,
@@ -1608,14 +1536,11 @@ textarea {
   padding: 0;
 }
 
+/* 链接仅作静态展示（插入/打开功能已移除），保留颜色便于识别 */
 .md-prose a {
   color: var(--kind-accent);
   text-decoration: none;
-  cursor: pointer;
-}
-
-.md-prose a:hover {
-  text-decoration: underline;
+  cursor: default;
 }
 
 .md-prose img {
@@ -1666,12 +1591,6 @@ textarea {
 }
 
 /* 文字颜色（antd ColorPicker） */
-.md-color-wrap {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-}
-
 .md-color-trigger {
   color: var(--kind-accent);
 }

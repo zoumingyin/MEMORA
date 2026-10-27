@@ -19,7 +19,6 @@ import {
   BoldOutlined,
   CodeOutlined,
   ItalicOutlined,
-  LinkOutlined,
   OrderedListOutlined,
   PictureOutlined,
   RedoOutlined,
@@ -39,9 +38,6 @@ import {
 import { ColorPicker } from "antd";
 import EmojiPicker, { type EmojiAnchor } from "./EmojiPicker";
 import { countMarkdownWords } from "../utils/markdown";
-
-/** 危险协议：跳过导航，避免 XSS */
-const UNSAFE_PROTOCOL = /^\s*(javascript|vbscript):/i;
 
 interface MarkdownEditorProps {
   value: string;
@@ -235,15 +231,12 @@ export function MarkdownEditor({
   );
   /** 表情选择面板锚点（工具栏按钮 / 右键菜单项触发），null 表示面板关闭 */
   const [emojiAnchor, setEmojiAnchor] = useState<EmojiAnchor | null>(null);
-  const [linkDraft, setLinkDraft] = useState(false);
-  const [linkUrl, setLinkUrl] = useState("");
   // 右键上下文菜单
   const [ctxMenu, setCtxMenu] = useState<{ top: number; left: number } | null>(
     null
   );
   const [ctxSubmenu, setCtxSubmenu] = useState<string | null>(null);
   const editorRef = useRef<HTMLDivElement>(null);
-  const linkInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const lastHtmlRef = useRef<string>("");
   /** 标记「刚刚是用户输入触发的 onChange」，同步 effect 据此跳过 setContent，避免光标跳走 */
@@ -251,14 +244,6 @@ export function MarkdownEditor({
   const turndown = useMemo(() => createTurndown(), []);
   const htmlToMarkdown = (html: string): string =>
     turndown.turndown(html || "");
-
-  /** 打开超链接：始终通过浏览器新开窗口打开，不在本项目内做内部路由跳转。
-      相对路径由浏览器按当前文档基地址解析；过滤 javascript:/vbscript: 等危险协议。 */
-  const openLink = (rawHref: string): void => {
-    const href = rawHref.trim();
-    if (!href || UNSAFE_PROTOCOL.test(href)) return;
-    window.open(href, "_blank", "noopener,noreferrer");
-  };
 
   /** 打开图片预览：创建独立图片查看器窗口（Tauri 环境），浏览器预览退化为新标签页 */
   const openImagePreview = async (
@@ -305,17 +290,9 @@ export function MarkdownEditor({
     }
   };
 
-  /** 正文点击：拦截超链接（新窗口打开）与图片（独立预览窗口） */
+  /** 正文点击：拦截图片（独立预览窗口）；链接功能已移除，<a> 仅作静态展示 */
   const handleBodyClick = (event: React.MouseEvent): void => {
     const target = event.target as HTMLElement;
-    const linkEl = target.closest("a");
-    const href = linkEl?.getAttribute("href");
-    if (linkEl && href) {
-      event.preventDefault();
-      event.stopPropagation();
-      openLink(href);
-      return;
-    }
     const imgEl = target.closest("img");
     if (imgEl) {
       event.preventDefault();
@@ -390,11 +367,7 @@ export function MarkdownEditor({
           placeholder ??
           "写点什么… 支持 # 标题、**加粗**、- 列表、> 引用、```代码```",
       }),
-      Link.configure({
-        openOnClick: false,
-        autolink: true,
-        linkOnPaste: true,
-      }),
+      Link.configure({ openOnClick: false }),
       Image.configure({ allowBase64: true }),
       TextDrag,
       PasteImage,
@@ -456,34 +429,6 @@ export function MarkdownEditor({
     }
   };
 
-  const applyLink = (): void => {
-    // 光标已在链接里 → 预填当前地址，便于修改；否则清空准备新建
-    const currentHref = editor?.getAttributes("link").href as
-      | string
-      | undefined;
-    setLinkUrl(currentHref ?? "");
-    setLinkDraft(true);
-  };
-
-  // 链接输入条展开时聚焦输入框
-  useEffect(() => {
-    if (linkDraft) linkInputRef.current?.focus();
-  }, [linkDraft]);
-
-  const confirmLink = (): void => {
-    const href = linkUrl.trim();
-    if (href) {
-      editor?.chain().focus().setLink({ href }).run();
-    } else {
-      editor?.chain().focus().unsetLink().run();
-    }
-    setLinkDraft(false);
-  };
-
-  const cancelLink = (): void => {
-    setLinkDraft(false);
-  };
-
   const onImageFile = (event: React.ChangeEvent<HTMLInputElement>): void => {
     const file = event.target.files?.[0];
     event.target.value = "";
@@ -503,13 +448,17 @@ export function MarkdownEditor({
   const headingActive = (level: number): boolean =>
     editor?.isActive("heading", { level }) ?? false;
 
-  /** 顶部工具条按钮 */
+  /** 顶部工具条按钮（含特殊渲染项：type=color 渲染 antd 拾色器，type=clear 渲染清除按钮） */
+  const triggerFileInput = (): void => {
+    fileInputRef.current?.click();
+  };
   const tools: Array<{
     key: string;
     title: string;
     label?: React.ReactNode;
     active?: boolean;
-    onClick: () => void;
+    onClick?: (event: React.MouseEvent<HTMLButtonElement>) => void;
+    type?: "button" | "color" | "clear";
   }> = [
     {
       key: "undo",
@@ -606,152 +555,128 @@ export function MarkdownEditor({
       active: toolActive("codeBlock"),
       onClick: () => run(() => editor?.chain().focus().toggleCodeBlock().run()),
     },
-    { key: "link", title: "链接", label: <LinkOutlined />, onClick: applyLink },
+    {
+      key: "emoji",
+      title: "插入表情",
+      label: <SmileOutlined />,
+      active: !!emojiAnchor,
+      onClick: (event) => {
+        const rect = event.currentTarget.getBoundingClientRect();
+        setEmojiAnchor({
+          left: rect.left,
+          top: rect.top,
+          width: rect.width,
+          height: rect.height,
+        });
+      },
+    },
+    {
+      key: "image",
+      title: "插入图片（也可 Ctrl+V 粘贴）",
+      label: <PictureOutlined />,
+      onClick: triggerFileInput,
+    },
+    { key: "color", type: "color", title: "文字颜色（antd 拾色器）" },
+    { key: "clearColor", type: "clear", title: "清除文字颜色" },
   ];
 
   return (
     <div className="md-editor" ref={editorRef} data-tauri-drag-region="false">
       <div className="md-editor-bar">
         <div className="md-editor-tools">
-          {tools.map((tool) => (
-            <button
-              key={tool.key}
-              type="button"
-              className={`md-tool${tool.active ? " active" : ""}`}
-              title={tool.title}
-              onMouseDown={(event) => event.preventDefault()}
-              onClick={tool.onClick}
-            >
-              {tool.label}
-            </button>
-          ))}
-          {/* 插入表情：antd + unocss 表情选择面板 */}
-          <button
-            type="button"
-            className={`md-tool${emojiAnchor ? " active" : ""}`}
-            title="插入表情"
-            onMouseDown={(event) => event.preventDefault()}
-            onClick={(event) => {
-              const rect = event.currentTarget.getBoundingClientRect();
-              setEmojiAnchor({
-                left: rect.left,
-                top: rect.top,
-                width: rect.width,
-                height: rect.height,
-              });
-            }}
-          >
-            <SmileOutlined />
-          </button>
-          {/* 文字颜色：antd 拾色器 */}
-          <div className="md-color-wrap">
-            <button
-              type="button"
-              className="md-tool"
-              title="插入图片（也可 Ctrl+V 粘贴）"
-              onMouseDown={(event) => event.preventDefault()}
-              onClick={() => fileInputRef.current?.click()}
-            >
-              <PictureOutlined />
-            </button>
-            <ColorPicker
-              open={colorOpen}
-              onOpenChange={(open) => {
-                setColorOpen(open);
-                if (open) {
-                  setColorValue(
-                    editor?.getAttributes("textStyle").color as
-                      | string
-                      | undefined
-                  );
-                }
-              }}
-              value={colorValue}
-              format="hex"
-              disabledAlpha
-              allowClear
-              presets={[
-                { label: "常用色", colors: FONT_COLORS.map((c) => c.value) },
-                { label: "标准色", colors: STANDARD_COLORS },
-              ]}
-              onChange={(value) => {
-                if (value.cleared) {
-                  editor?.commands.unsetColor();
-                  return;
-                }
-                const hex = value.toHexString();
-                setColorValue(hex);
-                editor?.commands.setColor(hex);
-              }}
-              onChangeComplete={(value) => {
-                if (value.cleared) {
-                  editor?.chain().focus().unsetColor().run();
-                } else {
-                  editor?.chain().focus().setColor(value.toHexString()).run();
-                }
-                setColorOpen(false);
-              }}
-              onClear={clearColor}
-            >
+          {/* oxlint-disable react/refs -- tools 数组在渲染期构建，其中 onClick 回调仅在用户点击时读取 ref（触发文件选择），并非渲染期访问 */}
+          {tools.map((tool) => {
+            // 特殊渲染：antd 拾色器
+            if (tool.type === "color") {
+              return (
+                <ColorPicker
+                  key={tool.key}
+                  open={colorOpen}
+                  onOpenChange={(open) => {
+                    setColorOpen(open);
+                    if (open) {
+                      setColorValue(
+                        editor?.getAttributes("textStyle").color as
+                          | string
+                          | undefined
+                      );
+                    }
+                  }}
+                  value={colorValue}
+                  format="hex"
+                  disabledAlpha
+                  allowClear
+                  presets={[
+                    { label: "常用色", colors: FONT_COLORS.map((c) => c.value) },
+                    { label: "标准色", colors: STANDARD_COLORS },
+                  ]}
+                  onChange={(value) => {
+                    if (value.cleared) {
+                      editor?.commands.unsetColor();
+                      return;
+                    }
+                    const hex = value.toHexString();
+                    setColorValue(hex);
+                    editor?.commands.setColor(hex);
+                  }}
+                  onChangeComplete={(value) => {
+                    if (value.cleared) {
+                      editor?.chain().focus().unsetColor().run();
+                    } else {
+                      editor
+                        ?.chain()
+                        .focus()
+                        .setColor(value.toHexString())
+                        .run();
+                    }
+                    setColorOpen(false);
+                  }}
+                  onClear={clearColor}
+                >
+                  <button
+                    type="button"
+                    className={`md-tool md-color-trigger${
+                      colorOpen ? " active" : ""
+                    }`}
+                    title={tool.title}
+                    onMouseDown={(event) => event.preventDefault()}
+                  >
+                    A
+                  </button>
+                </ColorPicker>
+              );
+            }
+            // 特殊渲染：清除文字颜色
+            if (tool.type === "clear") {
+              return (
+                <button
+                  key={tool.key}
+                  type="button"
+                  className="md-color-clear"
+                  title={tool.title}
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={clearColor}
+                >
+                  默认
+                </button>
+              );
+            }
+            // 普通按钮
+            return (
               <button
+                key={tool.key}
                 type="button"
-                className={`md-tool md-color-trigger${
-                  colorOpen ? " active" : ""
-                }`}
-                title="文字颜色（antd 拾色器）"
+                className={`md-tool${tool.active ? " active" : ""}`}
+                title={tool.title}
                 onMouseDown={(event) => event.preventDefault()}
+                onClick={tool.onClick}
               >
-                A
+                {tool.label}
               </button>
-            </ColorPicker>
-            <button
-              type="button"
-              className="md-color-clear"
-              title="清除文字颜色"
-              onMouseDown={(event) => event.preventDefault()}
-              onClick={clearColor}
-            >
-              默认
-            </button>
-          </div>
+            );
+          })}
+          {/* oxlint-enable react/refs */}
         </div>
-        {linkDraft && (
-          <div className="md-linkbar">
-            <input
-              ref={linkInputRef}
-              className="md-link-input"
-              value={linkUrl}
-              placeholder="输入链接地址，回车确认，Esc 取消"
-              onChange={(event) => setLinkUrl(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") confirmLink();
-                else if (event.key === "Escape") cancelLink();
-              }}
-              onBlur={() => {
-                if (linkDraft) setTimeout(cancelLink, 120);
-              }}
-            />
-            <button type="button" className="md-link-btn" onClick={confirmLink}>
-              确定
-            </button>
-            {editor?.isActive("link") && (
-              <button
-                type="button"
-                className="md-link-btn md-link-btn-danger"
-                title="移除链接"
-                onClick={() => {
-                  editor?.chain().focus().unsetLink().run();
-                  setLinkDraft(false);
-                }}
-              >
-                移除链接
-              </button>
-            )}
-            <button type="button" className="md-link-btn" onClick={cancelLink}>
-              取消
-            </button>
-          </div>
-        )}
         <input
           ref={fileInputRef}
           type="file"
