@@ -7,6 +7,7 @@ import './index.css'
 import 'uno.css'
 import App from './App.tsx'
 import { ReminderDialog } from './components/ReminderDialog.tsx'
+import { ImagePreviewDialog } from './components/ImagePreviewDialog.tsx'
 
 // dayjs 全局中文：Calendar/DatePicker 的星期名、月份名、dddd 等格式化输出中文
 // （antd 的 zhCN locale 只覆盖组件文案，月份/星期这类由 dayjs 按 locale 生成，需单独设置）
@@ -32,9 +33,11 @@ const BASE_TOKEN = {
 
 // 提醒弹窗使用独立 Webview 窗口，通过 ?reminder=1 参数让同一前端包渲染模态卡片
 const isReminderDialog = new URLSearchParams(location.search).has('reminder')
+// 图片预览弹窗使用独立 Webview 窗口，通过 ?imagePreview=1 参数让同一前端包渲染全屏预览
+const isImagePreviewDialog = new URLSearchParams(location.search).has('imagePreview')
 
 createRoot(document.getElementById('root')!).render(
   <ConfigProvider locale={zhCN} theme={{ token: BASE_TOKEN }}>
-    {isReminderDialog ? <ReminderDialog /> : <App />}
+    {isReminderDialog ? <ReminderDialog /> : isImagePreviewDialog ? <ImagePreviewDialog /> : <App />}
   </ConfigProvider>,
 )

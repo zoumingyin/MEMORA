@@ -47,17 +47,18 @@ const KIND_COLOR: Record<EntryKind, string> = {
   todo: "#57a878",
 };
 
-/** 暗色玻璃变体 CSS 变量（透明度 ≤55% 注入 :root；切回亮色时全部移除恢复默认） */
+/** 暗色玻璃变体 CSS 变量（透明度极低时注入 :root；切回亮色时全部移除恢复默认） */
 const DARK_TOKENS: Record<string, string> = {
   "--panel-rgb": "32, 34, 40",
   "--panel-soft-rgb": "42, 45, 52",
   "--field-rgb": "46, 49, 56",
-  "--text": "#f6f3ed",
-  "--text-muted": "#c9c3b8",
-  "--border": "rgba(236, 230, 220, 0.16)",
+  // 文字调亮一档：半透明背景叠加浅色壁纸后仍有足够对比度
+  "--text": "#ffffff",
+  "--text-muted": "#e0dcd3",
+  "--border": "rgba(236, 230, 220, 0.2)",
   /* 控件边框（暗色）：可见但不刺眼的暖白 */
-  "--control-border": "rgba(236, 230, 220, 0.3)",
-  "--hover-fill": "rgba(255, 255, 255, 0.08)",
+  "--control-border": "rgba(236, 230, 220, 0.35)",
+  "--hover-fill": "rgba(255, 255, 255, 0.1)",
   // 暗色变体不叠加光晕：深色光晕在黑背景上无衬底作用，反而让亮字边缘发虚（游戏场景模糊感）
   "--text-halo": "none",
   // 暗色下玻璃亮边收敛：55% 白色边框在深色界面上是一圈刺眼的白线
@@ -91,23 +92,16 @@ export default function App() {
   // 「+ 新建」的类型选择弹窗
   const [createOpen, setCreateOpen] = useState(false);
 
-  // 低透明度（≤0.55）自动切换暗色玻璃变体：暗色面板 + 浅色文字
-  const darkGlass = opacity <= 0.55;
+  // 极低透明度（≤0.2）才自动切换暗色玻璃变体：深色面板 + 浅色文字
+  // 默认亮色模式（深色文字），保证浅色/白色壁纸上的可读性
+  const darkGlass = opacity <= 0.2;
 
   // 分层不透明度：面板跟随滑条，标题结构层与文字衬底保留下限，避免低透明度下失读。
-  // 暗色玻璃模式下，浅色文字必须落在「足够深的实色底」上才可读——
-  // 若面板不透明度过低，在浅色/白色壁纸上会合成出浅色背景，导致浅色文字几乎不可见。
-  // 因此暗色模式把各层不透明度抬到足够深的下限（≈0.95+），保证浅色文字对比度达标；
-  // 用户滑杆仅控制亮色模式下的通透感，亮色模式保持原有下限不变。
-  const panelAlpha = darkGlass
-    ? Math.max(opacity, 0.95)
-    : Math.max(opacity, 0.4);
-  const chromeAlpha = darkGlass
-    ? Math.max(opacity, 0.97)
-    : Math.max(opacity, 0.7);
-  const surfaceAlpha = darkGlass
-    ? Math.max(opacity, 0.98)
-    : Math.max(opacity, 0.86);
+  // 暗色/亮色共用同一套下限：暗色模式下深色底 + 浅色文字本身有对比度，
+  // 透明度调低后背景变透，文字依然可读（比亮色模式下白底细字的宽容度更高）。
+  const panelAlpha = Math.max(opacity, 0.3);
+  const chromeAlpha = Math.max(opacity, 0.5);
+  const surfaceAlpha = Math.max(opacity, 0.6);
   const glassTokens = useMemo(
     () => (darkGlass ? DARK_TOKENS : LIGHT_TOKENS),
     [darkGlass]
