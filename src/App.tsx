@@ -373,7 +373,11 @@ export default function App() {
               colorFillTertiary: "rgba(236, 230, 220, 0.10)",
               colorFillQuaternary: "rgba(236, 230, 220, 0.05)",
             }
-          : {}),
+          : {
+              // 亮色模式：弹层 / 输入容器跟随奶油色面板，避免纯白浮层与半透明面板割裂、破坏统一感
+              colorBgElevated: "rgba(247, 244, 238, 0.98)",
+              colorBgContainer: "rgba(255, 255, 253, 0.95)",
+            }),
       },
       components: {
         Select: {
