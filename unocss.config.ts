@@ -18,7 +18,7 @@ export default defineConfig({
   ],
   theme: {
     colors: {
-      note: '#5b8fd9',
+      note: '#2563eb',
       reminder: '#d9686b',
       todo: '#57a878',
       // 跟随 CSS 变量：暗色玻璃模式（:root 注入 DARK_TOKENS）时自动换浅色，避免固定色值在深色面板上失读
@@ -28,11 +28,11 @@ export default defineConfig({
   },
   shortcuts: {
     'flex-center': 'flex items-center justify-center',
-    // 纸张卡片（随主题自适应）：实色浅底 + 细边框 + 圆角 + 轻微阴影；hover/active 见下方
+    // 卡片（严格参考风）：固定高度 + 白底 + 发丝边框 + 无投影；竖向布局（图标在顶 → 标题 → 描述/缩略图 → 分隔线 → 时间），hover 浅蓝高亮、active 蓝边选中
     'note-card':
-      'flex items-center gap-2 w-full text-left px-11px py-10px border border-solid border-[var(--border)] rounded-xl bg-[rgb(var(--field-rgb))] text-[var(--text)] shadow-[var(--card-shadow)] transition hover:bg-[var(--card-accent-bg)] hover:border-[var(--card-accent-border)] hover:shadow-[var(--card-shadow-active)]',
-    // 选中卡片：强调色填充 + 内描边环 + 投影
+      'flex flex-col items-start gap-1.5 w-full h-[196px] overflow-hidden text-left p-[14px] border border-solid border-[var(--border)] rounded-[14px] bg-[var(--card-bg)] text-[var(--text)] transition hover:bg-[var(--card-active-bg)] hover:border-[var(--card-border-hover)]',
+    // 选中卡片：浅蓝填充 + 鲜亮蓝描边
     'note-card-active':
-      'flex items-center gap-2 w-full text-left px-11px py-10px border border-solid rounded-xl text-[var(--text)] bg-[var(--card-accent-bg)] border-[var(--card-accent-border)] shadow-[var(--card-shadow-active)]',
+      'flex flex-col items-start gap-1.5 w-full h-[196px] overflow-hidden text-left p-[14px] border border-solid rounded-[14px] text-[var(--text)] bg-[var(--card-active-bg)] border-[var(--card-active-border)] transition',
   },
 })

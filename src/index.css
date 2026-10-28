@@ -1,24 +1,24 @@
 :root {
   /* 毛玻璃浅色系：中性偏暖，分类主题色（蓝/红/绿）作为主强调色 */
-  --panel-rgb: 247, 244, 238;
-  --panel-soft-rgb: 240, 236, 228;
-  --field-rgb: 255, 255, 253;
-  --border: rgba(96, 84, 64, 0.16);
+  --panel-rgb: 248, 249, 251;
+  --panel-soft-rgb: 240, 242, 246;
+  --field-rgb: 255, 255, 255;
+  --border: rgba(16, 24, 40, 0.09);
   /* 控件边框（输入框 / 下拉 / 数字框等可交互控件）：比 --border 稍清晰、可见但不刺眼 */
-  --control-border: rgba(96, 84, 64, 0.28);
-  --text: #423f38;
-  --text-muted: #8d8574;
+  --control-border: rgba(16, 24, 40, 0.16);
+  --text: #1f2937;
+  --text-muted: #6b7280;
   /* 分类主题色：备忘蓝 / 提醒珊瑚红 / 待办绿 */
-  --note: #5b8fd9;
+  --note: #2563eb;
   --reminder: #d9686b;
   --todo: #57a878;
   --danger: #c85456;
   --radius: 14px;
-  /* 玻璃质感：高光边、内高光、双层投影 */
+  /* 玻璃质感：高光边、内高光（配合透明度滑条形成毛玻璃；滑到不透明时自然隐形） */
   --glass-edge: rgba(255, 255, 255, 0.55);
   --glass-highlight: rgba(255, 255, 255, 0.6);
-  --shadow: 0 18px 48px rgba(60, 48, 30, 0.28);
-  --shadow-lift: 0 22px 56px rgba(60, 48, 30, 0.36);
+  --shadow: 0 18px 48px rgba(16, 24, 40, 0.18);
+  --shadow-lift: 0 22px 56px rgba(16, 24, 40, 0.24);
 
   /* 背景 RGB 分量：配合 --panel-alpha 只让背景半透明，文字颜色保持实色 */
   /* 面板背景不透明度（0 ~ 1），由窗口 store 注入并覆盖，默认不透明 */
@@ -30,14 +30,12 @@
   /* 文字不再叠加光晕：玻璃感（模糊/光晕）会让人感觉文字发虚，改为纯实色显示 */
   --text-halo: none;
   /* 悬停填充：亮色玻璃为半透明黑，低透明度暗色变体由 App 覆盖为半透明白 */
-  --hover-fill: rgba(0, 0, 0, 0.06);
-  /* paper 卡片令牌：供 UnoCSS 工具类/shortcut 引用，随主题（--field-rgb / --kind-accent）自适应 */
-  --card-shadow: 0 1px 2px rgba(60, 48, 30, 0.06), 0 1px 1px rgba(60, 48, 30, 0.04);
-  --card-shadow-active: inset 0 0 0 1px
-      color-mix(in srgb, var(--kind-accent) 48%, rgb(var(--field-rgb))),
-    0 2px 8px rgba(60, 48, 30, 0.12);
-  --card-accent-bg: color-mix(in srgb, var(--kind-accent) 22%, rgb(var(--field-rgb)));
-  --card-accent-border: color-mix(in srgb, var(--kind-accent) 48%, rgb(var(--field-rgb)));
+  --hover-fill: rgba(16, 24, 40, 0.05);
+  /* 卡片令牌（参考浅色风：白底 + 发丝边框 + 无投影；选中/激活走统一蓝色高亮） */
+  --card-bg: rgb(var(--field-rgb));
+  --card-border-hover: color-mix(in srgb, var(--note) 45%, var(--border));
+  --card-active-bg: color-mix(in srgb, var(--note) 10%, rgb(var(--field-rgb)));
+  --card-active-border: var(--note);
 }
 
 /* 分类主题色注入：外壳按「选中详情条目分类 / 当前分类」挂 kind-* 类，全界面通过 --kind-accent 跟随 */
@@ -61,7 +59,6 @@ html,
 body,
 #root {
   height: 100%;
-  min-height: 700px;
   margin: 0;
   background: transparent;
 }
@@ -354,7 +351,11 @@ textarea {
 .close-behavior-option.active {
   /* 以字段色为不透明基底，避免低面板不透明度下被壁纸稀释；随主题自适应 */
   background: color-mix(in srgb, var(--kind-accent) 22%, rgb(var(--field-rgb)));
-  border-color: color-mix(in srgb, var(--kind-accent) 55%, rgb(var(--field-rgb)));
+  border-color: color-mix(
+    in srgb,
+    var(--kind-accent) 55%,
+    rgb(var(--field-rgb))
+  );
   color: var(--kind-accent);
   font-weight: 600;
 }
@@ -521,7 +522,7 @@ textarea {
 }
 
 .create-kind-option.kind-note .create-kind-icon {
-  background: #5b8fd9;
+  background: #2563eb;
 }
 
 .create-kind-option.kind-reminder .create-kind-icon {
@@ -561,44 +562,33 @@ textarea {
   background: rgba(var(--panel-soft-rgb), var(--chrome-alpha));
 }
 
-/* 分类筛选（antd Segmented）：容器与计数徽标（下拉边框/选中项/primary 阴影均由 antd 主题控制） */
+/* 分类筛选胶囊：独立成行（参考浅色风，active 蓝填充 / 非 active 灰底） */
 .filter-chips {
   display: flex;
-  gap: 5px;
-  padding: 10px 10px 8px;
-  border-bottom: 1px solid var(--border);
-  background: transparent;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 9px 10px 4px;
 }
 
-/* 类型筛选下拉（替代 Segmented）：占满左栏、与面板同风格；边框/聚焦色由主题 Select 组件控制 */
-.kind-select.ant-select {
-  width: 100%;
-  background: var(--hover-fill);
-  border-radius: 8px;
-}
-
-.kind-select.ant-select .ant-select-selection-item {
-  font-weight: 600;
-  color: var(--text);
-}
-
-/* 下拉选项行：间距与主题色选中（dropdown 在 portal，--kind-accent 已在 :root 全局） */
-.ant-select-dropdown .ant-select-item {
-  padding-block: 6px;
-}
-
-.filter-chips .ant-segmented-item {
-  flex: 1;
-  text-align: center;
-}
-
-.filter-chip-label {
+.filter-chip {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  gap: 4px;
-  font-size: 13px;
-  font-weight: 600;
+  gap: 5px;
+  padding: 4px 8px;
+  border: none;
+  border-radius: 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+  background: var(--hover-fill);
+  cursor: pointer;
+  transition:
+    background 0.15s,
+    color 0.15s;
+}
+.filter-chip.active {
+  color: #fff;
+  background: var(--note);
 }
 
 .filter-chip-count {
@@ -610,15 +600,18 @@ textarea {
   align-items: center;
   justify-content: center;
   font-size: 11px;
-  font-weight: 700;
   font-style: normal;
   color: var(--text-muted);
-  background: var(--hover-fill);
+  background: rgba(16, 24, 40, 0.06);
+}
+.filter-chip.active .filter-chip-count {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.22);
 }
 
-.ant-segmented-item-selected .filter-chip-count {
-  color: #fff;
-  background: var(--kind-accent);
+/* 下拉选项行：间距与主题色选中（dropdown 在 portal，--kind-accent 已在 :root 全局） */
+.ant-select-dropdown .ant-select-item {
+  padding-block: 6px;
 }
 
 /* 列表头：标题 + 新建按钮 */
@@ -637,28 +630,7 @@ textarea {
   letter-spacing: 0.3px;
 }
 
-/* 分类筛选与时间/标签/排序筛选合并到同一行 */
-.list-filter-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 10px 8px;
-}
-
-/* 行内：分类下拉固定宽度，筛选下拉均分剩余空间 */
-.list-filter-row .kind-select.ant-select {
-  width: auto;
-  flex: none;
-  min-width: 78px;
-}
-
-.list-filter-row .search-bar {
-  flex: 1;
-  min-width: 0;
-  flex-direction: row;
-  gap: 4px;
-  padding: 0;
-}
+/* 分类筛选与时间/标签/排序筛选：胶囊分类独立成行，时间/排序/标签下拉在 SearchBar 内（参考浅色风） */
 
 /* 筛选区：时间/标签/排序（搜索框已并入标题栏） */
 .search-bar {
@@ -1014,32 +986,52 @@ textarea {
   flex: none;
   display: inline-flex;
   color: var(--kind-accent);
-  opacity: 0.85;
-}
-
-.row-main {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.row-title {
-  font-size: 12.5px;
-  font-weight: 600;
-  line-height: 1.35;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  opacity: 0.9;
 }
 
 .note-card-active .row-title {
-  font-weight: 650;
+  font-weight: 700;
+}
+
+.row-desc {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-muted);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.card-divider {
+  width: 100%;
+  height: 1px;
+  background: var(--border);
+  margin: 1px 0;
+}
+
+/* 列表卡片内嵌图片缩略图（base64 data URL）：限高裁切，不撑破卡片 */
+.row-thumb {
+  width: 100%;
+  display: block;
+  margin: 1px 0 2px;
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--hover-fill);
+}
+.row-thumb img {
+  text-align: center;
+  width: auto;
+  margin: auto;
+  height: 50px;
+  -o-object-fit: cover;
+  object-fit: cover;
+  display: block;
 }
 
 .row-meta {
-  font-size: 10.5px;
+  font-size: 11px;
   color: var(--text-muted);
   white-space: nowrap;
   overflow: hidden;
@@ -1064,6 +1056,10 @@ textarea {
 
 .note-row.done .row-meta {
   color: var(--todo);
+}
+
+.note-row.done .row-thumb img {
+  opacity: 0.5;
 }
 
 /* 右侧详情面板 */
@@ -2137,6 +2133,9 @@ textarea {
   transition:
     filter 0.15s,
     -webkit-filter 0.15s;
+  transition:
+    filter 0.15s,
+    -webkit-filter 0.15s;
 }
 
 .alarm-editor-ok:hover {
@@ -2299,6 +2298,28 @@ textarea {
 }
 
 /* 暗色模式下详情面板内的 antd 控件文字统一提亮为纯白 */
+:root.dark-glass .detail-pane .ant-input::-webkit-input-placeholder,
+:root.dark-glass
+  .detail-pane
+  .ant-input-affix-wrapper::-webkit-input-placeholder {
+  color: #ffffff !important;
+  opacity: 0.9;
+}
+:root.dark-glass .detail-pane .ant-input::-moz-placeholder,
+:root.dark-glass .detail-pane .ant-input-affix-wrapper::-moz-placeholder {
+  color: #ffffff !important;
+  opacity: 0.9;
+}
+:root.dark-glass .detail-pane .ant-input:-ms-input-placeholder,
+:root.dark-glass .detail-pane .ant-input-affix-wrapper:-ms-input-placeholder {
+  color: #ffffff !important;
+  opacity: 0.9;
+}
+:root.dark-glass .detail-pane .ant-input::-ms-input-placeholder,
+:root.dark-glass .detail-pane .ant-input-affix-wrapper::-ms-input-placeholder {
+  color: #ffffff !important;
+  opacity: 0.9;
+}
 :root.dark-glass .detail-pane .ant-input::-webkit-input-placeholder,
 :root.dark-glass
   .detail-pane
@@ -3057,18 +3078,18 @@ textarea {
 .analog-clock {
   width: 96px;
   height: 96px;
-  -webkit-filter: drop-shadow(0 3px 6px rgba(60, 48, 30, 0.18));
-  filter: drop-shadow(0 3px 6px rgba(60, 48, 30, 0.18));
+  -webkit-filter: drop-shadow(0 3px 6px rgba(16, 24, 40, 0.12));
+  filter: drop-shadow(0 3px 6px rgba(16, 24, 40, 0.12));
 }
 
 .clock-face {
   fill: #fff;
-  stroke: rgba(96, 84, 64, 0.22);
+  stroke: rgba(16, 24, 40, 0.12);
   stroke-width: 1.5;
 }
 
 .clock-tick {
-  stroke: rgba(66, 63, 56, 0.5);
+  stroke: rgba(16, 24, 40, 0.35);
   stroke-width: 1.6;
   stroke-linecap: round;
 }

@@ -8,7 +8,7 @@ import { formatShort } from "../utils/format";
 
 /** 条目在日历上的打点颜色（与分类主题色一致） */
 const DOT_COLOR: Record<EntryKind, string> = {
-  note: "#5b8fd9",
+  note: "#2563eb",
   reminder: "#d9686b",
   todo: "#57a878",
 };

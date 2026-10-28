@@ -1,13 +1,6 @@
 import { useEffect, useState } from "react";
 import { Input } from "antd";
-import {
-  Pin,
-  Search,
-  Settings,
-  Timer,
-  X,
-  Zap,
-} from "lucide-react";
+import { Pin, Search, Settings, Timer, X, Zap } from "lucide-react";
 import { useWindowStore } from "../store/useWindowStore";
 import { useEntryStore } from "../store/useEntryStore";
 import { closeWindow } from "../window/tauriWindow";
@@ -58,22 +51,21 @@ export function TitleBar({ quickOpen, setQuickOpen }: TitleBarProps) {
         便签
       </div>
 
-      <div
-        className={`titlebar-search${searchOpen ? " open" : ""}`}
-        data-tauri-drag-region="false"
-      >
-        <Input
-          className="titlebar-search-input"
-          allowClear
-          size="small"
-          autoFocus={searchOpen}
-          placeholder="搜索标题或内容"
-          value={search}
-          onChange={(event) => setSearch(event.target.value)}
-        />
-      </div>
-
       <div className="titlebar-actions " data-tauri-drag-region="false">
+        <div
+          className={`titlebar-search${searchOpen ? " open" : ""}`}
+          data-tauri-drag-region="false"
+        >
+          <Input
+            className="titlebar-search-input w-32"
+            allowClear
+            size="small"
+            autoFocus={searchOpen}
+            placeholder="搜索标题或内容"
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+          />
+        </div>
         <button
           type="button"
           className={`titlebar-btn search-toggle ${searchOpen ? "active" : ""}`}

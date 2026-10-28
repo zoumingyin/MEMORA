@@ -42,7 +42,7 @@ const KIND_LABEL: Record<EntryKind, string> = {
 
 /** antd 主题主色跟随分类主题色（备忘蓝 / 提醒珊瑚红 / 待办绿） */
 const KIND_COLOR: Record<EntryKind, string> = {
-  note: "#5b8fd9",
+  note: "#2563eb",
   reminder: "#d9686b",
   todo: "#57a878",
 };
@@ -58,6 +58,7 @@ const DARK_TOKENS: Record<string, string> = {
   "--border": "rgba(236, 230, 220, 0.2)",
   /* 控件边框（暗色）：可见但不刺眼的暖白 */
   "--control-border": "rgba(236, 230, 220, 0.35)",
+  "--note": "#2563eb",
   "--hover-fill": "rgba(255, 255, 255, 0.1)",
   // 暗色变体不叠加光晕：深色光晕在黑背景上无衬底作用，反而让亮字边缘发虚（游戏场景模糊感）
   "--text-halo": "none",
@@ -66,10 +67,16 @@ const DARK_TOKENS: Record<string, string> = {
   "--glass-highlight": "rgba(236, 230, 220, 0.06)",
 };
 
-/** 亮色模式只需覆盖 hover 填充色，其余沿用 :root 默认 */
+/** 亮色模式：对齐参考风（白底画布 + 发丝边框 + 中性灰次要文字 + 鲜亮蓝主色），其余沿用 :root 默认 */
 const LIGHT_TOKENS: Record<string, string> = {
-  "--hover-fill": "rgba(0, 0, 0, 0.06)",
-  "--text-muted": "#3c2b02",
+  "--hover-fill": "rgba(16, 24, 40, 0.05)",
+  "--text-muted": "#6b7280",
+  "--panel-rgb": "248, 249, 251",
+  "--panel-soft-rgb": "240, 242, 246",
+  "--field-rgb": "255, 255, 255",
+  "--border": "rgba(16, 24, 40, 0.09)",
+  "--control-border": "rgba(16, 24, 40, 0.16)",
+  "--note": "#2563eb",
 };
 
 export default function App() {
@@ -345,7 +352,7 @@ export default function App() {
     const primary = KIND_COLOR[kindClass];
     const controlBorder = darkGlass
       ? "rgba(236, 230, 220, 0.3)"
-      : "rgba(96, 84, 64, 0.28)";
+      : "rgba(16, 24, 40, 0.16)";
     return {
       algorithm: darkGlass
         ? antdTheme.darkAlgorithm
@@ -357,7 +364,7 @@ export default function App() {
         colorBorder: controlBorder,
         colorBorderSecondary: darkGlass
           ? "rgba(236, 230, 220, 0.14)"
-          : "rgba(96, 84, 64, 0.14)",
+          : "rgba(16, 24, 40, 0.09)",
         // 去掉 focus ring（主色光晕）
         controlOutline: "transparent",
         controlOutlineWidth: 0,
@@ -368,19 +375,39 @@ export default function App() {
               colorTextSecondary: "#c9c3b8",
               colorTextTertiary: "#b8b2a7",
               colorTextPlaceholder: "#b8b2a7",
-              // 下拉 / 弹层背景：暗色实底
-              colorBgElevated: "rgba(34, 36, 42, 0.97)",
+              // 下拉 / 弹层背景：暗色不透明实底（避免透出底层卡片）
+              colorBgElevated: "rgb(34, 36, 42)",
               colorBgContainer: "transparent",
               colorFillTertiary: "rgba(236, 230, 220, 0.10)",
               colorFillQuaternary: "rgba(236, 230, 220, 0.05)",
             }
           : {
-              // 亮色模式：弹层 / 输入容器跟随奶油色面板，避免纯白浮层与半透明面板割裂、破坏统一感
-              colorBgElevated: "rgba(247, 244, 238, 0.98)",
-              colorBgContainer: "rgba(255, 255, 253, 0.95)",
+              // 亮色模式：弹层 / 输入容器跟随白色面板，对齐参考风（白底 + 中性灰 + 发丝边框）
+              colorText: "#1f2937",
+              colorTextSecondary: "#6b7280",
+              colorTextTertiary: "#6b7280",
+              colorTextPlaceholder: "#6b7280",
+              colorBgElevated: "rgba(255, 255, 255, 0.97)",
+              colorBgContainer: "rgba(255, 255, 255, 0.95)",
             }),
       },
       components: {
+        // 下拉菜单（Dropdown）：暗色下选中项默认主色蓝字压深蓝底，对比度差；
+        // 暗色用更亮的蓝字 + 略深选中底，分组标题提亮，确保可读
+        Menu: {
+          itemColor: darkGlass ? "#e8e4dc" : "#1f2937",
+          // 暗色选中项：白字 + 蓝底（避免原蓝字压深蓝底看不清）；亮色保持主色蓝字
+          itemSelectedColor: darkGlass ? "#ffffff" : primary,
+          itemSelectedBg: darkGlass
+            ? primary
+            : `color-mix(in srgb, ${primary} 18%, transparent)`,
+          itemActiveBg: darkGlass
+            ? "rgba(255, 255, 255, 0.08)"
+            : "rgba(0, 0, 0, 0.05)",
+          itemGroupTitleColor: darkGlass ? "#c9c3b8" : "#6b7280",
+          // 弹层背景：暗色不透明实底，避免透出底层卡片
+          popupBg: darkGlass ? "rgb(34, 36, 42)" : "rgb(255, 255, 255)",
+        },
         Select: {
           // 选中项主题色浅底 + 主色文字（替代原发白的 colorPrimaryBg）
           optionSelectedBg: `color-mix(in srgb, ${primary} 18%, transparent)`,
@@ -474,7 +501,7 @@ export default function App() {
                 </>
               ) : (
                 <>
-                  <div className="list-filter-row">
+                  <div className="flex items-center">
                     <CategoryTabs />
                     <SearchBar />
                   </div>
