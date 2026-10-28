@@ -401,14 +401,20 @@ export function MarkdownEditor({
     }
   }, [value, editor]);
 
+  /* eslint-disable react-hooks/exhaustive-deps --
+     value 是有意为之的依赖：它随每次击键更新（onUpdate → onChange → 父组件 state → props），
+     作为刷新信号驱动重算 editor.getText()，实现字数/行数实时统计 */
   const wordCount = useMemo(
     () => countMarkdownWords(editor?.getText() ?? ""),
-    [editor]
+    [editor, value]
   );
   const lineCount = useMemo(
-    () => (editor?.getText() ?? "").split("\n").length,
-    [editor]
+    // getText 默认块间分隔符是 "\n\n"，会把每个段落间多算一个空行（回车一次行号 +2）；
+    // 显式改为 "\n" 使 split 后的行数 = 段落数 = 实际行数
+    () => (editor?.getText({ blockSeparator: "\n" }) ?? "").split("\n").length,
+    [editor, value]
   );
+  /* eslint-enable react-hooks/exhaustive-deps */
 
   const run = (fn: () => void): void => {
     fn();

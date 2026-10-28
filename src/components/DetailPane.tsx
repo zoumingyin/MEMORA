@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { Button, Checkbox, Input } from "antd";
 import {
   ArrowLeftOutlined,
@@ -7,6 +7,7 @@ import {
   DeleteOutlined,
   FileTextOutlined,
   PlusOutlined,
+  TagsOutlined,
 } from "@ant-design/icons";
 import { useEntryStore } from "../store/useEntryStore";
 import type {
@@ -106,6 +107,7 @@ interface DetailFormProps {
 function DetailForm({ entry, onRemove }: DetailFormProps) {
   const updateEntry = useEntryStore((state) => state.updateEntry);
   const toggleReminderDone = useEntryStore((state) => state.toggleReminderDone);
+  const entries = useEntryStore((state) => state.entries);
   const now = useNow();
 
   // 本地编辑态：随 entry.id 重挂载重新初始化，不与 store 双向同步，避免打断输入
@@ -120,6 +122,37 @@ function DetailForm({ entry, onRemove }: DetailFormProps) {
   const [alarms, setAlarms] = useState<AlarmItem[]>(() =>
     entry.kind === "reminder" ? entry.alarms : []
   );
+
+  // 标签选择：全部已知标签（所有条目去重排序），数据变化（任意条目标签增删）时自动刷新
+  const allTags = useMemo(() => {
+    const set = new Set<string>();
+    for (const item of entries) {
+      for (const tag of item.tags ?? []) set.add(tag);
+    }
+    return [...set].sort((a, b) => a.localeCompare(b, "zh-Hans-CN"));
+  }, [entries]);
+  // 与当前条目 tags 求并集：新建的自定义标签在落盘前也能立即出现在 chips 里
+  const chipTags = useMemo(() => {
+    const set = new Set<string>(allTags);
+    for (const tag of tags) set.add(tag);
+    return [...set].sort((a, b) => a.localeCompare(b, "zh-Hans-CN"));
+  }, [allTags, tags]);
+
+  // 点击标签：选中（挂到条目）/ 取消（从条目移除），多选；由防抖统一落盘
+  const toggleTag = (tag: string): void => {
+    setTags((prev) =>
+      prev.includes(tag) ? prev.filter((item) => item !== tag) : [...prev, tag]
+    );
+  };
+
+  // 「+ 自定义」行内输入：回车/失焦确认，Esc 取消
+  const [customOpen, setCustomOpen] = useState(false);
+  const confirmCustomTag = (): void => {
+    const tag = draftTag.trim();
+    if (tag && !tags.includes(tag)) setTags((prev) => [...prev, tag]);
+    setDraftTag("");
+    setCustomOpen(false);
+  };
 
   // flushRef 保存最新保存函数：每次渲染后由 effect 刷新，供防抖定时器与卸载兜底共用
   const flushRef = useRef<() => void>(() => undefined);
@@ -308,40 +341,57 @@ function DetailForm({ entry, onRemove }: DetailFormProps) {
         placeholder={TITLE_PLACEHOLDER[entry.kind]}
         onChange={(event) => setTitle(event.target.value)}
       />
-      {/* 标签行：回车或失焦添加；点 × 删除；标签用于列表「全部标签」下拉筛选 */}
-      <div className="detail-tags">
-        {tags.map((tag) => (
-          <span key={tag} className="detail-tag">
-            {tag}
+      {/* 标签选择：展示全部已知标签，点击选中/取消（选中即挂到当前条目，多选）；
+          「+ 自定义」展开行内输入新建标签。chips 随条目标签数据变化自动刷新 */}
+      <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1.5 px-1">
+        <span className="flex items-center gap-1 text-[11px] font-medium text-[var(--text-muted)]">
+          <TagsOutlined className="text-[11px]" />
+          标签:
+        </span>
+        {chipTags.map((tag) => {
+          const active = tags.includes(tag);
+          return (
             <button
+              key={tag}
               type="button"
-              className="detail-tag-del"
-              title="删除标签"
-              onClick={() =>
-                setTags((prev) => prev.filter((item) => item !== tag))
-              }
+              title={active ? "点击取消该标签" : "点击添加该标签"}
+              onClick={() => toggleTag(tag)}
+              className={`h-[24px] rounded-[8px] px-2.5 text-[11.5px] leading-none transition ${
+                active
+                  ? "bg-[var(--text)] font-medium text-[var(--field)]"
+                  : "border border-solid border-[var(--control-border)] bg-[var(--field)] text-[var(--text-muted)] hover:border-[var(--border)] hover:text-[var(--text)]"
+              }`}
             >
-              ×
+              #{tag}
             </button>
-          </span>
-        ))}
-        <Input
-          variant="borderless"
-          className="detail-tag-input"
-          value={draftTag}
-          placeholder="添加标签，回车确认"
-          onChange={(event) => setDraftTag(event.target.value)}
-          onPressEnter={() => {
-            const tag = draftTag.trim();
-            if (tag && !tags.includes(tag)) setTags((prev) => [...prev, tag]);
-            setDraftTag("");
-          }}
-          onBlur={() => {
-            const tag = draftTag.trim();
-            if (tag && !tags.includes(tag)) setTags((prev) => [...prev, tag]);
-            setDraftTag("");
-          }}
-        />
+          );
+        })}
+        {customOpen ? (
+          <input
+            autoFocus
+            value={draftTag}
+            placeholder="标签名，回车确认"
+            onChange={(event) => setDraftTag(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") confirmCustomTag();
+              else if (event.key === "Escape") {
+                setDraftTag("");
+                setCustomOpen(false);
+              }
+            }}
+            onBlur={confirmCustomTag}
+            className="h-[24px] w-[92px] rounded-[8px] border border-solid border-[var(--control-border)] bg-[var(--field)] px-2 text-[11.5px] text-[var(--text)] outline-none"
+          />
+        ) : (
+          <button
+            type="button"
+            title="新建自定义标签"
+            onClick={() => setCustomOpen(true)}
+            className="h-[24px] rounded-[8px] border border-dashed border-[var(--control-border)] bg-[var(--field)] px-2.5 text-[11.5px] leading-none text-[var(--text-muted)] transition hover:border-[var(--border)] hover:text-[var(--text)]"
+          >
+            <PlusOutlined className="text-[10px]" /> 自定义
+          </button>
+        )}
       </div>
       {entry.kind === "todo" && (
         <div className="todo-items flex-1">
@@ -510,7 +560,7 @@ function DetailForm({ entry, onRemove }: DetailFormProps) {
       )}
 
       <div className="detail-actions">
-        <span className="detail-meta">
+        <span className="detail-meta bg-[var(--field)]! rounded-[8px] px-2 py-1">
           {entry.kind === "note" && `更新于 ${formatShort(entry.updatedAt)}`}
           {entry.kind === "todo" &&
             (allDone

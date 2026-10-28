@@ -282,7 +282,11 @@ export function EntryList({ selectedId, onSelect }: EntryListProps) {
             )}
           </span>
         ) : (
-          excerpt && <span className="row-desc">{excerpt}</span>
+          excerpt && (
+            <span className={`row-desc ${thumb ? "line-clamp-2" : "line-clamp-5"}`}>
+              {excerpt}
+            </span>
+          )
         )}
         <span className="mt-auto w-full flex flex-col gap-1.5">
           <span className="card-divider" />

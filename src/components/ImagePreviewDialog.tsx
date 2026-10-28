@@ -1,17 +1,7 @@
 import { useEffect, useState } from 'react'
-import {
-  CloseOutlined,
-  LeftOutlined,
-  RightOutlined,
-  ZoomInOutlined,
-  ZoomOutOutlined,
-  FullscreenOutlined,
-  MinusOutlined,
-  BorderOutlined,
-  RotateLeftOutlined,
-  RotateRightOutlined,
-} from '@ant-design/icons'
+import { BorderOutlined, CloseOutlined, MinusOutlined } from '@ant-design/icons'
 import { getCurrentWindow } from '@tauri-apps/api/window'
+import { ConfigProvider, Image as AntdImage, theme as antdTheme } from 'antd'
 import { isTauriRuntime } from '../repository'
 
 /** 从弹窗窗口 URL 参数读取 storageKey，再从 localStorage 取图片数据（只读取一次） */
@@ -30,15 +20,18 @@ function readParams(): { images: string[]; index: number; isDark: boolean } {
   }
 }
 
+/** 自定义标题栏高度 48px：antd 预览弹层在 index.css 中整体下移让出标题栏（body.img-viewer-window 覆盖） */
+
 /**
- * 图片查看器窗口：跟随主题的毛玻璃风格，居中显示图片。
+ * 图片查看器窗口：自定义标题栏（最小化/最大化/关闭）+ antd Image 预览弹层。
+ * 缩放 / 旋转 / 翻转 / 多图切换 / 前后导航均由 antd 预览工具栏提供，跟随明暗主题。
  */
 export function ImagePreviewDialog() {
   // 只在组件初始化时读取一次数据，避免重新渲染时重复读取导致数据被删除
   const [params] = useState(() => readParams())
   const [current, setCurrent] = useState(params.index)
-  const [zoom, setZoom] = useState(100)
-  const [rotation, setRotation] = useState(0)
+  // antd 预览弹层受控开关：初始打开；关闭（antd 关闭按钮 / 点击遮罩）后联动关闭窗口
+  const [previewOpen, setPreviewOpen] = useState(true)
 
   // 暗色模式下的 CSS 变量（和 App.tsx 里的 DARK_TOKENS 保持一致）
   const DARK_TOKENS = {
@@ -60,7 +53,8 @@ export function ImagePreviewDialog() {
     "--hover-fill": "rgba(0, 0, 0, 0.06)",
   }
 
-  // 应用主题：读取到 isDark 后，设置 CSS 变量和 dark-glass 类
+  // 应用主题：读取到 isDark 后，设置 CSS 变量和 dark-glass 类；
+  // antd 预览的明暗由下方 ConfigProvider 的 algorithm 单独控制
   useEffect(() => {
     const rootStyle = document.documentElement.style
     if (params.isDark) {
@@ -78,6 +72,13 @@ export function ImagePreviewDialog() {
       }
     }
   }, [params.isDark])
+
+  // antd 预览弹层 portal 到 body，给 body 挂标记类，
+  // 供 index.css 把弹层下移让出标题栏（仅本窗口内生效）
+  useEffect(() => {
+    document.body.classList.add('img-viewer-window')
+    return () => document.body.classList.remove('img-viewer-window')
+  }, [])
 
   const handleClose = async (): Promise<void> => {
     if (isTauriRuntime()) {
@@ -115,30 +116,15 @@ export function ImagePreviewDialog() {
     }
   }
 
-  const prev = (): void => {
-    setCurrent((i) => (i - 1 + params.images.length) % params.images.length)
-    setZoom(100)
-    setRotation(0)
-  }
+  // antd 预览关闭（关闭按钮 / 点击遮罩）→ 关闭整个窗口
+  useEffect(() => {
+    if (!previewOpen) void handleClose()
+  }, [previewOpen])
 
-  const next = (): void => {
-    setCurrent((i) => (i + 1) % params.images.length)
-    setZoom(100)
-    setRotation(0)
-  }
-
-  const zoomIn = (): void => setZoom((z) => Math.min(z + 20, 500))
-  const zoomOut = (): void => setZoom((z) => Math.max(z - 20, 20))
-  const resetZoom = (): void => setZoom(100)
-  const rotateLeft = (): void => setRotation((r) => r - 90)
-  const rotateRight = (): void => setRotation((r) => r + 90)
-
-  // ESC 关闭
+  // Esc 关闭窗口（antd 预览不处理 Esc，保留自研快捷键）；左右方向键切换图片由 antd 内置处理
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') void handleClose()
-      else if (e.key === 'ArrowLeft') prev()
-      else if (e.key === 'ArrowRight') next()
+      if (e.key === 'Escape') setPreviewOpen(false)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -160,75 +146,37 @@ export function ImagePreviewDialog() {
     )
   }
 
-  const src = params.images[current]
-
   return (
-    <div className="img-viewer">
-      {/* 顶部紫色标题栏 */}
-      <div className="img-viewer-titlebar">
-        <span className="img-viewer-title">查看图片</span>
-        <div className="img-viewer-toolbar">
-          <span className="img-viewer-zoom">{zoom}%</span>
-          <button type="button" className="img-viewer-tool-btn" title="缩小" onClick={zoomOut}>
-            <ZoomOutOutlined />
-          </button>
-          <button type="button" className="img-viewer-tool-btn" title="适应窗口" onClick={resetZoom}>
-            <FullscreenOutlined />
-          </button>
-          <button type="button" className="img-viewer-tool-btn" title="放大" onClick={zoomIn}>
-            <ZoomInOutlined />
-          </button>
-          <button type="button" className="img-viewer-tool-btn" title="向左旋转" onClick={rotateLeft}>
-            <RotateLeftOutlined />
-          </button>
-          <button type="button" className="img-viewer-tool-btn" title="向右旋转" onClick={rotateRight}>
-            <RotateRightOutlined />
-          </button>
-          <span className="img-viewer-sep" />
-          <button type="button" className="img-viewer-tool-btn" title="最小化" onClick={() => void handleMinimize()}>
-            <MinusOutlined />
-          </button>
-          <button type="button" className="img-viewer-tool-btn" title="最大化" onClick={() => void handleToggleMaximize()}>
-            <BorderOutlined />
-          </button>
-          <button type="button" className="img-viewer-tool-btn" title="关闭 (Esc)" onClick={() => void handleClose()}>
-            <CloseOutlined />
-          </button>
+    <ConfigProvider theme={params.isDark ? { algorithm: antdTheme.darkAlgorithm } : undefined}>
+      <div className="img-viewer">
+        {/* 顶部标题栏：仅保留窗口控制按钮（缩放/旋转/多图切换由 antd 预览工具栏提供） */}
+        <div className="img-viewer-titlebar">
+          <span className="img-viewer-title">查看图片</span>
+          <div className="img-viewer-toolbar">
+            <button type="button" className="img-viewer-tool-btn" title="最小化" onClick={() => void handleMinimize()}>
+              <MinusOutlined />
+            </button>
+            <button type="button" className="img-viewer-tool-btn" title="最大化" onClick={() => void handleToggleMaximize()}>
+              <BorderOutlined />
+            </button>
+            <button type="button" className="img-viewer-tool-btn" title="关闭 (Esc)" onClick={() => void handleClose()}>
+              <CloseOutlined />
+            </button>
+          </div>
         </div>
       </div>
 
-      {/* 图片显示区域 */}
-      <div className="img-viewer-body">
-        {params.images.length > 1 && (
-          <button type="button" className="img-viewer-nav img-viewer-prev" title="上一张" onClick={prev}>
-            <LeftOutlined />
-          </button>
-        )}
-
-        <div className="img-viewer-stage">
-          <img
-            src={src}
-            alt="预览"
-            className="img-viewer-img"
-            style={{
-              transform: `scale(${zoom / 100}) rotate(${rotation}deg)`,
-            }}
-          />
-        </div>
-
-        {params.images.length > 1 && (
-          <button type="button" className="img-viewer-nav img-viewer-next" title="下一张" onClick={next}>
-            <RightOutlined />
-          </button>
-        )}
-      </div>
-
-      {/* 底部状态栏 */}
-      {params.images.length > 1 && (
-        <div className="img-viewer-status">
-          {current + 1} / {params.images.length}
-        </div>
-      )}
-    </div>
+      {/* antd 图片预览：填满标题栏以下区域，缩放/旋转/翻转/多图切换由 antd 工具栏提供；
+          关闭预览（按钮/Esc/点遮罩）会联动关闭整个窗口 */}
+      <AntdImage.PreviewGroup
+        items={params.images}
+        preview={{
+          open: previewOpen,
+          current,
+          onChange: (next) => setCurrent(next),
+          onOpenChange: (open) => setPreviewOpen(open),
+        }}
+      />
+    </ConfigProvider>
   )
 }
