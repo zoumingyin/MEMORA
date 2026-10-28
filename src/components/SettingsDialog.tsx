@@ -364,16 +364,12 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
           <div className="settings-item">
             <div className="settings-item-main">
               <span className="settings-item-label">主题</span>
-              <span className="settings-item-hint">
-                亮色 / 暗色主题切换，与背景透明度互不影响
-              </span>
+              <span className="settings-item-hint">亮色 / 暗色主题切换</span>
             </div>
             <Switch
               size="small"
               checked={theme === "dark"}
               onChange={(checked) => setTheme(checked ? "dark" : "light")}
-              checkedChildren="暗色"
-              unCheckedChildren="亮色"
             />
           </div>
         );
