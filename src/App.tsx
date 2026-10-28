@@ -69,6 +69,7 @@ const DARK_TOKENS: Record<string, string> = {
 /** 亮色模式只需覆盖 hover 填充色，其余沿用 :root 默认 */
 const LIGHT_TOKENS: Record<string, string> = {
   "--hover-fill": "rgba(0, 0, 0, 0.06)",
+  "--text-muted": "#3c2b02",
 };
 
 export default function App() {

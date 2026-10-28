@@ -153,7 +153,7 @@ export function EntryList({ selectedId, onSelect }: EntryListProps) {
       <button
         key={entry.id}
         type="button"
-        className={`note-row kind-${entry.kind} ${selectedId === entry.id ? 'active' : ''} ${meta.overdue ? 'overdue' : ''} ${doneClass}`}
+        className={`note-row kind-${entry.kind} ${selectedId === entry.id ? 'note-card-active' : 'note-card'} ${meta.overdue ? 'overdue' : ''} ${doneClass}`}
         onClick={() => onSelect(entry.id)}
       >
         <span className="row-icon" aria-hidden="true">
@@ -169,7 +169,10 @@ export function EntryList({ selectedId, onSelect }: EntryListProps) {
 
   if (list.length === 0) {
     return (
-      <div className="entry-list flex-center flex-col gap-2 pt-8" data-tauri-drag-region="false">
+      <div
+        className="flex flex-col items-center justify-center gap-2 p-[6px_10px_12px] flex-1 min-h-0 overflow-y-auto"
+        data-tauri-drag-region="false"
+      >
         <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="还没有内容" />
         <span className="text-xs color-muted">点右上角 + 新建一条</span>
       </div>
@@ -177,11 +180,16 @@ export function EntryList({ selectedId, onSelect }: EntryListProps) {
   }
 
   return (
-    <div className="entry-list" data-tauri-drag-region="false">
+    <div
+      className="entry-list grid grid-cols-2 gap-2 p-[6px_10px_12px] flex-1 min-h-0 overflow-y-auto content-start"
+      data-tauri-drag-region="false"
+    >
       {activeRows.map(renderRow)}
       {doneRows.length > 0 && (
         <>
-          <div className="list-group-head">已完成</div>
+          <div className="list-group-head col-span-full flex items-center gap-2 p-[12px_4px_4px] text-[10.5px] tracking-[0.6px] text-[var(--text-muted)] opacity-85 select-none after:content-[''] after:flex-1 after:h-px after:bg-[var(--border)]">
+            已完成
+          </div>
           {doneRows.map(renderRow)}
         </>
       )}

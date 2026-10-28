@@ -28,5 +28,11 @@ export default defineConfig({
   },
   shortcuts: {
     'flex-center': 'flex items-center justify-center',
+    // 纸张卡片（随主题自适应）：实色浅底 + 细边框 + 圆角 + 轻微阴影；hover/active 见下方
+    'note-card':
+      'flex items-center gap-2 w-full text-left px-11px py-10px border border-solid border-[var(--border)] rounded-xl bg-[rgb(var(--field-rgb))] text-[var(--text)] shadow-[var(--card-shadow)] transition hover:bg-[var(--card-accent-bg)] hover:border-[var(--card-accent-border)] hover:shadow-[var(--card-shadow-active)]',
+    // 选中卡片：强调色填充 + 内描边环 + 投影
+    'note-card-active':
+      'flex items-center gap-2 w-full text-left px-11px py-10px border border-solid rounded-xl text-[var(--text)] bg-[var(--card-accent-bg)] border-[var(--card-accent-border)] shadow-[var(--card-shadow-active)]',
   },
 })
