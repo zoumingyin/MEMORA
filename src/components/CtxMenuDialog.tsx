@@ -75,6 +75,25 @@ async function readClipboard(): Promise<string> {
 export function CtxMenuDialog() {
   const [state] = useState(() => readParams());
 
+  const close = async (): Promise<void> => {
+    if (isTauriRuntime()) {
+      try {
+        await getCurrentWindow().close();
+      } catch (e) {
+        console.error("关闭右键菜单窗口失败", e);
+      }
+    }
+  };
+
+  const send = async (payload: CtxCommand): Promise<void> => {
+    if (!isTauriRuntime()) return;
+    try {
+      await emit("md-ctx-command", payload);
+    } catch (e) {
+      console.error("右键菜单命令发送失败", e);
+    }
+  };
+
   // 注入主窗口主题 CSS 变量，使菜单视觉（底色/边框/文字/悬停/主题色）与主窗口一致
   useEffect(() => {
     if (!state) return;
@@ -116,25 +135,6 @@ export function CtxMenuDialog() {
       window.removeEventListener("blur", onBlur);
     };
   }, [state]);
-
-  const close = async (): Promise<void> => {
-    if (isTauriRuntime()) {
-      try {
-        await getCurrentWindow().close();
-      } catch (e) {
-        console.error("关闭右键菜单窗口失败", e);
-      }
-    }
-  };
-
-  const send = async (payload: CtxCommand): Promise<void> => {
-    if (!isTauriRuntime()) return;
-    try {
-      await emit("md-ctx-command", payload);
-    } catch (e) {
-      console.error("右键菜单命令发送失败", e);
-    }
-  };
 
   const handleAction = async (action: CtxMenuAction): Promise<void> => {
     switch (action.type) {

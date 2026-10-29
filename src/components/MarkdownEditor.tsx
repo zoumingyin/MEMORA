@@ -32,10 +32,9 @@ import {
 } from "@ant-design/icons";
 import { ColorPicker } from "antd";
 import EmojiPicker, { type EmojiAnchor } from "./EmojiPicker";
+import { FONT_COLORS, STANDARD_COLORS } from "../utils/editorColors";
 import {
   ContextMenuPanel,
-  FONT_COLORS,
-  STANDARD_COLORS,
   type CtxMenuAction,
 } from "./ContextMenuPanel";
 import type { CtxCommand } from "./CtxMenuDialog";
