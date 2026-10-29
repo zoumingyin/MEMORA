@@ -15,11 +15,14 @@ import type {
   AlarmMethod,
   AlarmMode,
   Entry,
+  PaperColor,
+  PaperStyle,
   TodoItem,
 } from "../types/entry";
 import { useNow } from "../hooks/useNow";
 import { formatRelative, formatShort } from "../utils/format";
 import { alarmLoopIntervalMs } from "../reminder/scheduler";
+import { paperTintHex, PAPER_COLORS, PAPER_STYLES } from "../utils/paper";
 import { AlarmEditorDialog } from "./AlarmEditorDialog";
 import { MarkdownEditor } from "./MarkdownEditor";
 
@@ -122,6 +125,9 @@ function DetailForm({ entry, onRemove }: DetailFormProps) {
   const [alarms, setAlarms] = useState<AlarmItem[]>(() =>
     entry.kind === "reminder" ? entry.alarms : []
   );
+  // 纸张外观：底色 + 纹理（随条目重挂载初始化，由防抖统一落盘）
+  const [color, setColor] = useState<PaperColor>(entry.color ?? "plain");
+  const [paper, setPaper] = useState<PaperStyle>(entry.paper ?? "plain");
 
   // 标签选择：全部已知标签（所有条目去重排序），数据变化（任意条目标签增删）时自动刷新
   const allTags = useMemo(() => {
@@ -169,6 +175,8 @@ function DetailForm({ entry, onRemove }: DetailFormProps) {
         patch.content = content;
       if (current.tags?.join("\u0000") !== tags.join("\u0000"))
         patch.tags = tags;
+      if (current.color !== color) patch.color = color;
+      if (current.paper !== paper) patch.paper = paper;
       if (entry.kind === "todo" && current.kind === "todo") {
         const prev = JSON.stringify(current.items ?? []);
         if (prev !== JSON.stringify(items)) {
@@ -193,7 +201,7 @@ function DetailForm({ entry, onRemove }: DetailFormProps) {
   useEffect(() => {
     const timer = window.setTimeout(() => flushRef.current(), SAVE_DEBOUNCE_MS);
     return () => window.clearTimeout(timer);
-  }, [title, content, tags, items, alarms]);
+  }, [title, content, tags, items, alarms, color, paper]);
 
   // 卸载（切换条目 / 关闭）时兜底保存未落盘的改动
   useEffect(() => () => flushRef.current(), []);
@@ -332,8 +340,22 @@ function DetailForm({ entry, onRemove }: DetailFormProps) {
     ? (alarms.find((alarm) => alarm.id === editingAlarm.id) ?? null)
     : null;
 
+  // 纸张外观激活判定：有底色或任一纹理时，面板挂 data-paper 供 CSS 加纹理、编辑器退为透明
+  const paperActive = color !== "plain" || paper !== "plain";
+  const tintHex = paperTintHex(color);
+
   return (
-    <div className="detail-pane">
+    <div
+      className="detail-pane"
+      data-paper={paperActive ? paper : undefined}
+      style={
+        tintHex
+          ? {
+              backgroundColor: `color-mix(in srgb, ${tintHex} var(--paper-tint-alpha), transparent)`,
+            }
+          : undefined
+      }
+    >
       <Input
         variant="borderless"
         className="detail-title"
@@ -558,6 +580,52 @@ function DetailForm({ entry, onRemove }: DetailFormProps) {
           onChange={setContent}
         />
       )}
+
+      {/* 颜色 / 纸张：便签纸张外观设置（底色圆点选中加圈；纹理选中加框） */}
+      <div className="flex flex-col gap-1.5 px-1 pb-1.5">
+        <div className="flex items-center gap-2">
+          <span className="w-[36px] shrink-0 text-[11px] text-[var(--text-muted)]">
+            颜色:
+          </span>
+          <div className="flex flex-wrap items-center gap-1.5">
+            {PAPER_COLORS.map((item) => (
+              <button
+                key={item.key}
+                type="button"
+                title={item.label}
+                onClick={() => setColor(item.key)}
+                className={`h-[20px] w-[20px] rounded-full border border-solid transition ${
+                  color === item.key
+                    ? "border-[2px] border-[var(--text)]"
+                    : "border-[var(--control-border)] hover:border-[var(--border)]"
+                }`}
+                style={{ backgroundColor: item.hex || "var(--field)" }}
+              />
+            ))}
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="w-[36px] shrink-0 text-[11px] text-[var(--text-muted)]">
+            纸张:
+          </span>
+          <div className="flex items-center gap-1">
+            {PAPER_STYLES.map((item) => (
+              <button
+                key={item.key}
+                type="button"
+                onClick={() => setPaper(item.key)}
+                className={`h-[22px] rounded-[6px] px-2 text-[11.5px] leading-none transition ${
+                  paper === item.key
+                    ? "border border-solid border-[var(--text)] bg-[var(--field)] font-medium text-[var(--text)]"
+                    : "border border-transparent bg-[var(--field)] text-[var(--text-muted)] hover:text-[var(--text)]"
+                }`}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
 
       <div className="detail-actions">
         <span className="detail-meta bg-[var(--field)]! rounded-[8px] px-2 py-1">

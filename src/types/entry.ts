@@ -15,7 +15,25 @@ export interface BaseEntry {
   syncStatus: SyncStatus
   /** 标签（本地过滤用，JSON 存于 entries.tags 列） */
   tags: string[]
+  /** 纸张底色（颜色选择，存于 entries.color 列；NULL/缺省视为 plain 跟随主题） */
+  color?: PaperColor
+  /** 纸张纹理（存于 entries.paper 列；NULL/缺省视为 plain 素白） */
+  paper?: PaperStyle
 }
+
+/** 纸张底色：plain 跟随主题，其余为淡彩纸色 */
+export type PaperColor =
+  | 'plain'
+  | 'yellow'
+  | 'mint'
+  | 'blue'
+  | 'lavender'
+  | 'cream'
+  | 'pink'
+  | 'peach'
+
+/** 纸张纹理：素白 / 横线 / 方格 / 点阵 */
+export type PaperStyle = 'plain' | 'ruled' | 'grid' | 'dots'
 
 /** 备忘：纯文本记录 */
 export interface NoteEntry extends BaseEntry {
@@ -101,6 +119,10 @@ export interface EntryRow {
   alarms: string | null
   /** 标签（JSON 字符串数组） */
   tags: string | null
+  /** 纸张底色（颜色选择 key，NULL = plain） */
+  color: string | null
+  /** 纸张纹理 key，NULL = plain */
+  paper: string | null
 }
 
 /** 新建条目时的输入载荷（按分类不同携带可选字段） */

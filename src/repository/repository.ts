@@ -4,6 +4,8 @@ import type {
   EntryKind,
   EntryRow,
   NewEntryInput,
+  PaperColor,
+  PaperStyle,
   TodoItem,
 } from '../types/entry'
 
@@ -91,6 +93,28 @@ export function parseTags(raw: string | null | undefined): string[] {
   return []
 }
 
+/** 纸张底色合法 key 集合：列值超出时回退 plain，防脏数据 */
+const PAPER_COLOR_KEYS: readonly PaperColor[] = [
+  'plain',
+  'yellow',
+  'mint',
+  'blue',
+  'lavender',
+  'cream',
+  'pink',
+  'peach',
+]
+/** 纸张纹理合法 key 集合 */
+const PAPER_STYLE_KEYS: readonly PaperStyle[] = ['plain', 'ruled', 'grid', 'dots']
+
+function parsePaperColor(raw: string | null | undefined): PaperColor {
+  return PAPER_COLOR_KEYS.includes(raw as PaperColor) ? (raw as PaperColor) : 'plain'
+}
+
+function parsePaperStyle(raw: string | null | undefined): PaperStyle {
+  return PAPER_STYLE_KEYS.includes(raw as PaperStyle) ? (raw as PaperStyle) : 'plain'
+}
+
 /**
  * 数据库行 → 领域实体。
  * 提醒条目兼容旧数据：无闹钟清单时把旧的 remind_at / notified 收敛为一条 legacy 闹钟，
@@ -105,6 +129,8 @@ export function rowToEntry(row: EntryRow): Entry {
     updatedAt: row.updated_at,
     syncStatus: row.sync_status,
     tags: parseTags(row.tags),
+    color: parsePaperColor(row.color),
+    paper: parsePaperStyle(row.paper),
   }
 
   if (row.kind === 'note') {

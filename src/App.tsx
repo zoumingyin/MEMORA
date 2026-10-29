@@ -518,7 +518,7 @@ export default function App() {
                       onClick={handleCreate}
                     />
                   </div>
-                  <EntryList selectedId={selectedId} onSelect={handleSelect} />
+                  <EntryList onSelect={handleSelect} />
                 </>
               )}
             </aside>

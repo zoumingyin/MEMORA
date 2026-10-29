@@ -5,11 +5,13 @@ import {
   ClockCircleOutlined,
   FileTextOutlined,
 } from "@ant-design/icons";
-import { useState, type ReactNode } from "react";
+import { useState, type CSSProperties, type ReactNode } from "react";
 import { useEntryStore } from "../store/useEntryStore";
 import type { AlarmMode, Entry, EntryKind } from "../types/entry";
 import { useNow } from "../hooks/useNow";
 import { formatRelative, formatShort } from "../utils/format";
+import { paperTintHex } from "../utils/paper";
+import { markdownToHtml } from "../utils/markdown";
 
 const KIND_ICON: Record<EntryKind, ReactNode> = {
   note: <FileTextOutlined />,
@@ -183,12 +185,11 @@ function toPlainText(md: string): string {
 }
 
 interface EntryListProps {
-  selectedId: string | null;
   onSelect: (id: string) => void;
 }
 
 /** 左侧主从列表：全部条目按行展示，点击选中后在右侧详情编辑；待办分类下已完成条目自动归入下方「已完成」分组 */
-export function EntryList({ selectedId, onSelect }: EntryListProps) {
+export function EntryList({ onSelect }: EntryListProps) {
   const filter = useEntryStore((state) => state.filter);
   const entries = useEntryStore((state) => state.entries);
   const search = useEntryStore((state) => state.search);
@@ -211,13 +212,23 @@ export function EntryList({ selectedId, onSelect }: EntryListProps) {
     const icon = KIND_ICON[entry.kind];
     const meta = rowMeta(entry, now);
     const doneClass = entryDone(entry) ? "done" : "";
-    const thumb = firstImageSrc(entry.content || "");
+    // 备忘类：正文按 Markdown 富文本渲染（含图片内联），不再单独抽缩略图以免与正文图片重复
+    const isNote = entry.kind === "note";
+    const thumb = isNote ? null : firstImageSrc(entry.content || "");
     const excerpt = toPlainText(entry.content || "");
+    const noteHtml = isNote ? markdownToHtml(entry.content || "") : "";
+    // 纸张外观：底色淡染（--card-tint）+ 纹理（data-paper），纹理规则见 index.css 的 note-row[data-paper]
+    const tintHex = paperTintHex(entry.color);
+    const paperActive = (entry.paper ?? "plain") !== "plain";
     return (
       <button
         key={entry.id}
         type="button"
-        className={`note-row kind-${entry.kind} ${selectedId === entry.id ? "note-card-active" : "note-card"} ${meta.overdue ? "overdue" : ""} ${doneClass}`}
+        className={`note-row kind-${entry.kind} note-card ${meta.overdue ? "overdue" : ""} ${doneClass}`}
+        data-paper={paperActive ? entry.paper : undefined}
+        style={
+          tintHex ? ({ "--card-tint": tintHex } as CSSProperties) : undefined
+        }
         onClick={() => onSelect(entry.id)}
       >
         <span className="row-icon" aria-hidden="true">
@@ -235,8 +246,16 @@ export function EntryList({ selectedId, onSelect }: EntryListProps) {
             />
           </span>
         )}
-        {/* 待办卡片预览部分子任务；闹钟卡片预览部分闹钟；其余沿用正文摘要 */}
-        {entry.kind === "todo" && entry.items.length > 0 ? (
+        {/* 备忘卡片：正文按 Markdown 富文本渲染（标题/加粗/列表/换行/图片等）；
+            待办预览子任务；闹钟预览闹钟；其余沿用正文纯文本摘要 */}
+        {isNote ? (
+          noteHtml && (
+            <span
+              className="note-md w-full min-h-0 flex-1 overflow-y-auto"
+              dangerouslySetInnerHTML={{ __html: noteHtml }}
+            />
+          )
+        ) : entry.kind === "todo" && entry.items.length > 0 ? (
           <span className="flex w-full min-h-0 flex-col gap-1 overflow-hidden">
             {entry.items.slice(0, PREVIEW_LIMIT).map((item) => (
               <span
@@ -312,7 +331,7 @@ export function EntryList({ selectedId, onSelect }: EntryListProps) {
 
   return (
     <div
-      className="entry-list grid grid-cols-2 gap-3 p-[6px_10px_12px] flex-1 min-h-0 overflow-y-auto content-start"
+      className="entry-list grid grid-cols-1 gap-3 p-[6px_10px_12px] flex-1 min-h-0 overflow-y-auto content-start"
       data-tauri-drag-region="false"
     >
       {activeRows.map(renderRow)}

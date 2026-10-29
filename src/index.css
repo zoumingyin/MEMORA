@@ -36,6 +36,8 @@
   --card-border-hover: color-mix(in srgb, var(--note) 45%, var(--border));
   --card-active-bg: color-mix(in srgb, var(--note) 10%, rgb(var(--field-rgb)));
   --card-active-border: var(--note);
+  /* hover 上浮投影：亮色为柔和灰影，暗色由 :root.dark-glass 覆盖加深 */
+  --card-hover-shadow: 0 4px 14px rgba(15, 23, 42, 0.1);
   /* 实心字段色（随主题动态求值）：UnoCSS 原子类须用 var(--field) 引用，
      禁止写 text-[rgb(var(--field-rgb))]——会被生成 "rgb(逗号分量 / opacity)" 的
      非法混合写法，整条声明失效回退继承色（表现为选中态文字同色隐形） */
@@ -997,18 +999,72 @@ textarea {
   color: var(--text-muted);
 }
 
-/* 列表卡片样式已迁移至 UnoCSS（note-card / note-card-active shortcuts + 容器内联工具类），
-   仅保留按钮内部子元素样式（row-icon / row-main / row-title / row-meta）与已完成态修饰。 */
+/* 列表卡片样式已迁移至 UnoCSS（note-card shortcut + 容器内联工具类），
+   仅保留卡片纸张外观（颜色淡染 + 纹理）与按钮内部子元素样式、已完成态修饰。 */
+
+/* 列表卡片纸张底色：条目设置了颜色时，以 --card-tint（详情同款色板 hex）叠一层淡染；
+   用 background-image 叠加而非改 background-color，避免影响 note-card 的底色逻辑；
+   --card-tint 未设置（plain）时 transparent 无效果 */
+:root {
+  --card-tint-alpha: 40%;
+}
+
+:root.dark-glass {
+  --card-tint-alpha: 20%;
+  /* 暗色投影加深才可感知（深底上淡灰影不可见） */
+  --card-hover-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+}
+
+button.note-row.note-card {
+  background-image: linear-gradient(
+    color-mix(in srgb, var(--card-tint, transparent) var(--card-tint-alpha), transparent),
+    color-mix(in srgb, var(--card-tint, transparent) var(--card-tint-alpha), transparent)
+  );
+}
+
+/* 列表卡片纸张纹理：与详情纸面同款，但间距更紧凑适配 196px 小卡；
+   第一层保持底色淡染，其后为纹理层；无颜色时淡染层为 transparent 不影响纹理 */
+button.note-row[data-paper="ruled"] {
+  background-image:
+    linear-gradient(
+      color-mix(in srgb, var(--card-tint, transparent) var(--card-tint-alpha), transparent),
+      color-mix(in srgb, var(--card-tint, transparent) var(--card-tint-alpha), transparent)
+    ),
+    repeating-linear-gradient(
+      to bottom,
+      transparent 0,
+      transparent 19px,
+      var(--paper-line) 19px,
+      var(--paper-line) 20px
+    );
+}
+
+button.note-row[data-paper="grid"] {
+  background-image:
+    linear-gradient(
+      color-mix(in srgb, var(--card-tint, transparent) var(--card-tint-alpha), transparent),
+      color-mix(in srgb, var(--card-tint, transparent) var(--card-tint-alpha), transparent)
+    ),
+    linear-gradient(var(--paper-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--paper-line) 1px, transparent 1px);
+  background-size: auto, 16px 16px, 16px 16px;
+}
+
+button.note-row[data-paper="dots"] {
+  background-image:
+    linear-gradient(
+      color-mix(in srgb, var(--card-tint, transparent) var(--card-tint-alpha), transparent),
+      color-mix(in srgb, var(--card-tint, transparent) var(--card-tint-alpha), transparent)
+    ),
+    radial-gradient(var(--paper-dot) 1px, transparent 1.4px);
+  background-size: auto, 12px 12px;
+}
 
 .row-icon {
   flex: none;
   display: inline-flex;
   color: var(--kind-accent);
   opacity: 0.9;
-}
-
-.note-card-active .row-title {
-  font-weight: 700;
 }
 
 .row-desc {
@@ -1020,6 +1076,81 @@ textarea {
   overflow: hidden;
   width: 100%;
   /* 行数（有缩略图 2 行 / 无缩略图 5 行）由 TSX 内的 UnoCSS line-clamp-[n] 控制 */
+}
+
+/* 列表卡片内「备忘」类 Markdown 正文：保留标题/加粗/列表/换行等格式；
+   高度受限时内部纵向滚动以展示完整内容（卡片固定 196px，见 .note-card） */
+.note-md {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text);
+  width: 100%;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+.note-md > :first-child { margin-top: 0; }
+.note-md > :last-child { margin-bottom: 0; }
+.note-md h1,
+.note-md h2,
+.note-md h3,
+.note-md h4,
+.note-md h5,
+.note-md h6 {
+  font-weight: 600;
+  line-height: 1.3;
+  margin: 6px 0 3px;
+  color: var(--text);
+}
+.note-md h1 { font-size: 15px; }
+.note-md h2 { font-size: 14px; }
+.note-md h3 { font-size: 13px; }
+.note-md h4,
+.note-md h5,
+.note-md h6 { font-size: 12.5px; }
+.note-md p { margin: 4px 0; }
+.note-md strong { font-weight: 700; color: var(--text); }
+.note-md em { font-style: italic; }
+.note-md del { text-decoration: line-through; opacity: 0.7; }
+.note-md ul,
+.note-md ol { margin: 4px 0; padding-left: 18px; }
+.note-md li { margin: 1px 0; }
+.note-md ul { list-style: disc; }
+.note-md ol { list-style: decimal; }
+.note-md a { color: var(--note); text-decoration: underline; }
+.note-md code {
+  font-family: var(--mono-font, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 11px;
+  background: var(--hover-fill);
+  padding: 0 4px;
+  border-radius: 4px;
+}
+.note-md pre {
+  background: var(--hover-fill);
+  padding: 6px 8px;
+  border-radius: 6px;
+  overflow-x: auto;
+  margin: 4px 0;
+}
+.note-md pre code { background: none; padding: 0; }
+.note-md blockquote {
+  margin: 4px 0;
+  padding: 2px 8px;
+  border-left: 3px solid var(--border);
+  color: var(--text-muted);
+}
+.note-md img {
+  max-width: 100%;
+  max-height: 120px;
+  border-radius: 6px;
+  margin: 2px 0;
+  object-fit: contain;
+}
+.note-md hr { border: none; border-top: 1px solid var(--border); margin: 6px 0; }
+.note-md table { border-collapse: collapse; font-size: 11px; }
+.note-md th,
+.note-md td {
+  border: 1px solid var(--border);
+  padding: 2px 6px;
 }
 
 .card-divider {
@@ -1090,6 +1221,48 @@ textarea {
   gap: 4px;
   padding: 8px 8px 7px;
   background: rgba(var(--panel-soft-rgb), var(--chrome-alpha));
+}
+
+/* ===== 纸张外观（详情面板 data-paper）：底色圆点 + 纹理，颜色令牌随主题适配 ===== */
+:root {
+  --paper-tint-alpha: 45%;
+  --paper-line: rgba(16, 24, 40, 0.07);
+  --paper-dot: rgba(16, 24, 40, 0.16);
+}
+
+:root.dark-glass {
+  --paper-tint-alpha: 20%;
+  --paper-line: rgba(236, 230, 220, 0.09);
+  --paper-dot: rgba(236, 230, 220, 0.18);
+}
+
+/* 横线：27px 行距的重复线 */
+.detail-pane[data-paper="ruled"] {
+  background-image: repeating-linear-gradient(
+    to bottom,
+    transparent 0,
+    transparent 27px,
+    var(--paper-line) 27px,
+    var(--paper-line) 28px
+  );
+}
+
+/* 方格：22px 双向网格 */
+.detail-pane[data-paper="grid"] {
+  background-image: linear-gradient(var(--paper-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--paper-line) 1px, transparent 1px);
+  background-size: 22px 22px;
+}
+
+/* 点阵：18px 圆点阵 */
+.detail-pane[data-paper="dots"] {
+  background-image: radial-gradient(var(--paper-dot) 1px, transparent 1.4px);
+  background-size: 18px 18px;
+}
+
+/* 纸张外观激活时编辑器退为透明，透出面板底色与纹理（内容直接写在纸上，参考应用同款） */
+.detail-pane[data-paper] .md-editor {
+  background: transparent;
 }
 
 /* 详情标题输入框：清晰可见的主题边框（浅/深自动适配），聚焦时高亮 + 浅色光晕环 */

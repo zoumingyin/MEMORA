@@ -150,6 +150,9 @@ export class SqliteEntryRepository implements EntryRepository {
     if (patch.title !== undefined) pushField('title', patch.title.trim())
     if (patch.content !== undefined) pushField('content', patch.content.trim())
     if (patch.tags !== undefined) pushField('tags', JSON.stringify(patch.tags))
+    // 纸张外观：颜色 / 纹理 key（plain 也直接存 key，读取时统一解析）
+    if (patch.color !== undefined) pushField('color', patch.color)
+    if (patch.paper !== undefined) pushField('paper', patch.paper)
 
     if (patch.kind === 'todo' && 'items' in patch) {
       // 子任务清单变更：序列化入列，并据此派生整条完成态

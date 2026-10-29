@@ -112,6 +112,8 @@ export class MemoryEntryRepository implements EntryRepository {
         title: patch.title ?? current.title,
         content: patch.content ?? current.content,
         tags: patch.tags ?? current.tags,
+        color: patch.color ?? current.color,
+        paper: patch.paper ?? current.paper,
         updatedAt,
       }
     } else if (current.kind === 'todo') {
@@ -128,6 +130,8 @@ export class MemoryEntryRepository implements EntryRepository {
         title: patch.title ?? current.title,
         content: patch.content ?? current.content,
         tags: patch.tags ?? current.tags,
+        color: patch.color ?? current.color,
+        paper: patch.paper ?? current.paper,
         updatedAt,
         items,
         done,
@@ -145,6 +149,8 @@ export class MemoryEntryRepository implements EntryRepository {
         title: patch.title ?? current.title,
         content: patch.content ?? current.content,
         tags: patch.tags ?? current.tags,
+        color: patch.color ?? current.color,
+        paper: patch.paper ?? current.paper,
         updatedAt,
         alarms,
         remindAt: hasAlarms

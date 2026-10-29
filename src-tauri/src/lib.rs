@@ -102,6 +102,15 @@ ALTER TABLE entries ADD COLUMN tags TEXT NOT NULL DEFAULT '[]';
 CREATE INDEX IF NOT EXISTS idx_entries_created ON entries(created_at);
 "#,
         },
+        Migration {
+            version: 5,
+            description: "add color/paper columns: note paper appearance (tint color & texture)",
+            kind: MigrationKind::Up,
+            sql: r#"
+ALTER TABLE entries ADD COLUMN color TEXT;
+ALTER TABLE entries ADD COLUMN paper TEXT;
+"#,
+        },
     ];
 
     tauri::Builder::default()

@@ -28,11 +28,10 @@ export default defineConfig({
   },
   shortcuts: {
     'flex-center': 'flex items-center justify-center',
-    // 卡片（严格参考风）：固定高度 + 白底 + 发丝边框 + 无投影；竖向布局（图标在顶 → 标题 → 描述/缩略图 → 分隔线 → 时间），hover 浅蓝高亮、active 蓝边选中
+    // 卡片（参考风）：固定高度 + 白底 + 发丝边框；竖向布局（图标在顶 → 标题 → 描述/缩略图 → 分隔线 → 时间）
+    // hover：边框高亮 + 柔和投影上浮（投影令牌分亮/暗两套，见 index.css --card-hover-shadow）；
+    // 不改背景色，纸张淡染/纹理（note-row[data-paper]）不受 hover 影响；无选中 active 态
     'note-card':
-      'flex flex-col items-start gap-1.5 w-full h-[196px] overflow-hidden text-left p-[14px] border border-solid border-[var(--border)] rounded-[14px] bg-[var(--card-bg)] text-[var(--text)] transition hover:bg-[var(--card-active-bg)] hover:border-[var(--card-border-hover)]',
-    // 选中卡片：浅蓝填充 + 鲜亮蓝描边
-    'note-card-active':
-      'flex flex-col items-start gap-1.5 w-full h-[196px] overflow-hidden text-left p-[14px] border border-solid rounded-[14px] text-[var(--text)] bg-[var(--card-active-bg)] border-[var(--card-active-border)] transition',
+      'flex flex-col items-start gap-1.5 w-full h-[196px] overflow-hidden text-left p-[14px] border border-solid border-[var(--border)] rounded-[14px] bg-[var(--card-bg)] text-[var(--text)] transition hover:border-[var(--card-border-hover)] hover:shadow-[var(--card-hover-shadow)]',
   },
 })

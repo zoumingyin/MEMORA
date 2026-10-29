@@ -10,11 +10,10 @@ import Color from "@tiptap/extension-color";
 import Placeholder from "@tiptap/extension-placeholder";
 import Link from "@tiptap/extension-link";
 import Image from "@tiptap/extension-image";
-import { marked } from "marked";
-import DOMPurify from "dompurify";
 import TurndownService from "turndown";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { isTauriRuntime } from "../repository";
+import { markdownToHtml } from "../utils/markdown";
 import {
   BoldOutlined,
   CodeOutlined,
@@ -179,14 +178,6 @@ const PasteImage = Extension.create({
     ];
   },
 });
-
-/** markdown → HTML：marked 解析 + DOMPurify 消毒（放行内联 style 以保留颜色/字号） */
-function markdownToHtml(md: string): string {
-  const raw = marked.parse(md || "");
-  return DOMPurify.sanitize(typeof raw === "string" ? raw : "", {
-    ADD_ATTR: ["style"],
-  });
-}
 
 /** HTML → markdown：turndown；带内联样式 span 与下划线转为内嵌 HTML 保留 */
 function createTurndown(): TurndownService {
