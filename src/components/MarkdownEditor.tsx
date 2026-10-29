@@ -14,6 +14,7 @@ import TurndownService from "turndown";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { PhysicalPosition } from "@tauri-apps/api/dpi";
 import { isTauriRuntime } from "../repository";
 import { markdownToHtml } from "../utils/markdown";
 import { currentWorkArea, type WorkArea } from "../window/tauriWindow";
@@ -340,18 +341,18 @@ export function MarkdownEditor({
     } catch {
       // 缩放 / 工作区 / 位置查询失败时按 1:1、主窗口位于 (0,0) 处理
     }
+    // 定位：光标的屏幕坐标（物理像素）= 主窗口内容区位置（innerPosition）+ 视口内偏移 × 缩放比。
+    // 先用物理坐标计算并钳制在工作区内；WebviewWindow 的 x/y/width/height 为逻辑像素，
+    // 初始位置按逻辑像素传入，创建后再用 setPosition(PhysicalPosition) 精确定位（不依赖单位换算）。
     const winW = CTX_MENU_WIN_W;
     const winH = CTX_MENU_WIN_H;
-    let x = baseX / scale + clientX;
-    let y = baseY / scale + clientY;
+    const winWP = Math.round(winW * scale);
+    const winHP = Math.round(winH * scale);
+    let cx = baseX + Math.round(clientX * scale);
+    let cy = baseY + Math.round(clientY * scale);
     if (area) {
-      // 工作区为物理像素，换算为逻辑像素后钳制，保证窗口完整落在屏幕内
-      const ax = area.x / scale;
-      const ay = area.y / scale;
-      const aw = area.width / scale;
-      const ah = area.height / scale;
-      x = Math.min(Math.max(x, ax), ax + aw - winW);
-      y = Math.min(Math.max(y, ay), ay + ah - winH);
+      cx = Math.min(Math.max(cx, area.x), area.x + area.width - winWP);
+      cy = Math.min(Math.max(cy, area.y), area.y + area.height - winHP);
     }
     const params = new URLSearchParams({ key: storageKey });
     try {
@@ -359,8 +360,8 @@ export function MarkdownEditor({
         url: `ctxmenu.html?${params.toString()}`,
         width: winW,
         height: winH,
-        x,
-        y,
+        x: cx / scale,
+        y: cy / scale,
         center: false,
         decorations: false,
         transparent: true,
@@ -375,6 +376,14 @@ export function MarkdownEditor({
         title: "右键菜单",
       });
       ctxWinRef.current = win;
+      // 用物理坐标精确定位：不依赖创建选项的单位换算，消除高分屏下位置偏差。
+      // 窗口以 visible:false 创建、首帧渲染后才显示，定位完成前不会闪现。
+      void win
+        .setPosition(new PhysicalPosition(cx, cy))
+        .catch((error) => {
+          // set-position 权限未生效时忽略，仍以创建选项中的逻辑坐标定位
+          console.error("右键菜单窗口定位失败", error);
+        });
       // 窗口加载失败（如能力文件尚未随重编译生效）→ 回退为页面内菜单，保证右键可用
       win.once("tauri://error", () => {
         ctxWinRef.current = null;
