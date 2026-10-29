@@ -1,4 +1,4 @@
-import { useState, type CSSProperties } from "react";
+import { useMemo, useState, type CSSProperties } from "react";
 import {
   CheckSquareOutlined,
   CopyOutlined,
@@ -9,10 +9,18 @@ import {
   ScissorOutlined,
   SmileOutlined,
   SnippetsOutlined,
+  SearchOutlined,
 } from "@ant-design/icons";
-import { ColorPicker } from "antd";
-import type { EmojiAnchor } from "./EmojiPicker";
+import { ColorPicker, Input } from "antd";
 import { FONT_COLORS, FONT_SIZES, STANDARD_COLORS } from "../utils/editorColors";
+import {
+  EMOJI_CATEGORIES,
+  MAX_RECENT,
+  loadRecentEmojis,
+  pushRecentEmoji,
+  searchEmojis,
+  type EmojiItem,
+} from "../utils/emojiData";
 
 /** 右键菜单动作：面板只负责上报动作，由宿主（主窗口内嵌 / 独立菜单窗口）执行 */
 export type CtxMenuAction =
@@ -31,7 +39,7 @@ export type CtxMenuAction =
   | { type: "size"; value: string }
   | { type: "sizeDefault" }
   | { type: "insertImage" }
-  | { type: "insertEmoji"; anchor: EmojiAnchor }
+  | { type: "insertEmoji"; emoji: string }
   | { type: "info" };
 
 /** 菜单项激活态（加粗/中划线/斜体/下划线） */
@@ -63,10 +71,50 @@ export function ContextMenuPanel({
   style,
   onAction,
 }: ContextMenuPanelProps) {
-  /** 展开的子菜单（color / size），null 表示收起 */
+  /** 展开的子菜单（color / size / emoji），null 表示收起 */
   const [ctxSubmenu, setCtxSubmenu] = useState<string | null>(null);
   /** 拾色器弹层打开状态（防止鼠标移入弹层时误关子菜单） */
   const [ctxColorPickerOpen, setCtxColorPickerOpen] = useState(false);
+
+  // —— 表情子菜单（与 EmojiPicker 共用数据源：最近使用 + 分类 + 搜索）——
+  const [emojiQuery, setEmojiQuery] = useState("");
+  const [emojiCategory, setEmojiCategory] = useState<string>(() =>
+    loadRecentEmojis().length > 0 ? "recent" : EMOJI_CATEGORIES[0].key
+  );
+  const [recentEmojis, setRecentEmojis] = useState<string[]>(() =>
+    loadRecentEmojis()
+  );
+
+  const emojiMatched = useMemo(
+    () => (emojiQuery.trim() ? searchEmojis(emojiQuery) : null),
+    [emojiQuery]
+  );
+
+  const emojiOptions = useMemo(() => {
+    const base = EMOJI_CATEGORIES.map((c) => ({ label: c.label, value: c.key }));
+    if (recentEmojis.length > 0) {
+      return [{ label: "最近使用", value: "recent" }, ...base];
+    }
+    return base;
+  }, [recentEmojis]);
+
+  const emojiList = useMemo<EmojiItem[]>(() => {
+    if (emojiMatched) return emojiMatched;
+    if (emojiCategory === "recent") {
+      return recentEmojis.map((emoji, index) => ({
+        emoji,
+        name: `最近使用 ${index + 1}`,
+        keywords: [],
+      }));
+    }
+    return EMOJI_CATEGORIES.find((c) => c.key === emojiCategory)?.emojis ?? [];
+  }, [emojiMatched, emojiCategory, recentEmojis]);
+
+  const handleEmojiPick = (item: EmojiItem): void => {
+    pushRecentEmoji(item.emoji);
+    setRecentEmojis(loadRecentEmojis());
+    onAction({ type: "insertEmoji", emoji: item.emoji });
+  };
 
   return (
     <div
@@ -285,26 +333,65 @@ export function ContextMenuPanel({
           插入图片
         </span>
       </div>
-      {/* 插入表情 */}
+      {/* 插入表情（与文字颜色/大小一致：悬停展开子菜单） */}
       <div
         className="md-ctx-item"
-        onClick={(event) => {
-          const rect = event.currentTarget.getBoundingClientRect();
-          onAction({
-            type: "insertEmoji",
-            anchor: {
-              left: rect.left,
-              top: rect.top,
-              width: rect.width,
-              height: rect.height,
-            },
-          });
-        }}
+        onMouseEnter={() => setCtxSubmenu("emoji")}
       >
         <span className="md-ctx-label">
           <SmileOutlined />
           插入表情
         </span>
+        <span className="md-ctx-arrow">›</span>
+        {ctxSubmenu === "emoji" && (
+          <div
+            className="md-ctx-submenu md-ctx-emoji-menu"
+            onMouseEnter={() => setCtxSubmenu("emoji")}
+          >
+            <Input
+              size="small"
+              allowClear
+              prefix={<SearchOutlined className="text-[var(--text-muted)]" />}
+              placeholder="搜索表情（如：笑哭）"
+              value={emojiQuery}
+              onChange={(event) => setEmojiQuery(event.target.value)}
+            />
+            <div className="md-ctx-emoji-tabs">
+              {emojiOptions.map((opt) => (
+                <button
+                  key={opt.value}
+                  type="button"
+                  className={`md-ctx-emoji-tab${
+                    emojiCategory === opt.value ? " active" : ""
+                  }`}
+                  onClick={() => setEmojiCategory(opt.value)}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+            <div className="md-ctx-emoji-grid">
+              {emojiList.map((item, index) => (
+                <button
+                  key={`${emojiCategory}-${item.emoji}-${index}`}
+                  type="button"
+                  title={item.name}
+                  className="md-ctx-emoji-cell"
+                  onClick={() => handleEmojiPick(item)}
+                >
+                  {item.emoji}
+                </button>
+              ))}
+            </div>
+            <div className="md-ctx-emoji-hint">
+              {emojiMatched
+                ? `${emojiList.length} 个结果`
+                : emojiCategory === "recent"
+                  ? `最近使用 · 最多 ${MAX_RECENT} 个，点击表情即可插入`
+                  : "点击表情插入到光标处"}
+            </div>
+          </div>
+        )}
       </div>
       <div className="md-ctx-sep" />
       {/* 快捷键介绍 */}

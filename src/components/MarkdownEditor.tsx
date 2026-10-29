@@ -204,8 +204,6 @@ export function MarkdownEditor({
   const isInternalUpdate = useRef(false);
   /** 独立右键菜单窗口实例（Tauri 环境），卸载时兜底关闭 */
   const ctxWinRef = useRef<WebviewWindow | null>(null);
-  /** 最近一次右键位置（主窗口视口 CSS 坐标），独立菜单窗口「插入表情」时作为面板锚点 */
-  const lastCtxPos = useRef({ x: 0, y: 0 });
   const turndown = useMemo(() => createTurndown(), []);
   const htmlToMarkdown = (html: string): string =>
     turndown.turndown(html || "");
@@ -276,9 +274,10 @@ export function MarkdownEditor({
     }
   };
 
-  /** 独立右键菜单窗口尺寸（CSS 像素）：菜单本体 ~220 + 右侧子菜单/拾色器横向展开空间 */
+  /** 独立右键菜单窗口尺寸（逻辑/CSS 像素）：菜单本体 ~220 宽；高度按「完整字号子菜单（360px）向下展开」预留，
+      右侧预留子菜单/拾色器横向展开空间，保证所有子菜单完整可见不裁剪 */
   const CTX_MENU_WIN_W = 520;
-  const CTX_MENU_WIN_H = 420;
+  const CTX_MENU_WIN_H = 520;
 
   /** 打开独立右键菜单窗口（Tauri 环境，参考图片预览窗口实现）：
       快照当前选区与格式状态 → localStorage 传递 → 创建 md-ctx-* 透明窗口并定位到鼠标附近 */
@@ -325,9 +324,8 @@ export function MarkdownEditor({
       console.error("保存右键菜单状态失败");
       return;
     }
-    lastCtxPos.current = { x: clientX, y: clientY };
-
-    // 定位：CSS 像素 → 物理像素（乘缩放比），叠加主窗口在屏幕上的位置，并钳制在当前显示器工作区内
+    // 定位：光标的屏幕坐标 = 主窗口内容区位置（innerPosition，物理像素）+ 视口内偏移 × 缩放比。
+    // WebviewWindow 的 x/y/width/height 为逻辑像素，故统一除以缩放比换算，并钳制在当前显示器工作区内。
     let scale = 1;
     let area: WorkArea | null = null;
     let baseX = 0;
@@ -336,19 +334,24 @@ export function MarkdownEditor({
       const current = getCurrentWindow();
       scale = await current.scaleFactor();
       area = await currentWorkArea();
-      const pos = await current.outerPosition();
+      const pos = await current.innerPosition();
       baseX = pos.x;
       baseY = pos.y;
     } catch {
       // 缩放 / 工作区 / 位置查询失败时按 1:1、主窗口位于 (0,0) 处理
     }
-    const winW = Math.round(CTX_MENU_WIN_W * scale);
-    const winH = Math.round(CTX_MENU_WIN_H * scale);
-    let x = baseX + Math.round(clientX * scale);
-    let y = baseY + Math.round(clientY * scale);
+    const winW = CTX_MENU_WIN_W;
+    const winH = CTX_MENU_WIN_H;
+    let x = baseX / scale + clientX;
+    let y = baseY / scale + clientY;
     if (area) {
-      x = Math.min(Math.max(x, area.x), area.x + area.width - winW);
-      y = Math.min(Math.max(y, area.y), area.y + area.height - winH);
+      // 工作区为物理像素，换算为逻辑像素后钳制，保证窗口完整落在屏幕内
+      const ax = area.x / scale;
+      const ay = area.y / scale;
+      const aw = area.width / scale;
+      const ah = area.height / scale;
+      x = Math.min(Math.max(x, ax), ax + aw - winW);
+      y = Math.min(Math.max(y, ay), ay + ah - winH);
     }
     const params = new URLSearchParams({ key: storageKey });
     try {
@@ -466,13 +469,9 @@ export function MarkdownEditor({
         fileInputRef.current?.click();
         break;
       case "insertEmoji":
-        // 菜单在独立窗口，锚点用主窗口内最近一次右键位置
-        setEmojiAnchor({
-          left: lastCtxPos.current.x,
-          top: lastCtxPos.current.y,
-          width: 0,
-          height: 0,
-        });
+        // 菜单窗口内选中表情后回传，直接插入光标处
+        if (command.value)
+          editor?.chain().focus().insertContent(command.value).run();
         break;
       case "info":
         break;
@@ -530,7 +529,8 @@ export function MarkdownEditor({
         fileInputRef.current?.click();
         break;
       case "insertEmoji":
-        if (action.anchor) setEmojiAnchor(action.anchor);
+        // 面板内直接选中的表情，插入光标处
+        editor?.chain().focus().insertContent(action.emoji).run();
         break;
       case "info":
         return; // 快捷键介绍：仅展示

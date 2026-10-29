@@ -2977,6 +2977,94 @@ button.note-row[data-paper="dots"] {
   z-index: 1499;
 }
 
+/* 菜单独立窗口：窗口高度已按完整字号子菜单预留，子菜单统一向下展开且不裁剪 */
+.md-ctx-window .md-ctx-submenu.submenu-up {
+  top: -6px;
+  bottom: auto;
+  max-height: none;
+}
+
+/* 表情选择子菜单：搜索 + 分类 + 网格（与 EmojiPicker 同数据源） */
+.md-ctx-submenu.md-ctx-emoji-menu {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 244px;
+  min-width: 244px;
+}
+
+.md-ctx-emoji-tabs {
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.md-ctx-emoji-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.md-ctx-emoji-tab {
+  flex: 0 0 auto;
+  height: 24px;
+  padding: 0 8px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+
+.md-ctx-emoji-tab:hover {
+  background: var(--hover-fill);
+}
+
+.md-ctx-emoji-tab.active {
+  background: var(--hover-fill);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.md-ctx-emoji-grid {
+  display: grid;
+  grid-template-columns: repeat(8, 26px);
+  gap: 2px;
+  max-height: 168px;
+  overflow-y: auto;
+}
+
+.md-ctx-emoji-cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.12s, transform 0.06s;
+}
+
+.md-ctx-emoji-cell:hover {
+  background: var(--hover-fill);
+}
+
+.md-ctx-emoji-cell:active {
+  transform: scale(0.9);
+}
+
+.md-ctx-emoji-hint {
+  padding-top: 4px;
+  border-top: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
 /* 提醒状态标记 */
 .reminder-time {
   display: inline-flex;

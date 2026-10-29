@@ -25,11 +25,12 @@ interface CtxMenuState {
 
 /** 菜单命令：菜单窗口点击后通过 Tauri 事件回传给主窗口执行 */
 export type CtxCommand =
-  | { cmd: "copy" | "cut" | "selectAll" | "bold" | "strike" | "italic" | "underline" | "insertImage" | "insertEmoji" | "sizeDefault" | "info" }
+  | { cmd: "copy" | "cut" | "selectAll" | "bold" | "strike" | "italic" | "underline" | "insertImage" | "sizeDefault" | "info" }
   | { cmd: "paste"; value: string }
   | { cmd: "color" | "colorCommit"; value: string }
   | { cmd: "colorClear" | "colorClearCommit" }
-  | { cmd: "size"; value: string };
+  | { cmd: "size"; value: string }
+  | { cmd: "insertEmoji"; value: string };
 
 /** 从弹窗窗口 URL 参数读取 storageKey，再从 localStorage 取菜单状态（只读取一次） */
 function readParams(): CtxMenuState | null {
@@ -202,7 +203,7 @@ export function CtxMenuDialog() {
         await close();
         break;
       case "insertEmoji":
-        await send({ cmd: "insertEmoji" });
+        await send({ cmd: "insertEmoji", value: action.emoji });
         await close();
         break;
       case "info":
