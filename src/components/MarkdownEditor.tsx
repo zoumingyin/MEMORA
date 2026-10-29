@@ -13,8 +13,7 @@ import Image from "@tiptap/extension-image";
 import TurndownService from "turndown";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { getCurrentWindow } from "@tauri-apps/api/window";
-import { PhysicalPosition } from "@tauri-apps/api/dpi";
+import { cursorPosition, getCurrentWindow } from "@tauri-apps/api/window";
 import { isTauriRuntime } from "../repository";
 import { markdownToHtml } from "../utils/markdown";
 import { currentWorkArea, type WorkArea } from "../window/tauriWindow";
@@ -308,6 +307,19 @@ export function MarkdownEditor({
         .getPropertyValue(key)
         .trim();
     }
+    // 系统级光标位置（物理像素）：右键瞬间读取，随快照传给菜单窗口做精确定位。
+    // 不依赖 innerPosition/scaleFactor 换算，任何 DPI/缩放下都与鼠标点击处严格一致。
+    let cursorX = 0;
+    let cursorY = 0;
+    let cursorCaptured = false;
+    try {
+      const pos = await cursorPosition();
+      cursorX = pos.x;
+      cursorY = pos.y;
+      cursorCaptured = true;
+    } catch {
+      // 读取失败时退化为视口换算定位
+    }
     const snapshot = {
       selectedText: getSelectedText(),
       bold: toolActive("bold"),
@@ -317,6 +329,12 @@ export function MarkdownEditor({
       color: editor?.getAttributes("textStyle").color as string | undefined,
       isDark: document.documentElement.classList.contains("dark-glass"),
       cssVars,
+      // 定位信息：系统光标物理坐标 + 菜单窗口期望的 CSS 尺寸
+      cursorX,
+      cursorY,
+      cursorCaptured,
+      winW: CTX_MENU_WIN_W,
+      winH: CTX_MENU_WIN_H,
     };
     const storageKey = `md-ctx-menu-${Date.now()}`;
     try {
@@ -325,8 +343,8 @@ export function MarkdownEditor({
       console.error("保存右键菜单状态失败");
       return;
     }
-    // 定位：光标的屏幕坐标 = 主窗口内容区位置（innerPosition，物理像素）+ 视口内偏移 × 缩放比。
-    // WebviewWindow 的 x/y/width/height 为逻辑像素，故统一除以缩放比换算，并钳制在当前显示器工作区内。
+    // 兜底定位（cursorPosition 失败时）：主窗口内容区位置（innerPosition，物理像素）+ 视口内偏移 × 缩放比，
+    // 换算后钳制在当前显示器工作区内。
     let scale = 1;
     let area: WorkArea | null = null;
     let baseX = 0;
@@ -341,9 +359,6 @@ export function MarkdownEditor({
     } catch {
       // 缩放 / 工作区 / 位置查询失败时按 1:1、主窗口位于 (0,0) 处理
     }
-    // 定位：光标的屏幕坐标（物理像素）= 主窗口内容区位置（innerPosition）+ 视口内偏移 × 缩放比。
-    // 先用物理坐标计算并钳制在工作区内；WebviewWindow 的 x/y/width/height 为逻辑像素，
-    // 初始位置按逻辑像素传入，创建后再用 setPosition(PhysicalPosition) 精确定位（不依赖单位换算）。
     const winW = CTX_MENU_WIN_W;
     const winH = CTX_MENU_WIN_H;
     const winWP = Math.round(winW * scale);
@@ -354,14 +369,18 @@ export function MarkdownEditor({
       cx = Math.min(Math.max(cx, area.x), area.x + area.width - winWP);
       cy = Math.min(Math.max(cy, area.y), area.y + area.height - winHP);
     }
+    // 创建选项按物理像素传入（实测运行时按物理像素解释），菜单窗口创建后还会用
+    // setPosition/setSize 按物理像素精确定位与校正尺寸，双保险保证落在鼠标处。
+    const optX = cursorCaptured ? cursorX : cx;
+    const optY = cursorCaptured ? cursorY : cy;
     const params = new URLSearchParams({ key: storageKey });
     try {
       const win = new WebviewWindow(`md-ctx-${Date.now()}`, {
         url: `ctxmenu.html?${params.toString()}`,
         width: winW,
         height: winH,
-        x: cx / scale,
-        y: cy / scale,
+        x: optX,
+        y: optY,
         center: false,
         decorations: false,
         transparent: true,
@@ -376,14 +395,6 @@ export function MarkdownEditor({
         title: "右键菜单",
       });
       ctxWinRef.current = win;
-      // 用物理坐标精确定位：不依赖创建选项的单位换算，消除高分屏下位置偏差。
-      // 窗口以 visible:false 创建、首帧渲染后才显示，定位完成前不会闪现。
-      void win
-        .setPosition(new PhysicalPosition(cx, cy))
-        .catch((error) => {
-          // set-position 权限未生效时忽略，仍以创建选项中的逻辑坐标定位
-          console.error("右键菜单窗口定位失败", error);
-        });
       // 窗口加载失败（如能力文件尚未随重编译生效）→ 回退为页面内菜单，保证右键可用
       win.once("tauri://error", () => {
         ctxWinRef.current = null;

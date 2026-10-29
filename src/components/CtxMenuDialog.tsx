@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { ConfigProvider, theme as antdTheme } from "antd";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { PhysicalPosition, PhysicalSize } from "@tauri-apps/api/dpi";
 import { emit } from "@tauri-apps/api/event";
 import { isTauriRuntime } from "../repository";
 import {
@@ -21,6 +22,14 @@ interface CtxMenuState {
   isDark: boolean;
   /** 主窗口当前主题的 CSS 变量快照，注入本窗口让菜单视觉与主窗口一致 */
   cssVars: Record<string, string>;
+  /** 右键瞬间的系统光标位置（物理像素），用于把本窗口精确定位到鼠标点击处 */
+  cursorX: number;
+  cursorY: number;
+  /** cursorPosition 是否读取成功（失败时保持创建选项位置） */
+  cursorCaptured: boolean;
+  /** 菜单窗口期望的 CSS 像素尺寸（主窗口按此换算物理尺寸校正） */
+  winW: number;
+  winH: number;
 }
 
 /** 菜单命令：菜单窗口点击后通过 Tauri 事件回传给主窗口执行 */
@@ -104,13 +113,33 @@ export function CtxMenuDialog() {
     }
   }, [state]);
 
-  // 窗口以隐藏方式创建（visible:false）：首帧渲染完成后再显示并聚焦，消除白屏
+  // 窗口以隐藏方式创建（visible:false）：定位（系统光标物理坐标）并校正尺寸后再显示聚焦，
+  // 不依赖创建选项的单位换算，任何 DPI/缩放下都精确落在鼠标点击处，且不闪现白屏
   useEffect(() => {
     if (!state) return;
     if (isTauriRuntime()) {
       const win = getCurrentWindow();
-      void win.show();
-      void win.setFocus();
+      void (async () => {
+        try {
+          if (state.cursorCaptured) {
+            const scale = await win.scaleFactor();
+            await win.setPosition(
+              new PhysicalPosition(state.cursorX, state.cursorY),
+            );
+            await win.setSize(
+              new PhysicalSize(
+                Math.round(state.winW * scale),
+                Math.round(state.winH * scale),
+              ),
+            );
+          }
+        } catch (e) {
+          // 权限未生效 / 单位换算失败时，保持创建选项的位置与尺寸（同样按物理像素传入）
+          console.error("右键菜单窗口定位/校正失败", e);
+        }
+        await win.show();
+        await win.setFocus();
+      })();
     }
   }, [state]);
 
