@@ -3077,15 +3077,34 @@ button.note-row[data-paper="dots"] {
 }
 
 /* ===== 到期提醒模态弹窗（独立置顶窗口，全屏遮罩 + 屏幕居中玻璃卡片） ===== */
-.reminder-overlay {
-  position: fixed;
-  inset: 0;
+/* ===== 闹钟弹窗（独立置顶透明窗口，仅浮出提醒卡片，无背景遮罩 / 无窗口边框） ===== */
+.alarm-dialog {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+  user-select: none;
+}
+
+.alarm-body {
+  flex: 1;
+  min-height: 0;
   display: flex;
   align-items: center;
   justify-content: center;
   padding: 24px;
-  background: rgba(24, 18, 12, 0.42);
-  z-index: 1000;
+  overflow: visible;
+}
+
+/* 透明窗口内卡片投影收紧一档，避免被窗口边界裁切 */
+.alarm-body .reminder-card {
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.06),
+    inset 0 1px 0 var(--glass-highlight),
+    0 14px 40px rgba(0, 0, 0, 0.38);
 }
 
 /* ===== 图片查看器窗口（独立置顶窗口，带标题栏 + 工具栏） ===== */

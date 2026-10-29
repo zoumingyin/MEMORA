@@ -14,10 +14,10 @@
       {
         "label": "main",
         "title": "便签",
-        "width": 760,
+        "width": 422,
         "height": 540,
         "minWidth": 422,
-        "minHeight": 700,
+        "minHeight": 540,
         "resizable": true,
         "maximizable": false,
         "transparent": true,

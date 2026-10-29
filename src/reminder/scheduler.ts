@@ -1,5 +1,4 @@
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow'
-import { currentMonitor } from '@tauri-apps/api/window'
 import { listen } from '@tauri-apps/api/event'
 import { sendNotification } from '@tauri-apps/plugin-notification'
 import { Lunar } from 'lunar-javascript'
@@ -32,25 +31,33 @@ export function alarmLoopIntervalMs(alarm: AlarmItem): number {
 }
 
 /** 到期扫描间隔：30 秒 */
-const POLL_INTERVAL_MS = 30_000
+/** 轮询间隔：Worker 心跳为 500ms；Worker 创建失败时退化为页面 setInterval（1s） */
+const POLL_INTERVAL_MS = 1_000
+
+/**
+ * 创建调度心跳：优先用 Web Worker 定时器驱动——主窗口隐藏 / 被遮挡（如收纳到屏幕边缘）时
+ * 页面定时器会被 WebView 节流到分钟级，Worker 定时器不受页面可见性节流，保证准时触发。
+ * 返回停止函数。Worker 不可用（如极端环境）时退化为页面 setInterval。
+ */
+function createTicker(onTick: () => void): () => void {
+  try {
+    const worker = new Worker(new URL("./tickWorker.ts", import.meta.url), {
+      type: "module",
+    })
+    worker.onmessage = onTick
+    worker.onerror = (error) => {
+      console.error("调度心跳 Worker 异常", error)
+    }
+    return () => worker.terminate()
+  } catch (error) {
+    console.error("创建调度心跳 Worker 失败，退化为页面定时器", error)
+    const timer = setInterval(onTick, POLL_INTERVAL_MS)
+    return () => clearInterval(timer)
+  }
+}
 
 /** 已弹出提醒弹窗的闹钟 key（`条目id:闹钟id`），避免同一闹钟在确认关闭前重复开窗 */
 const openDialogIds = new Set<string>()
-
-/** 取主显示器工作区尺寸：弹窗全屏遮罩需要铺满屏幕，排除任务栏高度 */
-async function getWorkArea(): Promise<{ width: number; height: number }> {
-  if (isTauriRuntime()) {
-    try {
-      const monitor = await currentMonitor()
-      if (monitor?.workArea) {
-        return { width: monitor.workArea.size.width, height: monitor.workArea.size.height }
-      }
-    } catch (error) {
-      console.error('读取显示器工作区失败', error)
-    }
-  }
-  return { width: 1280, height: 800 }
-}
 
 function addDays(date: Date, days: number): number {
   const next = new Date(date)
@@ -122,29 +129,32 @@ function nextAlarmAt(alarm: AlarmItem): number {
   }
 }
 
-/** Tauri 环境：为到期闹钟创建屏幕居中、置顶、无边框的独立弹窗窗口 */
+/** Tauri 环境：为到期闹钟创建居中、置顶、无边框的独立窗口（交互参考图片预览弹窗：自定义标题栏 + 暗亮主题） */
 async function openReminderDialog(entry: ReminderEntry, alarm: AlarmItem): Promise<boolean> {
   const label = `reminder-${entry.id}-${alarm.id}`
   try {
     const existing = await WebviewWindow.getByLabel(label)
     if (existing) return true
 
-    const area = await getWorkArea()
+    const isDark = document.documentElement.classList.contains('dark-glass')
     const params = new URLSearchParams({
-      reminder: '1',
+      alarm: '1',
       id: entry.id,
-      alarm: alarm.id,
+      alarmId: alarm.id,
       t: entry.title,
       c: entry.content,
       time: String(alarm.remindAt),
       mode: alarm.mode,
       method: alarm.method,
+      dark: isDark ? '1' : '0',
     })
 
     new WebviewWindow(label, {
       url: `index.html?${params.toString()}`,
-      width: Math.round(area.width),
-      height: Math.round(area.height),
+      width: 400,
+      height: 480,
+      minWidth: 340,
+      minHeight: 400,
       center: true,
       decorations: false,
       transparent: true,
@@ -153,7 +163,7 @@ async function openReminderDialog(entry: ReminderEntry, alarm: AlarmItem): Promi
       skipTaskbar: true,
       focus: true,
       visible: true,
-      title: '便签提醒',
+      title: '闹钟提醒',
     })
     openDialogIds.add(`${entry.id}:${alarm.id}`)
     return true
@@ -184,47 +194,55 @@ function fallbackNotify(title: string, body: string): void {
  * 一次性闹钟确认后不再提醒；每天 / 每周 / 工作日闹钟确认后自动推进到下一次触发时间。
  */
 export function startReminderScheduler(): () => void {
+  // 防重入：1s 高频轮询下避免上一次扫描（含 await 开窗）未完成时重入导致重复处理
+  let scanning = false
   const scan = async (): Promise<void> => {
-    const state = useEntryStore.getState()
-    const now = Date.now()
-    for (const entry of state.entries) {
-      if (entry.kind !== 'reminder' || entry.done) continue
-      for (const alarm of entry.alarms) {
-        if (alarm.notified || alarm.remindAt > now) continue
-        const key = `${entry.id}:${alarm.id}`
-        if (openDialogIds.has(key)) continue
+    if (scanning) return
+    scanning = true
+    try {
+      const state = useEntryStore.getState()
+      const now = Date.now()
+      for (const entry of state.entries) {
+        if (entry.kind !== 'reminder' || entry.done) continue
+        for (const alarm of entry.alarms) {
+          if (alarm.notified || alarm.remindAt > now) continue
+          const key = `${entry.id}:${alarm.id}`
+          if (openDialogIds.has(key)) continue
 
-        if (alarm.method === 'notification') {
+          if (alarm.method === 'notification') {
+            if (isTauriRuntime()) {
+              try {
+                sendNotification({ title: entry.title, body: entry.content || entry.title })
+              } catch (error) {
+                console.error('发送系统通知失败', error)
+              }
+            } else {
+              fallbackNotify(entry.title, entry.content)
+            }
+            await state.markAlarmNotified(entry.id, alarm.id)
+            continue
+          }
+
           if (isTauriRuntime()) {
-            try {
-              sendNotification({ title: entry.title, body: entry.content || entry.title })
-            } catch (error) {
-              console.error('发送系统通知失败', error)
+            const opened = await openReminderDialog(entry, alarm)
+            // 开窗失败回退通知并标记已通知，避免轮询反复尝试同一个闹钟
+            if (!opened) {
+              fallbackNotify(entry.title, entry.content)
+              await state.markAlarmNotified(entry.id, alarm.id)
             }
           } else {
             fallbackNotify(entry.title, entry.content)
-          }
-          await state.markAlarmNotified(entry.id, alarm.id)
-          continue
-        }
-
-        if (isTauriRuntime()) {
-          const opened = await openReminderDialog(entry, alarm)
-          // 开窗失败回退通知并标记已通知，避免轮询反复尝试同一个闹钟
-          if (!opened) {
-            fallbackNotify(entry.title, entry.content)
             await state.markAlarmNotified(entry.id, alarm.id)
           }
-        } else {
-          fallbackNotify(entry.title, entry.content)
-          await state.markAlarmNotified(entry.id, alarm.id)
         }
       }
+    } finally {
+      scanning = false
     }
   }
 
   void scan()
-  const timer = setInterval(() => void scan(), POLL_INTERVAL_MS)
+  const stopTicker = createTicker(() => void scan())
 
   // 弹窗确认后回传 { entryId, alarmId }；主窗口解除弹窗登记、标记已通知，重复模式推进到下一次
   let detachConfirmed: () => void = () => undefined
@@ -249,7 +267,7 @@ export function startReminderScheduler(): () => void {
   }
 
   return () => {
-    clearInterval(timer)
+    stopTicker()
     detachConfirmed()
   }
 }

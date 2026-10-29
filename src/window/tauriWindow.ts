@@ -14,13 +14,34 @@ export interface Bounds {
   height: number
 }
 
-/** 窗口位置/尺寸持久化键：异常退出后重启恢复上次窗口形态 */
-const BOUNDS_STORAGE_KEY = 'bianqian.window.bounds.v1'
+/** 主窗口设计最小/默认尺寸（对齐 tauri.conf.json）：小于最小值的边界视为异常
+ *  （如历史收纳窄条 / 弹窗尺寸被误传），恢复时回退默认尺寸，避免恢复成窄条小窗 */
+const APP_MIN_WIDTH = 422
+const APP_MIN_HEIGHT = 540
+const APP_DEFAULT_WIDTH = 422
+const APP_DEFAULT_HEIGHT = 540
 
-/** 保存窗口边界到本地存储（异常恢复用） */
+/** 窗口位置/尺寸持久化键：v2 —— 旧 v1 键曾被收纳窄条/弹窗尺寸污染，换键丢弃历史脏数据；
+ *  无记录（首次启动）时按 tauri.conf.json 默认尺寸打开 */
+const BOUNDS_STORAGE_KEY = 'bianqian.window.bounds.v2'
+
+/**
+ * 按窗口标签隔离的存储键：弹窗（闹钟/图片预览）与主窗口共用同一 origin 的
+ * localStorage，固定键会被任何运行窗口逻辑的窗口互相覆盖；按 label 隔离，
+ * 主窗口的恢复数据只由主窗口读写。
+ */
+function boundsKey(): string {
+  try {
+    return `${BOUNDS_STORAGE_KEY}.${getCurrentWindow().label}`
+  } catch {
+    return BOUNDS_STORAGE_KEY
+  }
+}
+
+/** 保存窗口边界到本地存储（下次启动恢复用） */
 export function saveBoundsToStorage(bounds: Bounds): void {
   try {
-    localStorage.setItem(BOUNDS_STORAGE_KEY, JSON.stringify(bounds))
+    localStorage.setItem(boundsKey(), JSON.stringify(bounds))
   } catch {
     // 存储不可用时静默跳过，不影响正常功能
   }
@@ -29,7 +50,7 @@ export function saveBoundsToStorage(bounds: Bounds): void {
 /** 读取上次保存的窗口边界；无记录或数据损坏返回 null */
 export function loadBoundsFromStorage(): Bounds | null {
   try {
-    const raw = localStorage.getItem(BOUNDS_STORAGE_KEY)
+    const raw = localStorage.getItem(boundsKey())
     if (!raw) return null
     const parsed = JSON.parse(raw) as Bounds
     if (
@@ -162,6 +183,10 @@ export async function isMaximized(): Promise<boolean> {
  *  （屏幕外坐标），恢复时收缩/移回可见区域，避免透明窗口恢复成异常尺寸后不显示。 */
 export async function restoreBounds(bounds: Bounds): Promise<void> {
   let b = bounds
+  // 异常尺寸兜底：历史数据可能被写入窄条/弹窗尺寸，小于设计最小值时回退默认尺寸
+  if (b.width < APP_MIN_WIDTH || b.height < APP_MIN_HEIGHT) {
+    b = { ...b, width: APP_DEFAULT_WIDTH, height: APP_DEFAULT_HEIGHT }
+  }
   const area = await currentWorkArea()
   if (area) {
     const width = Math.min(Math.max(b.width, 320), area.width)

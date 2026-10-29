@@ -163,12 +163,13 @@ export default function App() {
     const stopScheduler = startReminderScheduler();
     // 恢复上次保存的置顶状态；背景透明度由 CSS 变量直接生效
     void applyAlwaysOnTop(useWindowStore.getState().alwaysOnTop);
-    // 异常恢复：重启后恢复上次的窗口位置/尺寸（仅自由悬浮态；收纳窄条不恢复，避免被吸附坐标干扰）
+    // 首次启动按配置默认尺寸（422×540）打开；之后每次启动恢复上次会话保存的尺寸/位置
+    // （仅自由悬浮态；收纳窄条不恢复，避免被吸附坐标干扰）。
+    // 透明窗口最大化渲染异常（任务栏有图标但界面空白）：
+    // 若上次退出/双击拖拽区后窗口处于最大化，启动时统一还原为普通尺寸。
     if (isTauriRuntime()) {
       const savedBounds = loadBoundsFromStorage();
       if (savedBounds) void restoreBounds(savedBounds);
-      // 透明窗口最大化渲染异常（任务栏有图标但界面空白）。
-      // 若上次退出/双击拖拽区后窗口处于最大化，启动时统一还原为普通尺寸。
       void getCurrentWindow()
         .isMaximized()
         .then((maximized) => {
@@ -303,15 +304,15 @@ export default function App() {
       }, SNAP_DEBOUNCE_MS);
     };
 
-    // 移动：吸附判定 + 保存边界（异常恢复）；收纳窄条态不覆盖保存的位置
+    // 移动：吸附判定 + 保存边界（供下次启动恢复）；收纳窄条态不覆盖保存的位置
     void onWindowMoved((bounds) => {
       if (!useWindowStore.getState().docked) saveBoundsToStorage(bounds);
       scheduleSnap();
     }).then((detach) => {
       detachMoved = detach;
     });
-    // 尺寸变化：保存边界（异常恢复）。最大化状态下保存全屏尺寸会让下次启动
-    // 恢复成异常的大窗口（透明窗口渲染异常），故最大化时不落盘。
+    // 尺寸变化：保存边界（供下次启动恢复）。最大化状态落盘会让下次启动恢复成
+    // 异常大窗口（透明窗口渲染异常），故最大化时不落盘。
     void onWindowResized(async (bounds) => {
       if (useWindowStore.getState().docked) return;
       const maximized = await isMaximized();

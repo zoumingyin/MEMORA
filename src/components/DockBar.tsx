@@ -43,10 +43,12 @@ export function DockBar() {
       void (async () => {
         const workArea = await currentWorkArea()
         if (!workArea) return
-        await collapseToStrip(edge, bounds, workArea)
-        // 期间用户已重新移入展开：不再切换 UI，避免窗口已恢复但界面还是窄条
+        // 期间用户已重新移入展开：不再收起，避免窗口已恢复但界面还是窄条
         if (collapseTokenRef.current !== token) return
+        // 先置收纳态再缩窗：缩窗触发的 onResized 到达时 docked 已为 true，
+        // 否则窄条尺寸会被当作正常尺寸写入启动恢复存储，重启后恢复成窄条小窗
         setDock(edge, bounds, true)
+        await collapseToStrip(edge, bounds, workArea)
       })()
     }, COLLAPSE_DEBOUNCE_MS)
   }
