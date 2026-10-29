@@ -12,8 +12,11 @@ import Link from "@tiptap/extension-link";
 import Image from "@tiptap/extension-image";
 import TurndownService from "turndown";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { isTauriRuntime } from "../repository";
 import { markdownToHtml } from "../utils/markdown";
+import { currentWorkArea, type WorkArea } from "../window/tauriWindow";
 import {
   BoldOutlined,
   CodeOutlined,
@@ -25,17 +28,17 @@ import {
   UnderlineOutlined,
   UndoOutlined,
   UnorderedListOutlined,
-  CopyOutlined,
-  ScissorOutlined,
-  SnippetsOutlined,
-  CheckSquareOutlined,
-  FontColorsOutlined,
-  FontSizeOutlined,
   SmileOutlined,
-  KeyOutlined,
 } from "@ant-design/icons";
 import { ColorPicker } from "antd";
 import EmojiPicker, { type EmojiAnchor } from "./EmojiPicker";
+import {
+  ContextMenuPanel,
+  FONT_COLORS,
+  STANDARD_COLORS,
+  type CtxMenuAction,
+} from "./ContextMenuPanel";
+import type { CtxCommand } from "./CtxMenuDialog";
 import { countMarkdownWords } from "../utils/markdown";
 
 interface MarkdownEditorProps {
@@ -43,31 +46,6 @@ interface MarkdownEditorProps {
   onChange: (value: string) => void;
   placeholder?: string;
 }
-
-/** 文字颜色板：红 / 橙 / 绿 / 蓝 / 紫 / 亮白（暗色下文字用） */
-const FONT_COLORS = [
-  { label: "红", value: "#e5484d" },
-  { label: "橙", value: "#f2994a" },
-  { label: "绿", value: "#30a46c" },
-  { label: "蓝", value: "#3b82f6" },
-  { label: "紫", value: "#8e4ec6" },
-  { label: "白", value: "#f4f1ea" },
-];
-
-/** 标准色（拾色器 presets 用） */
-const STANDARD_COLORS = [
-  "#e5484d",
-  "#f2994a",
-  "#f5d90a",
-  "#30a46c",
-  "#3b82f6",
-  "#8e4ec6",
-  "#e5489d",
-  "#000000",
-];
-
-/** 完整字号列表 */
-const FONT_SIZES = [8, 9, 10, 12, 14, 16, 18, 20, 24, 36, 48];
 
 /** 字号扩展：基于 TextStyle 的内联样式（TipTap v3 兼容实现） */
 const FontSize = Extension.create({
@@ -214,24 +192,21 @@ export function MarkdownEditor({
   const [colorOpen, setColorOpen] = useState(false);
   /** 工具栏 antd 拾色器当前颜色（打开时读取选区颜色，拖动时跟随） */
   const [colorValue, setColorValue] = useState<string | undefined>(undefined);
-  /** 右键菜单内拾色器的弹层打开状态（防止鼠标移入弹层时误关子菜单） */
-  const [ctxColorPickerOpen, setCtxColorPickerOpen] = useState(false);
-  /** 右键菜单内拾色器的初始颜色（打开子菜单时读取选区颜色） */
-  const [ctxColorValue, setCtxColorValue] = useState<string | undefined>(
-    undefined
-  );
   /** 表情选择面板锚点（工具栏按钮 / 右键菜单项触发），null 表示面板关闭 */
   const [emojiAnchor, setEmojiAnchor] = useState<EmojiAnchor | null>(null);
-  // 右键上下文菜单
+  // 右键上下文菜单（浏览器环境页面内回退；Tauri 环境为独立窗口）
   const [ctxMenu, setCtxMenu] = useState<{ top: number; left: number } | null>(
     null
   );
-  const [ctxSubmenu, setCtxSubmenu] = useState<string | null>(null);
   const editorRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const lastHtmlRef = useRef<string>("");
   /** 标记「刚刚是用户输入触发的 onChange」，同步 effect 据此跳过 setContent，避免光标跳走 */
   const isInternalUpdate = useRef(false);
+  /** 独立右键菜单窗口实例（Tauri 环境），卸载时兜底关闭 */
+  const ctxWinRef = useRef<WebviewWindow | null>(null);
+  /** 最近一次右键位置（主窗口视口 CSS 坐标），独立菜单窗口「插入表情」时作为面板锚点 */
+  const lastCtxPos = useRef({ x: 0, y: 0 });
   const turndown = useMemo(() => createTurndown(), []);
   const htmlToMarkdown = (html: string): string =>
     turndown.turndown(html || "");
@@ -302,30 +277,274 @@ export function MarkdownEditor({
     }
   };
 
-  /** 右键菜单：拦截默认右键，显示自定义上下文菜单 */
-  const handleContextMenu = (event: React.MouseEvent): void => {
-    event.preventDefault();
+  /** 独立右键菜单窗口尺寸（CSS 像素）：菜单本体 ~220 + 右侧子菜单/拾色器横向展开空间 */
+  const CTX_MENU_WIN_W = 520;
+  const CTX_MENU_WIN_H = 420;
+
+  /** 打开独立右键菜单窗口（Tauri 环境，参考图片预览窗口实现）：
+      快照当前选区与格式状态 → localStorage 传递 → 创建 md-ctx-* 透明窗口并定位到鼠标附近 */
+  const openCtxMenuWindow = async (
+    clientX: number,
+    clientY: number
+  ): Promise<void> => {
+    // 上一个菜单窗口尚未自关时兜底关闭，避免叠加
+    if (ctxWinRef.current) {
+      try {
+        await ctxWinRef.current.close();
+      } catch {
+        // 已自关 / 权限受限时忽略
+      }
+    }
+    // 快照主窗口当前主题 CSS 变量，供菜单窗口注入，保持菜单视觉与主窗口一致
+    const cssVars: Record<string, string> = {};
+    for (const key of [
+      "--field-rgb",
+      "--border",
+      "--text",
+      "--text-muted",
+      "--hover-fill",
+      "--kind-accent",
+    ]) {
+      cssVars[key] = getComputedStyle(document.documentElement)
+        .getPropertyValue(key)
+        .trim();
+    }
+    const snapshot = {
+      selectedText: getSelectedText(),
+      bold: toolActive("bold"),
+      strike: toolActive("strike"),
+      italic: toolActive("italic"),
+      underline: toolActive("underline"),
+      color: editor?.getAttributes("textStyle").color as string | undefined,
+      isDark: document.documentElement.classList.contains("dark-glass"),
+      cssVars,
+    };
+    const storageKey = `md-ctx-menu-${Date.now()}`;
+    try {
+      localStorage.setItem(storageKey, JSON.stringify(snapshot));
+    } catch {
+      console.error("保存右键菜单状态失败");
+      return;
+    }
+    lastCtxPos.current = { x: clientX, y: clientY };
+
+    // 定位：CSS 像素 → 物理像素（乘缩放比），叠加主窗口在屏幕上的位置，并钳制在当前显示器工作区内
+    let scale = 1;
+    let area: WorkArea | null = null;
+    let baseX = 0;
+    let baseY = 0;
+    try {
+      const current = getCurrentWindow();
+      scale = await current.scaleFactor();
+      area = await currentWorkArea();
+      const pos = await current.outerPosition();
+      baseX = pos.x;
+      baseY = pos.y;
+    } catch {
+      // 缩放 / 工作区 / 位置查询失败时按 1:1、主窗口位于 (0,0) 处理
+    }
+    const winW = Math.round(CTX_MENU_WIN_W * scale);
+    const winH = Math.round(CTX_MENU_WIN_H * scale);
+    let x = baseX + Math.round(clientX * scale);
+    let y = baseY + Math.round(clientY * scale);
+    if (area) {
+      x = Math.min(Math.max(x, area.x), area.x + area.width - winW);
+      y = Math.min(Math.max(y, area.y), area.y + area.height - winH);
+    }
+    const params = new URLSearchParams({ key: storageKey });
+    try {
+      const win = new WebviewWindow(`md-ctx-${Date.now()}`, {
+        url: `ctxmenu.html?${params.toString()}`,
+        width: winW,
+        height: winH,
+        x,
+        y,
+        center: false,
+        decorations: false,
+        transparent: true,
+        alwaysOnTop: true,
+        resizable: false,
+        maximizable: false,
+        minimizable: false,
+        skipTaskbar: true,
+        focus: true,
+        visible: false,
+        shadow: false,
+        title: "右键菜单",
+      });
+      ctxWinRef.current = win;
+      // 窗口加载失败（如能力文件尚未随重编译生效）→ 回退为页面内菜单，保证右键可用
+      win.once("tauri://error", () => {
+        ctxWinRef.current = null;
+        showInPageCtxMenu(clientX, clientY);
+      });
+    } catch (error) {
+      console.error("打开右键菜单窗口失败，回退为页面内菜单", error);
+      showInPageCtxMenu(clientX, clientY);
+    }
+  };
+
+  /** 页面内右键菜单（浏览器环境回退 / 独立窗口创建失败时兜底） */
+  const showInPageCtxMenu = (clientX: number, clientY: number): void => {
     const menuWidth = 220;
     const menuHeight = 520;
-    let left = event.clientX;
-    let top = event.clientY;
+    let left = clientX;
+    let top = clientY;
     // 防止菜单超出右边界
     if (left + menuWidth > window.innerWidth)
       left = window.innerWidth - menuWidth - 8;
     // 如果往下弹会超出底部，就往上弹
     if (top + menuHeight > window.innerHeight) {
-      top = event.clientY;
+      top = clientY;
     }
     if (top < 0) top = 0;
     setCtxMenu({ top, left });
-    setCtxSubmenu(null);
   };
 
-  /** 关闭右键菜单（点击别处 / Esc） */
+  /** 右键菜单：Tauri 环境创建独立菜单窗口（参考图片预览窗口）；浏览器环境保留页面内菜单 */
+  const handleContextMenu = (event: React.MouseEvent): void => {
+    event.preventDefault();
+    if (isTauriRuntime()) {
+      void openCtxMenuWindow(event.clientX, event.clientY);
+      return;
+    }
+    showInPageCtxMenu(event.clientX, event.clientY);
+  };
+
+  /** 关闭页面内右键菜单（点击别处 / Esc） */
   const closeCtxMenu = (): void => {
     setCtxMenu(null);
-    setCtxSubmenu(null);
   };
+
+  /** 独立菜单窗口命令：菜单窗口点击后通过 Tauri 事件回传，主窗口执行编辑动作 */
+  const executeWindowCommand = (command: CtxCommand): void => {
+    switch (command.cmd) {
+      case "copy":
+        void copySelection();
+        break;
+      case "cut":
+        void cutSelection();
+        break;
+      case "paste":
+        if (command.value)
+          editor?.chain().focus().insertContent(command.value).run();
+        break;
+      case "selectAll":
+        editor?.chain().focus().selectAll().run();
+        break;
+      case "bold":
+        run(() => editor?.chain().focus().toggleBold().run());
+        break;
+      case "strike":
+        run(() => editor?.chain().focus().toggleStrike().run());
+        break;
+      case "italic":
+        run(() => editor?.chain().focus().toggleItalic().run());
+        break;
+      case "underline":
+        run(() => editor?.chain().focus().toggleUnderline().run());
+        break;
+      case "color":
+        // 实时取色（拾色器拖动中），不抢焦点
+        if (command.value) editor?.commands.setColor(command.value);
+        break;
+      case "colorClear":
+        editor?.commands.unsetColor();
+        break;
+      case "colorCommit":
+        editor?.chain().focus().setColor(command.value).run();
+        break;
+      case "colorClearCommit":
+        editor?.chain().focus().unsetColor().run();
+        break;
+      case "size":
+        if (command.value) applyFontSize(command.value);
+        break;
+      case "sizeDefault":
+        applyFontSize(null);
+        break;
+      case "insertImage":
+        fileInputRef.current?.click();
+        break;
+      case "insertEmoji":
+        // 菜单在独立窗口，锚点用主窗口内最近一次右键位置
+        setEmojiAnchor({
+          left: lastCtxPos.current.x,
+          top: lastCtxPos.current.y,
+          width: 0,
+          height: 0,
+        });
+        break;
+      case "info":
+        break;
+    }
+  };
+
+  /** 页面内右键菜单动作执行（浏览器环境回退；Tauri 环境命令走 executeWindowCommand） */
+  const handleInPageAction = (action: CtxMenuAction): void => {
+    switch (action.type) {
+      case "copy":
+        void copySelection();
+        break;
+      case "cut":
+        void cutSelection();
+        break;
+      case "paste":
+        void pasteFromClipboard();
+        break;
+      case "selectAll":
+        editor?.chain().focus().selectAll().run();
+        break;
+      case "bold":
+        run(() => editor?.chain().focus().toggleBold().run());
+        break;
+      case "strike":
+        run(() => editor?.chain().focus().toggleStrike().run());
+        break;
+      case "italic":
+        run(() => editor?.chain().focus().toggleItalic().run());
+        break;
+      case "underline":
+        run(() => editor?.chain().focus().toggleUnderline().run());
+        break;
+      case "color":
+        // 实时取色，不关闭菜单
+        editor?.commands.setColor(action.value);
+        return;
+      case "colorClear":
+        // 实时清色，不关闭菜单
+        editor?.commands.unsetColor();
+        return;
+      case "colorCommit":
+        editor?.chain().focus().setColor(action.value).run();
+        break;
+      case "colorClearCommit":
+        editor?.chain().focus().unsetColor().run();
+        break;
+      case "size":
+        applyFontSize(action.value);
+        break;
+      case "sizeDefault":
+        applyFontSize(null);
+        break;
+      case "insertImage":
+        fileInputRef.current?.click();
+        break;
+      case "insertEmoji":
+        if (action.anchor) setEmojiAnchor(action.anchor);
+        break;
+      case "info":
+        return; // 快捷键介绍：仅展示
+    }
+    closeCtxMenu();
+  };
+
+  // 卸载（切换条目 / 关闭）时兜底关闭仍开着的独立菜单窗口
+  useEffect(() => {
+    return () => {
+      ctxWinRef.current?.close().catch(() => undefined);
+    };
+  }, []);
 
   /** 插入表情到光标处并关闭面板 */
   const insertEmoji = (emoji: string): void => {
@@ -379,6 +598,24 @@ export function MarkdownEditor({
       },
     },
   });
+
+  /** 监听独立菜单窗口命令（Tauri 环境；编辑器就绪后注册一次） */
+  useEffect(() => {
+    if (!isTauriRuntime() || !editor) return;
+    let unlisten: UnlistenFn | undefined;
+    let disposed = false;
+    void listen<CtxCommand>("md-ctx-command", (event) => {
+      executeWindowCommand(event.payload);
+    }).then((un) => {
+      if (disposed) un();
+      else unlisten = un;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- editor 就绪后仅需注册一次；命令处理依赖主窗口稳定引用
+  }, [editor]);
 
   // 外部 Markdown 变化（切换条目 / 外部落盘）→ 同步进编辑器（跳过自身回写）
   useEffect(() => {
@@ -747,7 +984,8 @@ export function MarkdownEditor({
         </span>
       </div>
 
-      {/* 右键上下文菜单 - 挂载到 body，不被编辑器容器的 overflow 截断 */}
+      {/* 右键上下文菜单 - 挂载到 body，不被编辑器容器的 overflow 截断
+          （浏览器环境回退为页面内菜单；Tauri 环境为独立菜单窗口，功能与样式完全一致） */}
       {ctxMenu &&
         createPortal(
           <>
@@ -759,305 +997,19 @@ export function MarkdownEditor({
                 closeCtxMenu();
               }}
             />
-            <div
-              className="md-ctx-menu"
-              style={{ top: ctxMenu.top, left: ctxMenu.left }}
-              onMouseLeave={() => {
-                // 拾色器弹层打开时（弹层在菜单外部），不关闭子菜单，避免移入取色面板时菜单消失
-                if (!ctxColorPickerOpen) setCtxSubmenu(null);
+            <ContextMenuPanel
+              active={{
+                bold: toolActive("bold"),
+                strike: toolActive("strike"),
+                italic: toolActive("italic"),
+                underline: toolActive("underline"),
               }}
-            >
-              <div className="flex">
-                {/* 复制 */}
-                <div
-                  className="md-ctx-item "
-                  onClick={() => {
-                    void copySelection();
-                    closeCtxMenu();
-                  }}
-                >
-                  <span className="md-ctx-label grid">
-                    <CopyOutlined className="justify-center" />
-                    复制
-                  </span>
-                </div>
-                {/* 剪切 */}
-                <div
-                  className="md-ctx-item"
-                  onClick={() => {
-                    void cutSelection();
-                    closeCtxMenu();
-                  }}
-                >
-                  <span className="md-ctx-label grid">
-                    <ScissorOutlined className="justify-center" />
-                    剪切
-                  </span>
-                </div>
-                {/* 粘贴 */}
-                <div
-                  className="md-ctx-item"
-                  onClick={() => {
-                    void pasteFromClipboard();
-                    closeCtxMenu();
-                  }}
-                >
-                  <span className="md-ctx-label grid">
-                    <SnippetsOutlined className="justify-center" />
-                    粘贴
-                  </span>
-                </div>
-                {/* 全选 */}
-                <div
-                  className="md-ctx-item"
-                  onClick={() => {
-                    editor?.chain().focus().selectAll().run();
-                    closeCtxMenu();
-                  }}
-                >
-                  <span className="md-ctx-label grid">
-                    <CheckSquareOutlined className="justify-center" />
-                    全选
-                  </span>
-                </div>
-              </div>
-              <div className="md-ctx-sep" />
-              <div className="flex">
-                {/* 加粗 */}
-                <div
-                  className={`md-ctx-item${toolActive("bold") ? " active" : ""}`}
-                  onClick={() => {
-                    run(() => editor?.chain().focus().toggleBold().run());
-                    closeCtxMenu();
-                  }}
-                >
-                  <span className="md-ctx-label grid">
-                    <span className="md-ctx-b text-center">B</span>
-                    加粗
-                  </span>
-                </div>
-                {/* 中划线 */}
-                <div
-                  className={`md-ctx-item${toolActive("strike") ? " active" : ""}`}
-                  onClick={() => {
-                    run(() => editor?.chain().focus().toggleStrike().run());
-                    closeCtxMenu();
-                  }}
-                >
-                  <span className="md-ctx-label grid">
-                    <span className="md-ctx-s text-center">S</span>
-                    中划线
-                  </span>
-                </div>
-                {/* 倾斜 */}
-                <div
-                  className={`md-ctx-item${toolActive("italic") ? " active" : ""}`}
-                  onClick={() => {
-                    run(() => editor?.chain().focus().toggleItalic().run());
-                    closeCtxMenu();
-                  }}
-                >
-                  <span className="md-ctx-label grid">
-                    <span className="md-ctx-i text-center">I</span>
-                    倾斜
-                  </span>
-                </div>
-                {/* 下划线 */}
-                <div
-                  className={`md-ctx-item${toolActive("underline") ? " active" : ""}`}
-                  onClick={() => {
-                    run(() => editor?.chain().focus().toggleUnderline().run());
-                    closeCtxMenu();
-                  }}
-                >
-                  <span className="md-ctx-label grid">
-                    <span className="md-ctx-u text-center">U</span>
-                    下划线
-                  </span>
-                </div>
-              </div>
-              <div className="md-ctx-sep" />
-              {/* 文字颜色 */}
-              <div
-                className="md-ctx-item"
-                onMouseEnter={() => setCtxSubmenu("color")}
-              >
-                <span className="md-ctx-label">
-                  <FontColorsOutlined style={{ color: "#e5484d" }} />
-                  文字颜色
-                </span>
-                <span className="md-ctx-arrow">›</span>
-                {ctxSubmenu === "color" && (
-                  <div
-                    className="md-ctx-submenu submenu-up"
-                    onMouseEnter={() => {
-                      setCtxSubmenu("color");
-                      setCtxColorPickerOpen(false);
-                      setCtxColorValue(
-                        editor?.getAttributes("textStyle").color as
-                          | string
-                          | undefined
-                      );
-                    }}
-                  >
-                    <button
-                      type="button"
-                      className="md-ctx-color-item"
-                      onClick={() => {
-                        editor?.chain().focus().unsetColor().run();
-                        closeCtxMenu();
-                      }}
-                    >
-                      <span
-                        style={{
-                          display: "inline-block",
-                          width: "16px",
-                          height: "16px",
-                          background: "#000000",
-                          borderRadius: "3px",
-                          marginRight: "8px",
-                        }}
-                      />
-                      默认字体颜色
-                    </button>
-                    <div className="md-ctx-sep" />
-                    <div style={{ padding: "4px" }}>
-                      <ColorPicker
-                        rootClassName="md-ctx-color-picker"
-                        defaultValue={ctxColorValue}
-                        format="hex"
-                        disabledAlpha
-                        allowClear
-                        presets={[
-                          {
-                            label: "常用色",
-                            colors: FONT_COLORS.map((c) => c.value),
-                          },
-                          { label: "标准色", colors: STANDARD_COLORS },
-                        ]}
-                        onOpenChange={setCtxColorPickerOpen}
-                        onChange={(value) => {
-                          if (value.cleared) {
-                            editor?.commands.unsetColor();
-                            return;
-                          }
-                          editor?.commands.setColor(value.toHexString());
-                        }}
-                        onChangeComplete={(value) => {
-                          if (value.cleared) {
-                            editor?.chain().focus().unsetColor().run();
-                          } else {
-                            editor
-                              ?.chain()
-                              .focus()
-                              .setColor(value.toHexString())
-                              .run();
-                          }
-                          closeCtxMenu();
-                        }}
-                        onClear={() => {
-                          editor?.chain().focus().unsetColor().run();
-                          closeCtxMenu();
-                        }}
-                      >
-                        <div
-                          className="md-ctx-color-trigger"
-                          title="打开 antd 拾色器"
-                        >
-                          自定义颜色
-                        </div>
-                      </ColorPicker>
-                    </div>
-                  </div>
-                )}
-              </div>
-              {/* 文字大小 */}
-              <div
-                className="md-ctx-item"
-                onMouseEnter={() => setCtxSubmenu("size")}
-              >
-                <span className="md-ctx-label">
-                  <FontSizeOutlined />
-                  文字大小
-                </span>
-                <span className="md-ctx-arrow">›</span>
-                {ctxSubmenu === "size" && (
-                  <div
-                    className="md-ctx-submenu submenu-up"
-                    onMouseEnter={() => setCtxSubmenu("size")}
-                  >
-                    {FONT_SIZES.map((size) => (
-                      <button
-                        key={size}
-                        type="button"
-                        className="md-ctx-color-item"
-                        onClick={() => {
-                          applyFontSize(`${size}px`);
-                          closeCtxMenu();
-                        }}
-                      >
-                        {size}
-                      </button>
-                    ))}
-                    <div className="md-ctx-sep" />
-                    <button
-                      type="button"
-                      className="md-ctx-color-item"
-                      onClick={() => {
-                        applyFontSize(null);
-                        closeCtxMenu();
-                      }}
-                    >
-                      默认 (13px)
-                    </button>
-                  </div>
-                )}
-              </div>
-              <div className="md-ctx-sep" />
-              {/* 插入图片 */}
-              <div
-                className="md-ctx-item"
-                onClick={() => {
-                  fileInputRef.current?.click();
-                  closeCtxMenu();
-                }}
-              >
-                <span className="md-ctx-label">
-                  <PictureOutlined />
-                  插入图片
-                </span>
-              </div>
-              {/* 插入表情 */}
-              <div
-                className="md-ctx-item"
-                onClick={(event) => {
-                  const rect = event.currentTarget.getBoundingClientRect();
-                  setEmojiAnchor({
-                    left: rect.left,
-                    top: rect.top,
-                    width: rect.width,
-                    height: rect.height,
-                  });
-                  closeCtxMenu();
-                }}
-              >
-                <span className="md-ctx-label">
-                  <SmileOutlined />
-                  插入表情
-                </span>
-              </div>
-              <div className="md-ctx-sep" />
-              {/* 快捷键介绍 */}
-              <div
-                className="md-ctx-item"
-                title="快捷键：Ctrl+B 加粗 / Ctrl+I 斜体 / Ctrl+U 下划线 / Ctrl+Z 撤销"
-              >
-                <span className="md-ctx-label">
-                  <KeyOutlined />
-                  快捷键介绍
-                </span>
-              </div>
-            </div>
+              colorValue={
+                editor?.getAttributes("textStyle").color as string | undefined
+              }
+              style={{ top: ctxMenu.top, left: ctxMenu.left }}
+              onAction={handleInPageAction}
+            />
           </>,
           document.body
         )}

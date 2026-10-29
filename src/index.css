@@ -2963,6 +2963,20 @@ button.note-row[data-paper="dots"] {
   background: var(--hover-fill);
 }
 
+/* 右键菜单独立窗口（md-ctx-* Tauri 窗口）：透明窗口内遮罩铺满，
+   菜单面板落在窗口左上角，子菜单/拾色器在透明区域向右展开不被裁剪 */
+.md-ctx-window {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+.md-ctx-window-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 1499;
+}
+
 /* 提醒状态标记 */
 .reminder-time {
   display: inline-flex;
