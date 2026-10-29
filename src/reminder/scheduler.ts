@@ -40,19 +40,24 @@ const POLL_INTERVAL_MS = 1_000
  * 返回停止函数。Worker 不可用（如极端环境）时退化为页面 setInterval。
  */
 function createTicker(onTick: () => void): () => void {
+  // 页面兜底定时器：常驻 1s 扫描一次。窗口隐藏时它会被 WebView 节流到分钟级，
+  // 准时触发由 Worker 心跳（500ms、不受页面可见性节流）承担，此处仅作失效兜底
+  const fallback = window.setInterval(onTick, POLL_INTERVAL_MS)
+  let worker: Worker | null = null
   try {
-    const worker = new Worker(new URL("./tickWorker.ts", import.meta.url), {
+    worker = new Worker(new URL("./tickWorker.ts", import.meta.url), {
       type: "module",
     })
     worker.onmessage = onTick
     worker.onerror = (error) => {
       console.error("调度心跳 Worker 异常", error)
     }
-    return () => worker.terminate()
   } catch (error) {
-    console.error("创建调度心跳 Worker 失败，退化为页面定时器", error)
-    const timer = setInterval(onTick, POLL_INTERVAL_MS)
-    return () => clearInterval(timer)
+    console.error("创建调度心跳 Worker 失败，仅使用页面定时器兜底", error)
+  }
+  return () => {
+    window.clearInterval(fallback)
+    worker?.terminate()
   }
 }
 
@@ -150,7 +155,9 @@ async function openReminderDialog(entry: ReminderEntry, alarm: AlarmItem): Promi
     })
 
     new WebviewWindow(label, {
-      url: `index.html?${params.toString()}`,
+      // 独立轻量入口（alarm.html）：只打包闹钟卡片所需代码；
+      // visible:false 隐藏创建，首帧渲染完成后再 show，消除加载延迟
+      url: `alarm.html?${params.toString()}`,
       width: 400,
       height: 480,
       minWidth: 340,
@@ -162,7 +169,7 @@ async function openReminderDialog(entry: ReminderEntry, alarm: AlarmItem): Promi
       resizable: false,
       skipTaskbar: true,
       focus: true,
-      visible: true,
+      visible: false,
       title: '闹钟提醒',
     })
     openDialogIds.add(`${entry.id}:${alarm.id}`)

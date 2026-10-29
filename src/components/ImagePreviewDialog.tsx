@@ -80,6 +80,15 @@ export function ImagePreviewDialog() {
     return () => document.body.classList.remove('img-viewer-window')
   }, [])
 
+  // 窗口以隐藏方式创建（visible:false）：首帧渲染完成后再显示并聚焦，
+  // 消除 Webview 加载主 bundle 期间的数秒白屏
+  useEffect(() => {
+    if (!isTauriRuntime()) return
+    const win = getCurrentWindow()
+    void win.show()
+    void win.setFocus()
+  }, [])
+
   const handleClose = async (): Promise<void> => {
     if (isTauriRuntime()) {
       try {

@@ -3,6 +3,7 @@ import dayjs from 'dayjs'
 import { Button, DatePicker, InputNumber, Modal, Select } from 'antd'
 import type { AlarmItem, AlarmMethod, AlarmMode } from '../types/entry'
 import { alarmLoopIntervalMs } from '../reminder/scheduler'
+import { toMinuteStart } from '../utils/format'
 
 /** 闹钟提醒模式选项（存储值 → 界面文案），对齐参考图：单次/循环/每天/每周/每月/每年阳历/每年农历 */
 const MODE_OPTIONS: Array<{ value: AlarmMode; label: string }> = [
@@ -57,7 +58,7 @@ export function AlarmEditorDialog({ alarm, onSave, onClose }: AlarmEditorDialogP
       title="设置闹钟"
       okText="确定"
       cancelText="取消"
-      width={400}
+      width={300}
       centered
       onOk={() => {
         const totalMin = Math.max(
@@ -66,7 +67,8 @@ export function AlarmEditorDialog({ alarm, onSave, onClose }: AlarmEditorDialogP
         )
         onSave({
           id: alarm.id,
-          remindAt,
+          // 秒数归零：闹钟整时整分触发，不受设定时携带的秒数偏差影响
+          remindAt: toMinuteStart(remindAt),
           mode,
           method,
           notified: alarm.notified,
@@ -123,14 +125,21 @@ export function AlarmEditorDialog({ alarm, onSave, onClose }: AlarmEditorDialogP
           <label>提醒时间</label>
           <div className="alarm-dt">
             <DatePicker
+            size='small'
+              classNames={{ popup: { root: 'alarm-picker-dropdown' } }}
               showTime={{ format: 'HH:mm' }}
               format="YYYY-MM-DD HH:mm"
               value={dayjs(remindAt)}
               onChange={(value) => {
-                if (value) setRemindAt(value.valueOf())
+                if (value) setRemindAt(toMinuteStart(value.valueOf()))
               }}
             />
-            <Button type="link" size="small" className="alarm-now" onClick={() => setRemindAt(Date.now())}>
+            <Button
+              type="link"
+              size="small"
+              className="alarm-now"
+              onClick={() => setRemindAt(toMinuteStart(Date.now()))}
+            >
               设为当前时间
             </Button>
           </div>

@@ -3511,6 +3511,82 @@ button.note-row[data-paper="dots"] {
   min-width: 0;
 }
 
+/* ===== 闹钟编辑弹窗：日期时间下拉面板压缩版 =====
+   主窗口 422px 窄窗下 antd 默认面板（日期格 24px + 双时间列）宽约 500px+，会溢出截断。
+   这里把日期格/时间列/字号整体压小，总宽控制在 ~310px 内，可完整显示不重叠。 */
+.alarm-picker-dropdown .ant-picker-panel {
+  border-radius: 10px;
+}
+.alarm-picker-dropdown .ant-picker-date-panel {
+  width: 212px;
+}
+.alarm-picker-dropdown .ant-picker-header {
+  height: 32px;
+  line-height: 32px;
+  padding: 0 4px;
+}
+.alarm-picker-dropdown .ant-picker-header-view {
+  line-height: 32px;
+}
+.alarm-picker-dropdown .ant-picker-header-view button {
+  font-size: 12px;
+  font-weight: 600;
+}
+.alarm-picker-dropdown .ant-picker-header button {
+  padding: 0 3px;
+  font-size: 11px;
+}
+.alarm-picker-dropdown .ant-picker-content {
+  height: auto;
+  width: 100%;
+}
+.alarm-picker-dropdown .ant-picker-content th {
+  height: 20px;
+  line-height: 20px;
+  font-size: 10.5px;
+  padding: 0;
+}
+.alarm-picker-dropdown .ant-picker-cell {
+  padding: 1px 0;
+}
+.alarm-picker-dropdown .ant-picker-cell::before {
+  height: 20px;
+  top: 1px;
+  bottom: 1px;
+}
+.alarm-picker-dropdown .ant-picker-cell .ant-picker-cell-inner {
+  min-width: 22px;
+  height: 20px;
+  line-height: 20px;
+  font-size: 14px;
+  padding: 0 2px;
+  border-radius: 5px;
+}
+.alarm-picker-dropdown .ant-picker-footer {
+  padding: 3px 8px;
+}
+.alarm-picker-dropdown .ant-picker-today-btn {
+  font-size: 12px;
+  height: 20px;
+  line-height: 20px;
+  padding: 0 4px;
+}
+.alarm-picker-dropdown .ant-picker-time-panel {
+  width: auto;
+  min-width: 0;
+}
+.alarm-picker-dropdown .ant-picker-time-panel-column {
+  width: 50px;
+}
+.alarm-picker-dropdown .ant-picker-time-panel-cell-inner {
+  height: 20px;
+  line-height: 20px;
+  font-size: 12px;
+  min-width: 34px;
+  padding: 0 4px;
+  border-radius: 4px;
+}
+
 /* 非 antd 的自定义输入（详情标题 / Markdown / 待办 / 时间输入）聚焦/激活态用控件边框色；
    antd 的 Input / InputNumber / DatePicker / Select 边框、聚焦色、focus ring 全部由主题（ConfigProvider）控制 */
 .detail-title:focus,

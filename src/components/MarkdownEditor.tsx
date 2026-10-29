@@ -260,7 +260,9 @@ export function MarkdownEditor({
         key: storageKey,
       });
       new WebviewWindow(label, {
-        url: `index.html?${params.toString()}`,
+        // 独立轻量入口（imagePreview.html）：只打包查看器所需代码，秒开；
+        // visible:false 隐藏创建，首帧渲染完成后再 show，避免加载期白屏
+        url: `imagePreview.html?${params.toString()}`,
         width: 900,
         height: 650,
         minWidth: 400,
@@ -272,7 +274,7 @@ export function MarkdownEditor({
         resizable: true,
         skipTaskbar: false,
         focus: true,
-        visible: true,
+        visible: false,
         title: "图片预览",
       });
     } catch (error) {

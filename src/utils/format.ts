@@ -12,6 +12,13 @@ export function toInputValue(ms: number): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
+/** 闹钟时间归整：秒数归零只保留小时和分钟，确保整时整分触发、不受秒数偏差影响 */
+export function toMinuteStart(ms: number): number {
+  const d = new Date(ms)
+  d.setSeconds(0, 0)
+  return d.getTime()
+}
+
 /** 相对时间描述：剩余 / 已过多久 */
 export function formatRelative(ms: number): string {
   const diff = ms - Date.now()

@@ -183,6 +183,15 @@ export function AlarmDialog() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  // 窗口以隐藏方式创建（visible:false）：首帧渲染完成后再显示并聚焦，
+  // 消除 Webview 加载期间的空白/延迟（权限需 allow-show / allow-set-focus）
+  useEffect(() => {
+    if (!isTauriRuntime()) return
+    const win = getCurrentWindow()
+    void win.show()
+    void win.setFocus()
+  }, [])
+
   // 标记已通知 + 关闭窗口（确认 / 进入便签 / 关闭按钮 / Esc 共用）
   const finishAndClose = useCallback(
     async (openNote: boolean): Promise<void> => {

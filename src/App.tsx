@@ -17,6 +17,7 @@ import {
   saveBoundsToStorage,
 } from "./window/tauriWindow";
 import { autoSnapIfNearEdge } from "./window/edgeDock";
+import { toMinuteStart } from "./utils/format";
 import { startReminderScheduler } from "./reminder/scheduler";
 import { isTauriRuntime } from "./repository";
 import { loadCloseBehavior } from "./window/closeBehavior";
@@ -223,7 +224,7 @@ export default function App() {
             ? entryState.currentKind
             : entryState.filter;
         const input: NewEntryInput = { title: "", content: "" };
-        if (kind === "reminder") input.remindAt = Date.now() + 3600_000;
+        if (kind === "reminder") input.remindAt = toMinuteStart(Date.now() + 3600_000);
         void entryState.addEntry(input).then((entry) => {
           if (entry) useEntryStore.getState().setSelectedId(entry.id);
         });
@@ -450,7 +451,7 @@ export default function App() {
   // 按选定类型创建并进入详情（窄窗口直接进详情页）
   const handleCreateWithKind = async (kind: EntryKind): Promise<void> => {
     const input: NewEntryInput = { title: "", content: "" };
-    if (kind === "reminder") input.remindAt = Date.now() + 3600_000;
+    if (kind === "reminder") input.remindAt = toMinuteStart(Date.now() + 3600_000);
     const entry = await useEntryStore.getState().addEntry(input, kind);
     setCreateOpen(false);
     if (entry) {

@@ -5,6 +5,8 @@
   "windows": ["image-preview-*"],
   "permissions": [
     "core:default",
+    "core:window:allow-show",
+    "core:window:allow-set-focus",
     "core:window:allow-close",
     "core:window:allow-minimize",
     "core:window:allow-maximize",
