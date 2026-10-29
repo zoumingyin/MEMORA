@@ -16,7 +16,7 @@ export class SqliteEntryRepository implements EntryRepository {
   async listAll(): Promise<Entry[]> {
     const database = await getDb()
     const rows = await database.select<EntryRow[]>(
-      'SELECT * FROM entries ORDER BY updated_at DESC',
+      'SELECT * FROM entries WHERE deleted_at IS NULL ORDER BY updated_at DESC',
     )
     return rows.map(rowToEntry)
   }
@@ -24,7 +24,7 @@ export class SqliteEntryRepository implements EntryRepository {
   async listByKind(kind: EntryKind): Promise<Entry[]> {
     const database = await getDb()
     const rows = await database.select<EntryRow[]>(
-      'SELECT * FROM entries WHERE kind = $1 ORDER BY updated_at DESC',
+      'SELECT * FROM entries WHERE kind = $1 AND deleted_at IS NULL ORDER BY updated_at DESC',
       [kind],
     )
     return rows.map(rowToEntry)
@@ -198,6 +198,37 @@ export class SqliteEntryRepository implements EntryRepository {
   async remove(id: string): Promise<void> {
     const database = await getDb()
     await database.execute('DELETE FROM entries WHERE id = $1', [id])
+  }
+
+  async listTrash(): Promise<Entry[]> {
+    const database = await getDb()
+    const rows = await database.select<EntryRow[]>(
+      'SELECT * FROM entries WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC',
+    )
+    return rows.map(rowToEntry)
+  }
+
+  async moveToTrash(id: string): Promise<void> {
+    const database = await getDb()
+    // 仅写 deleted_at，不改动 updated_at：恢复后保留原编辑时间
+    await database.execute('UPDATE entries SET deleted_at = $2 WHERE id = $1', [
+      id,
+      Date.now(),
+    ])
+  }
+
+  async restore(id: string): Promise<void> {
+    const database = await getDb()
+    await database.execute('UPDATE entries SET deleted_at = NULL WHERE id = $1', [id])
+  }
+
+  async purge(id: string): Promise<void> {
+    await this.remove(id)
+  }
+
+  async emptyTrash(): Promise<void> {
+    const database = await getDb()
+    await database.execute('DELETE FROM entries WHERE deleted_at IS NOT NULL')
   }
 
   async markNotified(id: string): Promise<void> {

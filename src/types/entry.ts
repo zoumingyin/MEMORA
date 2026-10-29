@@ -19,6 +19,8 @@ export interface BaseEntry {
   color?: PaperColor
   /** 纸张纹理（存于 entries.paper 列；NULL/缺省视为 plain 素白） */
   paper?: PaperStyle
+  /** 废纸篓：软删除时间戳；null/undefined 表示未删除（正常列表不展示） */
+  deletedAt?: number | null
 }
 
 /** 纸张底色：plain 跟随主题，其余为淡彩纸色 */
@@ -123,6 +125,8 @@ export interface EntryRow {
   color: string | null
   /** 纸张纹理 key，NULL = plain */
   paper: string | null
+  /** 废纸篓：软删除时间戳（毫秒），NULL = 未删除 */
+  deleted_at: number | null
 }
 
 /** 新建条目时的输入载荷（按分类不同携带可选字段） */

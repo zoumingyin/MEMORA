@@ -111,6 +111,15 @@ ALTER TABLE entries ADD COLUMN color TEXT;
 ALTER TABLE entries ADD COLUMN paper TEXT;
 "#,
         },
+        Migration {
+            version: 6,
+            description: "add deleted_at column: trash soft-delete timestamp (NULL = not deleted)",
+            kind: MigrationKind::Up,
+            sql: r#"
+ALTER TABLE entries ADD COLUMN deleted_at INTEGER;
+CREATE INDEX IF NOT EXISTS idx_entries_deleted ON entries(deleted_at);
+"#,
+        },
     ];
 
     tauri::Builder::default()

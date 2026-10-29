@@ -44,12 +44,14 @@ function saveAll(entries: Entry[]): void {
 /** 非 Tauri 运行环境下的兜底仓储，数据存浏览器 localStorage，仅用于页面预览 */
 export class MemoryEntryRepository implements EntryRepository {
   async listAll(): Promise<Entry[]> {
-    return loadAll().sort((a, b) => b.updatedAt - a.updatedAt)
+    return loadAll()
+      .filter((entry) => entry.deletedAt == null)
+      .sort((a, b) => b.updatedAt - a.updatedAt)
   }
 
   async listByKind(kind: EntryKind): Promise<Entry[]> {
     return loadAll()
-      .filter((entry) => entry.kind === kind)
+      .filter((entry) => entry.kind === kind && entry.deletedAt == null)
       .sort((a, b) => b.updatedAt - a.updatedAt)
   }
 
@@ -177,6 +179,37 @@ export class MemoryEntryRepository implements EntryRepository {
 
   async remove(id: string): Promise<void> {
     saveAll(loadAll().filter((entry) => entry.id !== id))
+  }
+
+  async listTrash(): Promise<Entry[]> {
+    return loadAll()
+      .filter((entry) => entry.deletedAt != null)
+      .sort((a, b) => (b.deletedAt ?? 0) - (a.deletedAt ?? 0))
+  }
+
+  async moveToTrash(id: string): Promise<void> {
+    // 仅写 deletedAt，不改动 updatedAt：恢复后保留原编辑时间
+    const entries = loadAll()
+    const target = entries.find((entry) => entry.id === id)
+    if (!target) return
+    target.deletedAt = Date.now()
+    saveAll(entries)
+  }
+
+  async restore(id: string): Promise<void> {
+    const entries = loadAll()
+    const target = entries.find((entry) => entry.id === id)
+    if (!target) return
+    target.deletedAt = null
+    saveAll(entries)
+  }
+
+  async purge(id: string): Promise<void> {
+    await this.remove(id)
+  }
+
+  async emptyTrash(): Promise<void> {
+    saveAll(loadAll().filter((entry) => entry.deletedAt == null))
   }
 
   async markNotified(id: string): Promise<void> {

@@ -76,7 +76,14 @@ interface EntryState {
   importEntries: (entries: Entry[]) => Promise<number>
   toggleTodo: (id: string) => Promise<void>
   toggleReminderDone: (id: string) => Promise<void>
-  removeEntry: (id: string) => Promise<void>
+  /** 废纸篓内容（软删除条目，按删除时间倒序） */
+  trash: Entry[]
+  loadTrash: () => Promise<void>
+  /** 删除 = 移入废纸篓（软删除），可从废纸篓恢复或彻底删除 */
+  moveToTrash: (id: string) => Promise<void>
+  restoreEntry: (id: string) => Promise<void>
+  purgeEntry: (id: string) => Promise<void>
+  emptyTrash: () => Promise<void>
   updateEntry: (id: string, patch: Partial<Entry>) => Promise<void>
   markNotified: (id: string) => Promise<void>
   /** 标记某条提醒下的单个闹钟已通知（按闹钟 id） */
@@ -221,12 +228,59 @@ export const useEntryStore = create<EntryState>((set, get) => ({
     }
   },
 
-  removeEntry: async (id) => {
+  trash: [],
+
+  loadTrash: async () => {
     try {
-      await getRepository().remove(id)
-      set((state) => ({ entries: state.entries.filter((entry) => entry.id !== id) }))
+      const trash = await getRepository().listTrash()
+      set({ trash })
     } catch (error) {
-      console.error('删除条目失败', error)
+      console.error('加载废纸篓失败', error)
+    }
+  },
+
+  moveToTrash: async (id) => {
+    const target = get().entries.find((entry) => entry.id === id)
+    try {
+      await getRepository().moveToTrash(id)
+      set((state) => ({
+        entries: state.entries.filter((entry) => entry.id !== id),
+        // 本地先补 deletedAt，无需重新拉取即可在废纸篓视图立即可见
+        trash: target
+          ? [{ ...target, deletedAt: Date.now() }, ...state.trash]
+          : state.trash,
+      }))
+    } catch (error) {
+      console.error('移入废纸篓失败', error)
+    }
+  },
+
+  restoreEntry: async (id) => {
+    try {
+      await getRepository().restore(id)
+      set((state) => ({ trash: state.trash.filter((entry) => entry.id !== id) }))
+      // 恢复后重新拉取主列表（恢复条目可能落在任意分类）
+      await get().loadAll()
+    } catch (error) {
+      console.error('从废纸篓恢复失败', error)
+    }
+  },
+
+  purgeEntry: async (id) => {
+    try {
+      await getRepository().purge(id)
+      set((state) => ({ trash: state.trash.filter((entry) => entry.id !== id) }))
+    } catch (error) {
+      console.error('彻底删除条目失败', error)
+    }
+  },
+
+  emptyTrash: async () => {
+    try {
+      await getRepository().emptyTrash()
+      set({ trash: [] })
+    } catch (error) {
+      console.error('清空废纸篓失败', error)
     }
   },
 

@@ -1,7 +1,13 @@
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { ConfigProvider, Button, theme as antdTheme } from "antd";
-import { PlusOutlined } from "@ant-design/icons";
+import {
+  ConfigProvider,
+  Button,
+  Badge,
+  message,
+  theme as antdTheme,
+} from "antd";
+import { PlusOutlined, RestOutlined } from "@ant-design/icons";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useEntryStore } from "./store/useEntryStore";
@@ -31,6 +37,7 @@ import { DockBar } from "./components/DockBar";
 import { CloseConfirmDialog } from "./components/CloseConfirmDialog";
 import { CalendarPane } from "./components/CalendarPane";
 import { CreateKindDialog } from "./components/CreateKindDialog";
+import { TrashPane } from "./components/TrashPane";
 
 /** 移动事件停止多久后再判定吸附，避免读到拖拽中的旧坐标 */
 const SNAP_DEBOUNCE_MS = 160;
@@ -86,9 +93,10 @@ export default function App() {
   const filter = useEntryStore((state) => state.filter);
   const view = useEntryStore((state) => state.view);
   const entries = useEntryStore((state) => state.entries);
+  const trash = useEntryStore((state) => state.trash);
+  const moveToTrash = useEntryStore((state) => state.moveToTrash);
   const selectedId = useEntryStore((state) => state.selectedId);
   const setSelectedId = useEntryStore((state) => state.setSelectedId);
-  const removeEntry = useEntryStore((state) => state.removeEntry);
   const opacity = useWindowStore((state) => state.opacity);
   const theme = useWindowStore((state) => state.theme);
   // 响应式视口：窄窗口（<620px）切换单栏（列表 ↔ 详情）
@@ -101,6 +109,8 @@ export default function App() {
   const [quickOpen, setQuickOpen] = useState(false);
   // 「+ 新建」的类型选择弹窗
   const [createOpen, setCreateOpen] = useState(false);
+  // 废纸篓视图：开启后左侧列表区域替换为 TrashPane（不持久化，重启回到列表）
+  const [trashOpen, setTrashOpen] = useState(false);
 
   // 主题由设置项手动切换（亮色 / 暗色），与背景透明度互不影响；
   // 暗色主题：深色面板 + 浅色文字；默认亮色主题（深色文字），保证浅色/白色壁纸上的可读性
@@ -158,8 +168,9 @@ export default function App() {
   }, [selectedId, currentKind, entries]);
 
   useEffect(() => {
-    // 启动时加载本机条目
+    // 启动时加载本机条目 + 废纸篓计数（角标展示）
     void useEntryStore.getState().loadAll();
+    void useEntryStore.getState().loadTrash();
     // 启动到期提醒轮询，返回的清理函数随组件卸载执行
     const stopScheduler = startReminderScheduler();
     // 恢复上次保存的置顶状态；背景透明度由 CSS 变量直接生效
@@ -224,7 +235,8 @@ export default function App() {
             ? entryState.currentKind
             : entryState.filter;
         const input: NewEntryInput = { title: "", content: "" };
-        if (kind === "reminder") input.remindAt = toMinuteStart(Date.now() + 3600_000);
+        if (kind === "reminder")
+          input.remindAt = toMinuteStart(Date.now() + 3600_000);
         void entryState.addEntry(input).then((entry) => {
           if (entry) useEntryStore.getState().setSelectedId(entry.id);
         });
@@ -451,7 +463,8 @@ export default function App() {
   // 按选定类型创建并进入详情（窄窗口直接进详情页）
   const handleCreateWithKind = async (kind: EntryKind): Promise<void> => {
     const input: NewEntryInput = { title: "", content: "" };
-    if (kind === "reminder") input.remindAt = toMinuteStart(Date.now() + 3600_000);
+    if (kind === "reminder")
+      input.remindAt = toMinuteStart(Date.now() + 3600_000);
     const entry = await useEntryStore.getState().addEntry(input, kind);
     setCreateOpen(false);
     if (entry) {
@@ -460,10 +473,22 @@ export default function App() {
     }
   };
 
+  // 删除 = 移入废纸篓（软删除），可从废纸篓恢复
   const handleRemove = (id: string): void => {
     setSelectedId(null);
     setDetailView(false);
-    void removeEntry(id);
+    void moveToTrash(id);
+  };
+
+  // 打开废纸篓视图：拉取最新内容并退出详情
+  const handleOpenTrash = (): void => {
+    setTrashOpen(true);
+    setDetailView(false);
+    void useEntryStore.getState().loadTrash();
+  };
+
+  const handleCloseTrash = (): void => {
+    setTrashOpen(false);
   };
 
   // 窄窗口：点条目进入详情（宽窗口忽略 detailView，两栏同显）
@@ -501,6 +526,8 @@ export default function App() {
                   <CategoryTabs />
                   <CalendarPane onSelect={handleSelect} />
                 </>
+              ) : trashOpen ? (
+                <TrashPane onBack={handleCloseTrash} />
               ) : (
                 <>
                   <div className="flex items-center">
@@ -511,14 +538,31 @@ export default function App() {
                     <span className="list-title">
                       {filter === "all" ? "全部笔记" : KIND_LABEL[filter]}
                     </span>
-                    <Button
-                      type="primary"
-                      shape="circle"
-                      size="small"
-                      icon={<PlusOutlined />}
-                      title="新建一条"
-                      onClick={handleCreate}
-                    />
+                    <div className="flex items-center gap-1.5">
+                      <Badge
+                        count={trash.length}
+                        size="small"
+                        offset={[-3, 3]}
+                        title={`废纸篓（${trash.length} 条）`}
+                      >
+                        <Button
+                          type="text"
+                          shape="circle"
+                          size="small"
+                          icon={<RestOutlined />}
+                          title="废纸篓"
+                          onClick={handleOpenTrash}
+                        />
+                      </Badge>
+                      <Button
+                        type="primary"
+                        shape="circle"
+                        size="small"
+                        icon={<PlusOutlined />}
+                        title="新建一条"
+                        onClick={handleCreate}
+                      />
+                    </div>
                   </div>
                   <EntryList onSelect={handleSelect} />
                 </>

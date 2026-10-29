@@ -19,7 +19,18 @@ export interface EntryRepository {
   listByKind(kind: EntryKind): Promise<Entry[]>
   create(kind: EntryKind, input: NewEntryInput): Promise<Entry>
   update(id: string, patch: Partial<Entry>): Promise<void>
+  /** 彻底删除（硬删除，仅废纸篓内部使用；常规删除请走 moveToTrash） */
   remove(id: string): Promise<void>
+  /** 废纸篓：列出全部软删除条目 */
+  listTrash(): Promise<Entry[]>
+  /** 移入废纸篓（软删除：写入 deleted_at，不改动 updated_at） */
+  moveToTrash(id: string): Promise<void>
+  /** 从废纸篓恢复（清除 deleted_at） */
+  restore(id: string): Promise<void>
+  /** 彻底删除单条废纸篓条目 */
+  purge(id: string): Promise<void>
+  /** 清空废纸篓（彻底删除全部软删除条目） */
+  emptyTrash(): Promise<void>
   /** 标记提醒已通知，避免重复弹窗 */
   markNotified(id: string): Promise<void>
   /** 标记某条提醒下的单个闹钟已通知（按闹钟 id） */
@@ -131,6 +142,7 @@ export function rowToEntry(row: EntryRow): Entry {
     tags: parseTags(row.tags),
     color: parsePaperColor(row.color),
     paper: parsePaperStyle(row.paper),
+    deletedAt: row.deleted_at ?? null,
   }
 
   if (row.kind === 'note') {

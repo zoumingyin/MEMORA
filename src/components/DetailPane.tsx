@@ -672,7 +672,7 @@ function DetailForm({ entry, onRemove }: DetailFormProps) {
             danger
             size="small"
             className="icon-btn danger"
-            title="删除"
+            title="移入废纸篓"
             icon={<DeleteOutlined />}
             onClick={() => onRemove(entry.id)}
           />
