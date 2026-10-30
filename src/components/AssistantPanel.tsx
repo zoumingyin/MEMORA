@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Button, Popconfirm, Select, Tooltip } from 'antd'
 import {
   ArrowUp,
@@ -13,6 +13,7 @@ import {
   X,
 } from 'lucide-react'
 import { markdownToHtml } from '../utils/markdown'
+import { FreeBadge } from './FreeBadge'
 import { ProviderMark } from './ProviderMark'
 import { useAssistantStore } from '../store/useAssistantStore'
 import { useAiProfileStore } from '../store/useAiProfileStore'
@@ -170,14 +171,48 @@ function AssistantPanelBody() {
   const aiActivate = useAiProfileStore((state) => state.activate)
   const aiProfiles = aiStatus?.profiles ?? []
   const activeProfile =
-    aiProfiles.find((profile) => profile.id === aiStatus?.activeId) ??
-    aiProfiles[0] ??
-    null
+    aiProfiles.find((profile) => profile.id === aiStatus?.activeId) ?? null
   const openSettings = useUiStore((state) => state.openSettings)
 
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
+  const modelSelectRef = useRef<HTMLDivElement>(null)
   const atBottomRef = useRef(true)
+  // 弹层高度：按触发器上下可用空间取大者，避免小窗口下列表被裁掉
+  const [modelListHeight, setModelListHeight] = useState(240)
+
+  const fitModelDropdown = () => {
+    const rect = modelSelectRef.current?.getBoundingClientRect()
+    if (!rect) return
+    const spaceAbove = rect.top - 48
+    const spaceBelow = window.innerHeight - rect.bottom - 8
+    const space = Math.max(spaceAbove, spaceBelow)
+    setModelListHeight(Math.max(96, Math.min(280, Math.round(space - 16))))
+  }
+
+  // 下拉分组：自己新增的模型在前，内置免费模型在后，用组标题作分隔
+  const modelOptionGroups = useMemo(() => {
+    const toOption = (profile: (typeof aiProfiles)[number]) => ({
+      value: profile.id,
+      label: (
+        <span className="flex min-w-0 items-center gap-1">
+          <span className="truncate">{profile.name}</span>
+          {profile.free && <FreeBadge />}
+        </span>
+      ),
+      disabled: !profile.configured,
+    })
+    const custom = aiProfiles.filter((profile) => !profile.free)
+    const free = aiProfiles.filter((profile) => profile.free)
+    return [
+      ...(custom.length
+        ? [{ label: '我的模型', options: custom.map(toOption) }]
+        : []),
+      ...(free.length
+        ? [{ label: '内置免费模型', options: free.map(toOption) }]
+        : []),
+    ]
+  }, [aiProfiles])
 
   // 打开面板时同步模型配置列表（设置页保存后共享同一 store）
   useEffect(() => {
@@ -355,12 +390,12 @@ function AssistantPanelBody() {
               <span>上下文</span>
             </button>
 
-            <div className="ml-auto flex min-w-0 items-center gap-1">
+            <div ref={modelSelectRef} className="ml-auto flex min-w-0 items-center gap-1">
               {aiProfiles.length > 0 ? (
                 <Select
                   size="small"
                   variant="borderless"
-                  className="min-w-0 max-w-[150px]"
+                  className="assistant-model-select"
                   value={activeProfile?.id}
                   prefix={
                     <ProviderMark
@@ -370,17 +405,19 @@ function AssistantPanelBody() {
                     />
                   }
                   popupMatchSelectWidth={false}
+                  listHeight={modelListHeight}
+                  onOpenChange={(open) => {
+                    if (open) fitModelDropdown()
+                  }}
+                  classNames={{ popup: { root: 'assistant-model-dropdown' } }}
                   disabled={sending}
+                  placeholder="选择模型"
                   title={
                     activeProfile
                       ? `${activeProfile.provider} · ${activeProfile.model} · ${activeProfile.baseUrl}`
                       : undefined
                   }
-                  options={aiProfiles.map((profile) => ({
-                    value: profile.id,
-                    label: profile.name,
-                    disabled: !profile.configured,
-                  }))}
+                  options={modelOptionGroups}
                   optionRender={(option) => {
                     const profile = aiProfiles.find(
                       (item) => item.id === option.value
@@ -388,11 +425,21 @@ function AssistantPanelBody() {
                     if (!profile) return option.label
                     return (
                       <div className="flex min-w-0 flex-col">
-                        <span className="truncate text-[12px] text-[var(--text)]">
-                          {profile.name}
+                        <span className="flex items-center gap-1">
+                          <span className="truncate text-[12px] text-[var(--text)]">
+                            {profile.name}
+                          </span>
+                          {profile.free && <FreeBadge />}
+                          {!profile.configured && (
+                            <span className="shrink-0 rounded-full border border-[var(--danger)] px-1.5 text-[9px] leading-[14px] text-[var(--danger)]">
+                              缺少密钥
+                            </span>
+                          )}
                         </span>
                         <span className="truncate text-[10px] text-[var(--text-muted)]">
-                          {profile.provider} · {profile.model}
+                          {profile.free && profile.sourceLabel
+                            ? `${profile.sourceLabel} · ${profile.model}`
+                            : `${profile.provider} · ${profile.model}`}
                         </span>
                       </div>
                     )

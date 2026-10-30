@@ -1,5 +1,13 @@
 import { Channel, invoke } from '@tauri-apps/api/core'
 import { isTauriRuntime } from '../repository'
+import {
+  allFreeModels,
+  ensureFreeCatalog,
+  findFreeModel,
+  freeSourceInfos,
+  isFreeModelId,
+  type FreeModel,
+} from './freeModels'
 import type {
   AiChatMessage,
   AiErrorInfo,
@@ -139,11 +147,80 @@ function persistBrowserStore(store: BrowserStore): void {
   }
 }
 
-function activeBrowserProfile(store: BrowserStore): BrowserProfile | null {
-  const active = store.activeId
-    ? store.profiles.find((profile) => profile.id === store.activeId)
-    : undefined
-  return active ?? store.profiles[0] ?? null
+/** 统一的调用目标：用户配置与内置免费模型都归一到同一结构 */
+interface ChatTarget {
+  id: string
+  name: string
+  provider: string
+  baseUrl: string
+  model: string
+  apiKey: string
+  temperature: number
+  maxTokens: number
+  free: boolean
+  source: string | null
+  sourceLabel: string | null
+  note: string | null
+  /** 公共网关不校验密钥 */
+  keyless: boolean
+  /** 免费网关的固定公开令牌（OpenCode 为 public） */
+  bearer: string | null
+}
+
+function targetFromProfile(profile: BrowserProfile): ChatTarget {
+  return {
+    ...profile,
+    free: false,
+    source: null,
+    sourceLabel: null,
+    note: null,
+    keyless: false,
+    bearer: null,
+  }
+}
+
+function targetFromFree(model: FreeModel): ChatTarget {
+  return {
+    id: model.id,
+    name: model.name,
+    provider: model.sourceLabel,
+    baseUrl: model.baseUrl,
+    model: model.model,
+    apiKey: '',
+    temperature: DEFAULT_TEMPERATURE,
+    maxTokens: DEFAULT_MAX_TOKENS,
+    free: true,
+    source: model.source,
+    sourceLabel: model.sourceLabel,
+    note: model.note,
+    keyless: true,
+    bearer: model.bearer,
+  }
+}
+
+/** 请求鉴权令牌：用户密钥优先，其次免费网关的固定公开令牌 */
+function targetAuthToken(target: ChatTarget): string {
+  return target.apiKey || target.bearer || ''
+}
+
+/** 用户配置在前、运行时获取的免费模型在后，与桌面端顺序一致 */
+function allTargets(store: BrowserStore): ChatTarget[] {
+  return [...store.profiles.map(targetFromProfile), ...allFreeModels().map(targetFromFree)]
+}
+
+function findTarget(store: BrowserStore, id: string): ChatTarget | undefined {
+  const profile = store.profiles.find((item) => item.id === id)
+  if (profile) return targetFromProfile(profile)
+  const free = findFreeModel(id)
+  return free ? targetFromFree(free) : undefined
+}
+
+/** 当前使用项：显式选中的 id 优先；否则回落到第一条用户配置，不自动选中免费模型 */
+function activeTarget(store: BrowserStore): ChatTarget | null {
+  const active = store.activeId ? findTarget(store, store.activeId) : undefined
+  if (active) return active
+  const first = store.profiles[0]
+  return first ? targetFromProfile(first) : null
 }
 
 /** 与 Rust 端 mask_key 保持一致：只保留末 4 位 */
@@ -168,39 +245,46 @@ export function isLocalBaseUrl(baseUrl: string): boolean {
   }
 }
 
-function browserProfileStatus(profile: BrowserProfile): AiProfileStatus {
-  const complete = Boolean(
-    profile.baseUrl &&
-      profile.model &&
-      (profile.apiKey || isLocalBaseUrl(profile.baseUrl)),
+function isTargetComplete(target: ChatTarget): boolean {
+  return Boolean(
+    target.baseUrl &&
+      target.model &&
+      (target.apiKey || target.keyless || isLocalBaseUrl(target.baseUrl)),
   )
+}
+
+function targetStatus(target: ChatTarget): AiProfileStatus {
   return {
-    id: profile.id,
-    name: profile.name.trim() || profile.model,
-    provider: profile.provider.trim() || '自定义服务',
-    baseUrl: profile.baseUrl,
-    model: profile.model,
-    keyMasked: maskKey(profile.apiKey),
-    keySource: profile.apiKey ? 'browser' : null,
-    configured: complete,
-    readOnly: false,
-    temperature: profile.temperature,
-    maxTokens: profile.maxTokens,
+    id: target.id,
+    name: target.name.trim() || target.model,
+    provider: target.provider.trim() || '自定义服务',
+    baseUrl: target.baseUrl,
+    model: target.model,
+    keyMasked: maskKey(target.apiKey),
+    keySource: target.free ? null : target.apiKey ? 'browser' : null,
+    configured: isTargetComplete(target),
+    readOnly: target.free,
+    free: target.free,
+    source: target.source,
+    sourceLabel: target.sourceLabel,
+    note: target.note,
+    temperature: target.temperature,
+    maxTokens: target.maxTokens,
   }
 }
 
 function browserStatus(store: BrowserStore): AiStatus {
-  const active = activeBrowserProfile(store)
+  const active = activeTarget(store)
+  const profiles = allTargets(store).map(targetStatus)
+  // 选中的免费模型可能已从最新列表消失（上游下线），仍保留在选择器中
+  if (active && active.free && !profiles.some((item) => item.id === active.id)) {
+    profiles.push(targetStatus(active))
+  }
   return {
-    configured: active
-      ? Boolean(
-          active.baseUrl &&
-            active.model &&
-            (active.apiKey || isLocalBaseUrl(active.baseUrl)),
-        )
-      : false,
+    configured: active ? isTargetComplete(active) : false,
     activeId: active?.id ?? null,
-    profiles: store.profiles.map(browserProfileStatus),
+    profiles,
+    freeSources: freeSourceInfos(),
   }
 }
 
@@ -306,20 +390,23 @@ export interface ChatStreamHandlers {
 
 /** 表单值 + 已保存配置合并成实际请求参数（密钥 / 地址留空时沿用保存值） */
 function resolveBrowserInput(input: AiProfileInput): {
-  profile: BrowserProfile | null
+  target: ChatTarget | null
   baseUrl: string
   model: string
   apiKey: string
+  keyless: boolean
+  /** 用户密钥为空时用于 Authorization 的固定公开令牌 */
+  bearer: string
 } {
   const store = readBrowserStore()
-  const profile = input.id
-    ? store.profiles.find((item) => item.id === input.id) ?? null
-    : activeBrowserProfile(store)
+  const target = input.id ? findTarget(store, input.id) ?? null : activeTarget(store)
   return {
-    profile,
-    baseUrl: (input.baseUrl.trim() || profile?.baseUrl || '').replace(/\/+$/, ''),
-    model: input.model.trim() || profile?.model || '',
-    apiKey: input.apiKey?.trim() || profile?.apiKey || '',
+    target,
+    baseUrl: (input.baseUrl.trim() || target?.baseUrl || '').replace(/\/+$/, ''),
+    model: input.model.trim() || target?.model || '',
+    apiKey: input.apiKey?.trim() || target?.apiKey || '',
+    keyless: target?.keyless ?? false,
+    bearer: target?.bearer ?? '',
   }
 }
 
@@ -334,32 +421,25 @@ async function browserStreamChat(
   handlers: ChatStreamHandlers,
 ): Promise<void> {
   const store = readBrowserStore()
-  if (store.profiles.length === 0) {
+  const target =
+    (profileId ? findTarget(store, profileId) : undefined) ?? activeTarget(store)
+  if (!target) {
     handlers.onError({
       code: 'not_configured',
-      message:
-        'AI 助手尚未配置。请打开设置 → AI 助手 → 接入配置，添加一个模型。',
+      message: profileId
+        ? '所选模型配置不存在，请在对话界面重新选择模型。'
+        : '尚未选择模型：可在对话界面顶部选用内置免费模型，或在设置 → AI 助手 → 接入配置中添加自己的模型。',
     })
     return
   }
-  const profile =
-    (profileId ? store.profiles.find((item) => item.id === profileId) : null) ??
-    activeBrowserProfile(store)
-  if (!profile) {
-    handlers.onError({
-      code: 'not_configured',
-      message: '所选模型配置不存在，请在对话界面重新选择模型。',
-    })
-    return
-  }
-  if (!profile.baseUrl || !profile.model) {
+  if (!target.baseUrl || !target.model) {
     handlers.onError({
       code: 'not_configured',
       message: '当前模型配置不完整：请在设置中补全接口地址与模型名称。',
     })
     return
   }
-  if (!profile.apiKey && !isLocalBaseUrl(profile.baseUrl)) {
+  if (!target.apiKey && !target.keyless && !isLocalBaseUrl(target.baseUrl)) {
     handlers.onError({
       code: 'not_configured',
       message: '当前模型配置缺少 API 密钥，请在设置 → AI 助手中补充，或切换到其他模型。',
@@ -381,23 +461,23 @@ async function browserStreamChat(
     fn()
   }
 
+  const authToken = targetAuthToken(target)
+
   try {
     let response: Response
     try {
-      response = await fetch(chatCompletionsUrl(profile.baseUrl), {
+      response = await fetch(chatCompletionsUrl(target.baseUrl), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           Accept: 'text/event-stream',
-          ...(profile.apiKey
-            ? { Authorization: `Bearer ${profile.apiKey}` }
-            : {}),
+          ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
         },
         body: JSON.stringify({
-          model: profile.model,
+          model: target.model,
           messages,
-          temperature: profile.temperature,
-          max_tokens: profile.maxTokens,
+          temperature: target.temperature,
+          max_tokens: target.maxTokens,
           stream: true,
         }),
         signal: controller.signal,
@@ -564,12 +644,24 @@ export function cancelChat(requestId: string): void {
   void invoke('ai_cancel', { requestId }).catch(() => undefined)
 }
 
-const EMPTY_STATUS: AiStatus = { configured: false, activeId: null, profiles: [] }
+const EMPTY_STATUS: AiStatus = {
+  configured: false,
+  activeId: null,
+  profiles: [],
+  freeSources: [],
+}
 
-export async function getAiStatus(): Promise<AiStatus> {
-  if (!isTauriRuntime()) return browserStatus(readBrowserStore())
+/**
+ * 读取配置状态。免费模型列表运行时拉取：缓存新鲜时直接用，
+ * 过期或 force 为真时重新获取；拉取失败自动回退，不影响已有配置。
+ */
+export async function getAiStatus(force = false): Promise<AiStatus> {
+  if (!isTauriRuntime()) {
+    await ensureFreeCatalog(force)
+    return browserStatus(readBrowserStore())
+  }
   try {
-    return await invoke<AiStatus>('ai_get_status')
+    return await invoke<AiStatus>('ai_get_status', { force })
   } catch {
     return EMPTY_STATUS
   }
@@ -590,6 +682,9 @@ function validateBrowserInput(
 export async function saveAiProfile(input: AiProfileInput): Promise<AiStatus> {
   if (isTauriRuntime()) return invoke<AiStatus>('ai_save_profile', { profile: input })
 
+  if (input.id && isFreeModelId(input.id)) {
+    throw new Error('内置免费模型不可修改，请点击「新增模型」创建自己的配置')
+  }
   const baseUrl = input.baseUrl.trim().replace(/\/+$/, '')
   const model = input.model.trim()
   validateBrowserInput(baseUrl, model)
@@ -652,7 +747,7 @@ export async function activateAiProfile(id: string): Promise<AiStatus> {
   if (isTauriRuntime()) return invoke<AiStatus>('ai_activate_profile', { id })
 
   const store = readBrowserStore()
-  if (!store.profiles.some((profile) => profile.id === id)) {
+  if (!findTarget(store, id)) {
     throw new Error('未找到该模型配置')
   }
   store.activeId = id
@@ -664,6 +759,9 @@ export async function activateAiProfile(id: string): Promise<AiStatus> {
 export async function deleteAiProfile(id: string): Promise<AiStatus> {
   if (isTauriRuntime()) return invoke<AiStatus>('ai_delete_profile', { id })
 
+  if (isFreeModelId(id)) {
+    throw new Error('内置免费模型无需删除，切换到其他模型即可')
+  }
   const store = readBrowserStore()
   const remaining = store.profiles.filter((profile) => profile.id !== id)
   if (remaining.length === store.profiles.length) {
@@ -681,6 +779,9 @@ export async function clearAiKey(profileId?: string): Promise<AiStatus> {
 
   const store = readBrowserStore()
   const target = profileId ?? store.activeId ?? store.profiles[0]?.id
+  if (target && isFreeModelId(target)) {
+    throw new Error('内置免费模型不使用密钥，无需清除')
+  }
   const profile = target
     ? store.profiles.find((item) => item.id === target)
     : undefined
@@ -696,9 +797,10 @@ export async function testAiConnection(
 ): Promise<string> {
   if (isTauriRuntime()) return invoke<string>('ai_test', { config })
 
-  const { baseUrl, model, apiKey } = resolveBrowserInput(config)
+  const { baseUrl, model, apiKey, keyless, bearer } = resolveBrowserInput(config)
   validateBrowserInput(baseUrl, model)
-  if (!apiKey && !isLocalBaseUrl(baseUrl)) {
+  const authToken = apiKey || bearer
+  if (!authToken && !keyless && !isLocalBaseUrl(baseUrl)) {
     throw new Error('尚未填写 API 密钥')
   }
 
@@ -708,7 +810,7 @@ export async function testAiConnection(
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+        ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
       },
       body: JSON.stringify({
         model,
@@ -739,19 +841,22 @@ export async function testAiConnection(
 export async function listModels(config: AiProfileInput): Promise<string[]> {
   if (isTauriRuntime()) return invoke<string[]>('ai_list_models', { config })
 
-  const { baseUrl, apiKey } = resolveBrowserInput(config)
+  const { baseUrl, apiKey, keyless, bearer } = resolveBrowserInput(config)
   if (!baseUrl) throw new Error('请填写接口地址（Base URL）')
   if (!/^https?:\/\//i.test(baseUrl)) {
     throw new Error('接口地址必须以 http:// 或 https:// 开头')
   }
-  if (!apiKey && !isLocalBaseUrl(baseUrl)) throw new Error('请填写 API 密钥')
+  const authToken = apiKey || bearer
+  if (!authToken && !keyless && !isLocalBaseUrl(baseUrl)) {
+    throw new Error('请填写 API 密钥')
+  }
 
   let response: Response
   try {
     response = await fetch(modelsUrl(baseUrl), {
       headers: {
         Accept: 'application/json',
-        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+        ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
       },
     })
   } catch (error) {

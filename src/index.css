@@ -246,21 +246,25 @@ textarea {
 
 .settings-tree-nav {
   flex: none;
-  width: 158px;
+  width: 140px;
   border-right: 1px solid var(--border);
-  padding: 6px 6px 8px 0;
+  padding: 4px 4px 6px 0;
   overflow-y: auto;
 }
 
 /* antd Tree 树形导航：紧凑字号与行高，缩进层级与连接线由 Tree 自带 */
 .settings-tree-nav .ant-tree {
   background: transparent;
-  font-size: 12.5px;
+  font-size: 12px;
+}
+
+.settings-tree-nav .ant-tree-indent-unit {
+  width: 12px;
 }
 
 .settings-tree-nav .ant-tree-node-content-wrapper {
-  line-height: 26px;
-  min-height: 26px;
+  line-height: 24px;
+  min-height: 24px;
 }
 
 .settings-tree-nav .ant-tree-treenode {
@@ -270,7 +274,7 @@ textarea {
 .settings-tree-content {
   flex: 1;
   min-width: 0;
-  padding: 6px 0 0 16px;
+  padding: 4px 0 0 12px;
   overflow-y: auto;
 }
 
@@ -3831,6 +3835,45 @@ body.img-viewer-window .ant-image-preview {
     opacity: 1;
     transform: translateY(0);
   }
+}
+
+/* 模型下拉弹层：固定宽度并从右侧贴边（窗口最小 422px，380px 内总能放下）；
+   rc-trigger 会按触发器对齐算出越界的 left，这里用 !important 覆盖为固定定位。
+   高度由 listHeight 按可用空间动态计算，列表在弹层内部滚动 */
+.assistant-model-dropdown {
+  left: auto !important;
+  right: 10px !important;
+  width: 300px !important;
+  min-width: 0 !important;
+  max-width: calc(100vw - 20px) !important;
+}
+
+.assistant-model-dropdown .ant-select-item-option-content {
+  overflow: hidden;
+}
+
+/* 模型选择器：固定宽度，切换模型时底栏宽度不随名称长短跳动 */
+.assistant-model-select {
+  flex: none;
+  width: 176px;
+}
+
+.assistant-model-select .ant-select-content {
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* 下拉分组标题（我的模型 / 内置免费模型）：第二组上方加细线作分隔 */
+.assistant-model-dropdown .ant-select-item-group {
+  padding: 6px 10px 2px;
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.assistant-model-dropdown .ant-select-item-group:not(:first-child) {
+  margin-top: 4px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
 }
 
 /* 消息区滚动条：细窄、低对比，避免抢占视觉 */

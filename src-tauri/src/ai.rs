@@ -7,12 +7,13 @@
 //!   智谱 / OpenAI / Ollama 等兼容服务。
 //! - 流式响应通过 Tauri Channel 逐段推送，前端边收边渲染；支持请求取消与错误归类。
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use futures_util::StreamExt;
+use futures_util::{future::join_all, StreamExt};
 use serde::{Deserialize, Serialize};
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager, State};
@@ -141,19 +142,39 @@ pub struct AiProfileStatus {
     /// env = 环境变量提供；file = 桌面端本机配置；null = 未设置
     key_source: Option<&'static str>,
     configured: bool,
-    /// 环境变量注入的配置只读，不能在设置里编辑或删除
+    /// 环境变量注入 / 内置免费模型只读，不能在设置里编辑或删除
     read_only: bool,
+    /// 内置免费模型标记（不写入用户配置文件）
+    free: bool,
+    /// 免费模型来源标识与展示名，用于按来源分组
+    source: Option<String>,
+    source_label: Option<String>,
+    /// 来源说明：限速、隐私提示等
+    note: Option<String>,
     temperature: f32,
     max_tokens: u32,
 }
 
-/// 全部配置状态：当前选中的配置 + 配置列表
+/// 单个免费来源的可用状态：用于界面展示「缓存 / 默认 / 暂不可用」
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AiFreeSourceStatus {
+    source: String,
+    label: String,
+    base_url: String,
+    note: String,
+    status: FreeSourceState,
+    count: usize,
+}
+
+/// 全部配置状态：当前选中的配置 + 配置列表 + 免费来源状态
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AiStatus {
     configured: bool,
     active_id: Option<String>,
     profiles: Vec<AiProfileStatus>,
+    free_sources: Vec<AiFreeSourceStatus>,
 }
 
 /// 对话消息（与 OpenAI/DeepSeek 等一致）
@@ -190,13 +211,17 @@ struct ResolvedConfig {
     temperature: f32,
     max_tokens: u32,
     key_source: Option<&'static str>,
+    /// 内置免费模型：公共网关本身不校验密钥
+    keyless: bool,
+    /// 内置免费模型的固定公开令牌（如 OpenCode 的 `Bearer public`）
+    bearer: Option<&'static str>,
 }
 
 impl ResolvedConfig {
     fn is_complete(&self) -> bool {
         !self.base_url.is_empty()
             && !self.model.is_empty()
-            && (!self.api_key.is_empty() || is_local_base_url(&self.base_url))
+            && (!self.api_key.is_empty() || self.keyless || is_local_base_url(&self.base_url))
     }
 }
 
@@ -297,6 +322,416 @@ fn env_profile() -> Option<AiProfile> {
     })
 }
 
+/// 内置免费网关：这里只描述接口地址、公开令牌与来源说明；
+/// 可用模型在运行时经 `GET {base_url}/models` 获取，不在代码里硬编码清单。
+/// `fallback` 仅在接口不可用且没有历史缓存时兜底，保证离线也能选到可用模型。
+struct FreeProviderSpec {
+    source: &'static str,
+    label: &'static str,
+    base_url: &'static str,
+    /// 网关要求的固定公开令牌（OpenCode Zen 用 `Bearer public`）；
+    /// 与用户密钥互斥：apiKey 为空时才使用
+    bearer: Option<&'static str>,
+    note: &'static str,
+    fallback: &'static [(&'static str, &'static str)],
+}
+
+const FREE_PROVIDERS: &[FreeProviderSpec] = &[
+    // ===== OpenCode Zen（主上游：公开 Bearer public 通道） =====
+    FreeProviderSpec {
+        source: "opencode",
+        label: "OpenCode Zen",
+        base_url: "https://opencode.ai/inference/v1",
+        bearer: Some("public"),
+        note: "无需注册；固定 Bearer public；IP 限速，高峰可能 429；提示词可能被上游记录。",
+        fallback: &[("deepseek-v4.1-flash", "DeepSeek V4.1 Flash")],
+    },
+    // ===== Kilo AI 公共网关（免费池，无需账号） =====
+    FreeProviderSpec {
+        source: "kilo",
+        label: "Kilo AI",
+        base_url: "https://api.kilo.ai/api/gateway",
+        bearer: None,
+        note: "无需 Key；自动轮换免费模型，约 200 次/小时；提示词可能被上游记录。",
+        fallback: &[("kilo-auto/free", "Auto Free（自动路由）")],
+    },
+    // ===== LLM7.io（Key 可选，仅用于提升额度） =====
+    FreeProviderSpec {
+        source: "llm7",
+        label: "LLM7.io",
+        base_url: "https://api.llm7.io/v1",
+        bearer: None,
+        note: "无需 Key；匿名约 60 次/分钟、250 次/小时。",
+        fallback: &[("gpt-oss-20b", "GPT-OSS 20B")],
+    },
+    // ===== Pollinations（官方匿名层） =====
+    FreeProviderSpec {
+        source: "pollinations",
+        label: "Pollinations",
+        base_url: "https://text.pollinations.ai/openai",
+        bearer: None,
+        note: "无需 Key；官方匿名层限流较严。",
+        fallback: &[("openai-fast", "GPT-OSS 20B（匿名）")],
+    },
+];
+
+/// 从 `/models` 解析出的单个模型条目；name 缺失时由 id 推导展示名
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct FreeModelEntry {
+    id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+}
+
+/// ok = 本次拉取成功；cached = 本次失败但沿用了历史缓存；
+/// fallback = 无缓存时使用内置兜底；unavailable = 完全不可用
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum FreeSourceState {
+    Ok,
+    Cached,
+    Fallback,
+    #[default]
+    Unavailable,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct FreeSourceCache {
+    #[serde(default)]
+    state: FreeSourceState,
+    #[serde(default)]
+    fetched_at: u64,
+    #[serde(default)]
+    models: Vec<FreeModelEntry>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct FreeCatalogCache {
+    #[serde(default)]
+    version: u32,
+    #[serde(default)]
+    fetched_at: u64,
+    #[serde(default)]
+    sources: HashMap<String, FreeSourceCache>,
+}
+
+static FREE_CACHE: OnceLock<Mutex<FreeCatalogCache>> = OnceLock::new();
+static FREE_CACHE_LOADED: AtomicBool = AtomicBool::new(false);
+
+/// 拉取成功后的缓存有效期；失败且已有模型时刻重试间隔
+const FREE_CACHE_TTL_SECS: u64 = 6 * 60 * 60;
+const FREE_CACHE_RETRY_SECS: u64 = 10 * 60;
+/// 单个网关最多展示的模型数，避免选择器过长
+const FREE_MODEL_LIMIT: usize = 40;
+
+fn free_cache() -> &'static Mutex<FreeCatalogCache> {
+    FREE_CACHE.get_or_init(|| {
+        Mutex::new(FreeCatalogCache {
+            version: 1,
+            ..Default::default()
+        })
+    })
+}
+
+fn now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
+}
+
+fn free_cache_path(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("无法定位应用数据目录：{error}"))?;
+    Ok(dir.join("ai-free-models.json"))
+}
+
+/// 首次使用时从磁盘恢复缓存；之后的命令都直接读内存
+fn ensure_free_cache_loaded(app: &AppHandle) {
+    if FREE_CACHE_LOADED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let Ok(path) = free_cache_path(app) else {
+        return;
+    };
+    let Ok(raw) = std::fs::read_to_string(path) else {
+        return;
+    };
+    match serde_json::from_str::<FreeCatalogCache>(&raw) {
+        Ok(cache) => {
+            if let Ok(mut guard) = free_cache().lock() {
+                *guard = cache;
+            }
+        }
+        Err(error) => eprintln!("免费模型缓存解析失败，将重新获取：{error}"),
+    }
+}
+
+fn persist_free_cache(app: &AppHandle) {
+    let snapshot = match free_cache().lock() {
+        Ok(guard) => guard.clone(),
+        Err(_) => return,
+    };
+    let Ok(path) = free_cache_path(app) else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    match serde_json::to_string_pretty(&snapshot) {
+        Ok(raw) => {
+            if let Err(error) = std::fs::write(&path, raw) {
+                eprintln!("免费模型缓存写入失败：{error}");
+            }
+        }
+        Err(error) => eprintln!("免费模型缓存序列化失败：{error}"),
+    }
+}
+
+/// 免费模型 id 形如 `free:{source}:{modelId}`；模型 id 自身可能含 `:`，只切前两段
+fn parse_free_profile(id: &str) -> Option<(&'static FreeProviderSpec, &str)> {
+    let rest = id.strip_prefix("free:")?;
+    let (source, model) = rest.split_once(':')?;
+    if model.is_empty() {
+        return None;
+    }
+    let provider = FREE_PROVIDERS.iter().find(|item| item.source == source)?;
+    Some((provider, model))
+}
+
+fn is_free_profile(id: &str) -> bool {
+    parse_free_profile(id).is_some()
+}
+
+fn free_profile_id(provider: &FreeProviderSpec, model: &str) -> String {
+    format!("free:{}:{model}", provider.source)
+}
+
+/// 接口未返回 name 时，用模型 id 生成可读名称（去掉 `:free` 后缀、连字符转空格）
+fn free_model_name(entry: &FreeModelEntry) -> String {
+    if let Some(name) = entry
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+    {
+        return name.to_string();
+    }
+    let base = entry.id.split(':').next().unwrap_or(entry.id.as_str());
+    let spaced = base.replace(['-', '_'], " ");
+    let mut chars = spaced.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => entry.id.clone(),
+    }
+}
+
+/// 当前来源可用的模型：优先缓存/最新结果，没有时回退到内置默认
+fn source_snapshot(provider: &FreeProviderSpec) -> (Vec<FreeModelEntry>, FreeSourceState) {
+    if let Ok(cache) = free_cache().lock() {
+        if let Some(entry) = cache.sources.get(provider.source) {
+            if !entry.models.is_empty() {
+                let state = match entry.state {
+                    FreeSourceState::Ok | FreeSourceState::Cached => entry.state,
+                    _ => FreeSourceState::Cached,
+                };
+                return (entry.models.clone(), state);
+            }
+        }
+    }
+    if provider.fallback.is_empty() {
+        (Vec::new(), FreeSourceState::Unavailable)
+    } else {
+        let models = provider
+            .fallback
+            .iter()
+            .map(|(id, name)| FreeModelEntry {
+                id: (*id).to_string(),
+                name: Some((*name).to_string()),
+            })
+            .collect();
+        (models, FreeSourceState::Fallback)
+    }
+}
+
+/// 免费模型的内存条目：追加在用户配置之后，保持「自己的模型在前、免费模型在后」
+fn free_profiles() -> Vec<AiProfile> {
+    let mut profiles = Vec::new();
+    for provider in FREE_PROVIDERS {
+        let (models, _) = source_snapshot(provider);
+        for entry in models {
+            profiles.push(AiProfile {
+                id: free_profile_id(provider, &entry.id),
+                name: free_model_name(&entry),
+                provider: provider.label.to_string(),
+                base_url: provider.base_url.to_string(),
+                model: entry.id,
+                ..Default::default()
+            });
+        }
+    }
+    profiles
+}
+
+fn free_catalog_is_fresh() -> bool {
+    let Ok(cache) = free_cache().lock() else {
+        return false;
+    };
+    if cache.fetched_at == 0 {
+        return false;
+    }
+    let has_models = cache
+        .sources
+        .values()
+        .any(|source| !source.models.is_empty());
+    let ttl = if has_models {
+        FREE_CACHE_TTL_SECS
+    } else {
+        FREE_CACHE_RETRY_SECS
+    };
+    now_secs().saturating_sub(cache.fetched_at) < ttl
+}
+
+/// 运行时拉取单个网关的模型列表：只保留 chat 且免费（若接口给出价格）的条目
+async fn fetch_provider_models(
+    provider: &'static FreeProviderSpec,
+) -> Result<Vec<FreeModelEntry>, String> {
+    let client = http_client()?;
+    let mut request = client
+        .get(models_url(provider.base_url))
+        .timeout(Duration::from_secs(10))
+        .header("Accept", "application/json");
+    if let Some(token) = provider.bearer {
+        request = request.bearer_auth(token);
+    }
+    let response = request
+        .send()
+        .await
+        .map_err(|error| network_error_message(&error))?;
+    let status = response.status().as_u16();
+    if !response.status().is_success() {
+        let body = response.text().await.unwrap_or_default();
+        return Err(classify_http_error(status, &body).1);
+    }
+    let value: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|error| format!("模型列表解析失败：{error}"))?;
+    let items = value
+        .get("data")
+        .and_then(|data| data.as_array())
+        .ok_or_else(|| "模型列表格式不符合预期".to_string())?;
+    let mut models: Vec<FreeModelEntry> = items
+        .iter()
+        .filter_map(|item| {
+            let id = item.get("id").and_then(|id| id.as_str())?.trim();
+            if id.is_empty() {
+                return None;
+            }
+            if let Some(kind) = item.get("type").and_then(|kind| kind.as_str()) {
+                if kind != "chat" {
+                    return None;
+                }
+            }
+            // 部分网关在同一列表里混有付费模型，价格大于 0 的直接跳过
+            if let Some(price) = item
+                .pointer("/cost/text/output/price")
+                .and_then(|price| price.as_f64())
+            {
+                if price > 0.0 {
+                    return None;
+                }
+            }
+            let name = item
+                .get("name")
+                .and_then(|name| name.as_str())
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .map(str::to_string);
+            Some(FreeModelEntry {
+                id: id.to_string(),
+                name,
+            })
+        })
+        .collect();
+    models.sort_by(|a, b| a.id.cmp(&b.id));
+    models.dedup_by(|a, b| a.id == b.id);
+    models.truncate(FREE_MODEL_LIMIT);
+    if models.is_empty() {
+        return Err("服务返回了空的模型列表".to_string());
+    }
+    Ok(models)
+}
+
+/// 并发刷新各网关的模型列表；单个来源失败只影响该来源（沿用缓存 / 默认值）
+async fn refresh_free_catalog(app: &AppHandle) {
+    ensure_free_cache_loaded(app);
+    if free_catalog_is_fresh() {
+        return;
+    }
+    let results = join_all(
+        FREE_PROVIDERS
+            .iter()
+            .map(|provider| fetch_provider_models(provider)),
+    )
+    .await;
+    let fetched_at = now_secs();
+    {
+        let Ok(mut cache) = free_cache().lock() else {
+            return;
+        };
+        for (provider, result) in FREE_PROVIDERS.iter().zip(results) {
+            let previous = cache
+                .sources
+                .get(provider.source)
+                .cloned()
+                .unwrap_or_default();
+            let entry = match result {
+                Ok(models) => FreeSourceCache {
+                    state: FreeSourceState::Ok,
+                    fetched_at,
+                    models,
+                },
+                Err(error) => {
+                    eprintln!("免费模型列表获取失败（{}）：{error}", provider.label);
+                    if previous.models.is_empty() {
+                        // 不写入空条目，读取时会自动回退到内置默认模型
+                        continue;
+                    }
+                    FreeSourceCache {
+                        state: FreeSourceState::Cached,
+                        fetched_at: previous.fetched_at,
+                        models: previous.models,
+                    }
+                }
+            };
+            cache.sources.insert(provider.source.to_string(), entry);
+        }
+        cache.version = 1;
+        cache.fetched_at = fetched_at;
+    }
+    persist_free_cache(app);
+}
+
+fn free_source_statuses() -> Vec<AiFreeSourceStatus> {
+    FREE_PROVIDERS
+        .iter()
+        .map(|provider| {
+            let (models, state) = source_snapshot(provider);
+            AiFreeSourceStatus {
+                source: provider.source.to_string(),
+                label: provider.label.to_string(),
+                base_url: provider.base_url.to_string(),
+                note: provider.note.to_string(),
+                status: state,
+                count: models.len(),
+            }
+        })
+        .collect()
+}
+
 /// 单条配置解析：环境变量密钥优先（部署时统一注入），其余取配置自身
 fn resolve_profile(profile: &AiProfile) -> ResolvedConfig {
     let file_key = profile.api_key.clone().unwrap_or_default().trim().to_string();
@@ -324,28 +759,72 @@ fn resolve_profile(profile: &AiProfile) -> ResolvedConfig {
         temperature,
         max_tokens,
         key_source,
+        keyless: is_free_profile(&profile.id),
+        bearer: parse_free_profile(&profile.id).and_then(|(provider, _)| provider.bearer),
     }
 }
 
-/// 配置文件 + 环境变量条目组成的完整列表（环境变量条目排在最前）
+/// 请求鉴权令牌：用户密钥优先，其次内置免费网关的固定公开令牌
+fn auth_token(resolved: &ResolvedConfig) -> Option<&str> {
+    if resolved.api_key.is_empty() {
+        resolved.bearer
+    } else {
+        Some(resolved.api_key.as_str())
+    }
+}
+
+/// 配置文件 + 环境变量条目 + 内置免费模型组成的完整列表。
+/// 顺序：环境变量 → 用户配置 → 免费模型，「自己的模型」始终排在免费模型前面。
 fn load_profiles(app: &AppHandle) -> (FileConfig, Vec<AiProfile>) {
+    ensure_free_cache_loaded(app);
     let file = load_file_config(app);
-    let mut all = Vec::with_capacity(file.profiles.len() + 1);
+    let mut all = Vec::with_capacity(file.profiles.len() + FREE_PROVIDERS.len() + 1);
     if let Some(profile) = env_profile() {
         all.push(profile);
     }
     all.extend(file.profiles.iter().cloned());
+    all.extend(free_profiles());
+    restore_active_free_profile(&file, &mut all);
     (file, all)
 }
 
-/// 当前选中项：记录的 id 若已不存在（被删除 / 环境变量移除），回落到第一条
+/// 用户选中的免费模型若已从最新模型列表中消失，仍按 id 还原一条，
+/// 否则界面会显示「配置不存在」，而用户并没有删除过它。
+fn restore_active_free_profile(file: &FileConfig, all: &mut Vec<AiProfile>) {
+    let Some(id) = file.active_id.as_deref() else {
+        return;
+    };
+    if all.iter().any(|profile| profile.id == id) {
+        return;
+    }
+    let Some((provider, model)) = parse_free_profile(id) else {
+        return;
+    };
+    let entry = FreeModelEntry {
+        id: model.to_string(),
+        name: None,
+    };
+    all.push(AiProfile {
+        id: id.to_string(),
+        name: free_model_name(&entry),
+        provider: provider.label.to_string(),
+        base_url: provider.base_url.to_string(),
+        model: entry.id,
+        ..Default::default()
+    });
+}
+
+/// 当前选中项：记录的 id 若已不存在（被删除 / 环境变量移除），回落到第一条用户配置。
+/// 免费模型不会被自动选中——首次使用时不应在用户不知情的情况下把内容发给第三方网关。
 fn active_profile_id(file: &FileConfig, all: &[AiProfile]) -> Option<String> {
     if let Some(id) = file.active_id.as_deref() {
         if all.iter().any(|profile| profile.id == id) {
             return Some(id.to_string());
         }
     }
-    all.first().map(|profile| profile.id.clone())
+    all.iter()
+        .find(|profile| !is_free_profile(&profile.id))
+        .map(|profile| profile.id.clone())
 }
 
 fn find_profile<'a>(all: &'a [AiProfile], id: Option<&str>) -> Option<&'a AiProfile> {
@@ -369,6 +848,7 @@ fn profile_status(profile: &AiProfile) -> AiProfileStatus {
     let resolved = resolve_profile(profile);
     let provider = profile.provider.trim();
     let name = profile.name.trim();
+    let free = parse_free_profile(&profile.id).map(|(provider, _)| provider);
     AiProfileStatus {
         id: profile.id.clone(),
         name: if name.is_empty() {
@@ -386,7 +866,11 @@ fn profile_status(profile: &AiProfile) -> AiProfileStatus {
         key_masked: mask_key(&resolved.api_key),
         key_source: resolved.key_source,
         configured: resolved.is_complete(),
-        read_only: profile.id == ENV_PROFILE_ID,
+        read_only: profile.id == ENV_PROFILE_ID || free.is_some(),
+        free: free.is_some(),
+        source: free.map(|provider| provider.source.to_string()),
+        source_label: free.map(|provider| provider.label.to_string()),
+        note: free.map(|provider| provider.note.to_string()),
         temperature: resolved.temperature,
         max_tokens: resolved.max_tokens,
     }
@@ -404,6 +888,7 @@ fn status_from(file: &FileConfig, all: &[AiProfile]) -> AiStatus {
         configured,
         active_id,
         profiles,
+        free_sources: free_source_statuses(),
     }
 }
 
@@ -505,9 +990,13 @@ fn network_error_message(error: &reqwest::Error) -> String {
     }
 }
 
-/// 读取全部配置状态（密钥只返回掩码）
+/// 读取全部配置状态（密钥只返回掩码）；免费模型列表按需刷新，失败时用缓存/默认值
 #[tauri::command]
-pub fn ai_get_status(app: AppHandle) -> AiStatus {
+pub async fn ai_get_status(app: AppHandle, force: Option<bool>) -> AiStatus {
+    ensure_free_cache_loaded(&app);
+    if force.unwrap_or(false) || !free_catalog_is_fresh() {
+        refresh_free_catalog(&app).await;
+    }
     let (file, all) = load_profiles(&app);
     status_from(&file, &all)
 }
@@ -556,6 +1045,11 @@ pub fn ai_save_profile(app: AppHandle, profile: AiProfileInput) -> Result<AiStat
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty() && *value != ENV_PROFILE_ID);
+    if let Some(id) = requested_id {
+        if is_free_profile(id) {
+            return Err("内置免费模型不可修改，请点击「新增模型」创建自己的配置".to_string());
+        }
+    }
 
     let mut file = load_file_config(&app);
     let index = requested_id.and_then(|id| {
@@ -632,6 +1126,9 @@ pub fn ai_delete_profile(app: AppHandle, id: String) -> Result<AiStatus, String>
     if id == ENV_PROFILE_ID {
         return Err("环境变量注入的配置无法删除，请移除对应环境变量".to_string());
     }
+    if is_free_profile(&id) {
+        return Err("内置免费模型无需删除，切换到其他模型即可".to_string());
+    }
     let mut file = load_file_config(&app);
     let before = file.profiles.len();
     file.profiles.retain(|item| item.id != id);
@@ -651,6 +1148,9 @@ pub fn ai_delete_profile(app: AppHandle, id: String) -> Result<AiStatus, String>
 pub fn ai_clear_key(app: AppHandle, profile_id: Option<String>) -> Result<AiStatus, String> {
     if profile_id.as_deref() == Some(ENV_PROFILE_ID) {
         return Err("该配置的密钥来自环境变量，无法在此清除".to_string());
+    }
+    if profile_id.as_deref().is_some_and(is_free_profile) {
+        return Err("内置免费模型不使用密钥，无需清除".to_string());
     }
     let mut file = load_file_config(&app);
     let target = profile_id
@@ -677,6 +1177,8 @@ impl Default for ResolvedConfig {
             temperature: DEFAULT_TEMPERATURE,
             max_tokens: DEFAULT_MAX_TOKENS,
             key_source: None,
+            keyless: false,
+            bearer: None,
         }
     }
 }
@@ -710,6 +1212,8 @@ fn apply_override(base: ResolvedConfig, input: Option<AiProfileInput>) -> Resolv
             .map(|value| value.clamp(64, 8192))
             .unwrap_or(base.max_tokens),
         key_source: base.key_source,
+        keyless: base.keyless,
+        bearer: base.bearer,
     }
 }
 
@@ -753,7 +1257,10 @@ pub async fn ai_test(app: AppHandle, config: Option<AiProfileInput>) -> Result<S
     if resolved.model.is_empty() {
         return Err("请填写模型名称".to_string());
     }
-    if resolved.api_key.is_empty() && !is_local_base_url(&resolved.base_url) {
+    if resolved.api_key.is_empty()
+        && !resolved.keyless
+        && !is_local_base_url(&resolved.base_url)
+    {
         return Err("请填写 API 密钥".to_string());
     }
 
@@ -767,8 +1274,8 @@ pub async fn ai_test(app: AppHandle, config: Option<AiProfileInput>) -> Result<S
     let mut request = client
         .post(chat_completions_url(&resolved.base_url))
         .json(&payload);
-    if !resolved.api_key.is_empty() {
-        request = request.bearer_auth(&resolved.api_key);
+    if let Some(token) = auth_token(&resolved) {
+        request = request.bearer_auth(token);
     }
     let response = request
         .send()
@@ -834,7 +1341,10 @@ pub async fn ai_list_models(
 ) -> Result<Vec<String>, String> {
     let resolved = resolve_target(&app, config);
     validate_base_url(&resolved.base_url)?;
-    if resolved.api_key.is_empty() && !is_local_base_url(&resolved.base_url) {
+    if resolved.api_key.is_empty()
+        && !resolved.keyless
+        && !is_local_base_url(&resolved.base_url)
+    {
         return Err("请填写 API 密钥".to_string());
     }
 
@@ -842,8 +1352,8 @@ pub async fn ai_list_models(
     let mut request = client
         .get(models_url(&resolved.base_url))
         .header("Accept", "application/json");
-    if !resolved.api_key.is_empty() {
-        request = request.bearer_auth(&resolved.api_key);
+    if let Some(token) = auth_token(&resolved) {
+        request = request.bearer_auth(token);
     }
     let response = request
         .send()
@@ -973,8 +1483,8 @@ pub async fn ai_chat(
         .clone()
         .or_else(|| active_profile_id(&file, &all));
     let Some(profile) = find_profile(&all, target_id.as_deref()) else {
-        let message = if all.is_empty() {
-            "AI 助手尚未配置。请打开设置 → AI 助手 → 接入配置，添加一个模型。"
+        let message = if target_id.is_none() {
+            "尚未选择模型：可在对话界面顶部选用内置免费模型，或在设置 → AI 助手 → 接入配置中添加自己的模型。"
         } else {
             "所选模型配置不存在，请在对话界面重新选择模型。"
         };
@@ -1036,9 +1546,9 @@ pub async fn ai_chat(
         .post(chat_completions_url(&resolved.base_url))
         .header("Accept", "text/event-stream")
         .json(&payload);
-    // 本机服务（Ollama 等）允许无密钥，此时不发送空的 Authorization 头
-    if !resolved.api_key.is_empty() {
-        http_request = http_request.bearer_auth(&resolved.api_key);
+    // 用户密钥优先；内置免费网关无密钥时使用其固定公开令牌；本机服务则不发 Authorization
+    if let Some(token) = auth_token(&resolved) {
+        http_request = http_request.bearer_auth(token);
     }
 
     let response = match http_request.send().await {
@@ -1202,5 +1712,73 @@ mod tests {
         assert_eq!(migrated.profiles.len(), 1);
         assert_eq!(migrated.profiles[0].id, "p1");
         assert_eq!(migrated.active_id.as_deref(), Some("p1"));
+    }
+
+    #[test]
+    fn free_catalog_is_keyless_and_unique() {
+        // 无缓存且拉取失败时，每个来源回退到内置兜底模型，保证列表非空可用
+        let profiles = free_profiles();
+        let expected: usize = FREE_PROVIDERS
+            .iter()
+            .map(|provider| provider.fallback.len())
+            .sum();
+        assert_eq!(profiles.len(), expected);
+        let mut ids: Vec<&str> = profiles.iter().map(|profile| profile.id.as_str()).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), profiles.len(), "免费模型 id 不应重复");
+        for profile in &profiles {
+            assert!(profile.id.starts_with("free:"));
+            assert!(profile.base_url.starts_with("https://"));
+            let resolved = resolve_profile(profile);
+            assert!(resolved.keyless, "{} 应视为免密钥配置", profile.id);
+            assert!(resolved.is_complete(), "{} 应可直接使用", profile.id);
+        }
+
+        // 主上游使用固定公开令牌，不带用户密钥时请求仍应可发出
+        let (opencode, model) =
+            parse_free_profile("free:opencode:deepseek-v4.1-flash").expect("应含 OpenCode 主上游");
+        assert_eq!(opencode.bearer, Some("public"));
+        assert_eq!(opencode.base_url, "https://opencode.ai/inference/v1");
+        assert_eq!(model, "deepseek-v4.1-flash");
+        let resolved = resolve_profile(&AiProfile {
+            id: "free:opencode:any-model".to_string(),
+            base_url: opencode.base_url.to_string(),
+            model: model.to_string(),
+            ..Default::default()
+        });
+        assert_eq!(auth_token(&resolved), Some("public"));
+    }
+
+    #[test]
+    fn active_fallback_skips_free_profiles() {
+        let custom = AiProfile {
+            id: "p1".to_string(),
+            name: "已保存".to_string(),
+            base_url: "https://api.example.com/v1".to_string(),
+            model: "demo".to_string(),
+            ..Default::default()
+        };
+        let mut all = vec![custom];
+        all.extend(free_profiles());
+        let idle = FileConfig::default();
+        assert_eq!(active_profile_id(&idle, &all).as_deref(), Some("p1"));
+
+        // 只有免费模型时不自动选中：不应在用户不知情时把内容发给第三方网关
+        assert_eq!(active_profile_id(&idle, &free_profiles()), None);
+
+        // 用户显式选择过的免费模型仍然生效
+        let free = free_profiles();
+        let kilo_id = free
+            .iter()
+            .find(|profile| profile.id.starts_with("free:kilo:"))
+            .expect("应含 Kilo 兜底模型")
+            .id
+            .clone();
+        let picked = FileConfig {
+            active_id: Some(kilo_id.clone()),
+            ..Default::default()
+        };
+        assert_eq!(active_profile_id(&picked, &free).as_deref(), Some(kilo_id.as_str()));
     }
 }

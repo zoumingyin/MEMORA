@@ -13,17 +13,38 @@ export interface AiProfileStatus {
   keySource: 'env' | 'file' | 'browser' | null
   /** 接口地址、模型与密钥是否齐全 */
   configured: boolean
-  /** 环境变量注入的配置只读，不能编辑或删除 */
+  /** 环境变量注入 / 内置免费模型只读，不能编辑或删除 */
   readOnly: boolean
+  /** 内置免费模型（不写入用户配置文件） */
+  free: boolean
+  /** 免费模型来源标识与展示名，用于按来源分组 */
+  source: string | null
+  sourceLabel: string | null
+  /** 来源说明：限速、隐私提示等 */
+  note: string | null
   temperature: number
   maxTokens: number
 }
 
-/** 全部配置状态：当前选中的模型 + 已配置列表 */
+/** 免费模型来源的可用状态：实时拉取 / 本地缓存 / 内置兜底 / 不可用 */
+export type AiFreeSourceStatus = 'ok' | 'cached' | 'fallback' | 'unavailable'
+
+/** 免费模型来源概况（模型清单一律运行时获取，不在客户端硬编码） */
+export interface AiFreeSource {
+  source: string
+  label: string
+  baseUrl: string
+  note: string
+  status: AiFreeSourceStatus
+  count: number
+}
+
+/** 全部配置状态：当前选中的模型 + 已配置列表 + 免费来源概况 */
 export interface AiStatus {
   configured: boolean
   activeId: string | null
   profiles: AiProfileStatus[]
+  freeSources: AiFreeSource[]
 }
 
 /** 保存 / 测试时提交的单个配置；id 为空表示新增，apiKey 留空表示沿用已保存密钥 */

@@ -12,7 +12,8 @@ import { useWindowStore } from "../store/useWindowStore";
 import { useEntryStore } from "../store/useEntryStore";
 import { useAssistantStore } from "../store/useAssistantStore";
 import { useAiProfileStore } from "../store/useAiProfileStore";
-import type { AiProfileInput, AiProfileStatus } from "../types/ai";
+import { FreeBadge } from "./FreeBadge";
+import type { AiFreeSource, AiProfileInput, AiProfileStatus } from "../types/ai";
 import {
   clearAiKey,
   deleteAiProfile,
@@ -273,6 +274,7 @@ export function SettingsDialog({ open, onClose, initialSection }: SettingsDialog
 
   // ===== AI 助手配置（多模型） =====
   const aiStatus = useAiProfileStore((state) => state.status);
+  const aiLoading = useAiProfileStore((state) => state.loading);
   const aiLoad = useAiProfileStore((state) => state.load);
   const aiActivate = useAiProfileStore((state) => state.activate);
   const aiSync = useAiProfileStore((state) => state.sync);
@@ -303,9 +305,23 @@ export function SettingsDialog({ open, onClose, initialSection }: SettingsDialog
     ? aiProfiles.find((profile) => profile.id === aiEditingId) ?? null
     : null;
   const activeProfile =
-    aiProfiles.find((profile) => profile.id === aiStatus?.activeId) ??
-    aiProfiles[0] ??
-    null;
+    aiProfiles.find((profile) => profile.id === aiStatus?.activeId) ?? null;
+  const customProfiles = aiProfiles.filter((profile) => !profile.free);
+  const freeProfiles = aiProfiles.filter((profile) => profile.free);
+  // 免费模型按来源分组：模型清单一律由后端运行时获取，这里只按来源归属
+  const freeGroups = (aiStatus?.freeSources ?? []).map((source) => ({
+    ...source,
+    items: freeProfiles.filter((profile) => profile.source === source.source),
+  }));
+  const FREE_SOURCE_LABELS: Record<
+    AiFreeSource["status"],
+    { text: string; className: string }
+  > = {
+    ok: { text: "实时", className: "text-[var(--text-muted)]" },
+    cached: { text: "缓存", className: "text-[var(--text-muted)]" },
+    fallback: { text: "兜底", className: "text-[var(--text-muted)]" },
+    unavailable: { text: "不可用", className: "text-[var(--danger)]" },
+  };
   // 服务商下拉值：已保存的自定义服务名不在预设内时统一显示为「自定义服务」
   const aiProviderValue = AI_PRESETS.some((preset) => preset.label === aiProvider)
     ? aiProvider
@@ -972,14 +988,15 @@ export function SettingsDialog({ open, onClose, initialSection }: SettingsDialog
               />
               <div className="flex min-w-0 flex-1 flex-col">
                 <span className="truncate text-[12px] font-semibold text-[var(--text)]">
-                  {aiProfiles.length === 0
-                    ? "尚未添加模型配置"
-                    : `已配置 ${aiProfiles.length} 个模型`}
+                  {customProfiles.length === 0
+                    ? "尚未添加自己的模型配置"
+                    : `已配置 ${customProfiles.length} 个模型`}
+                  {freeProfiles.length > 0 && ` · ${freeProfiles.length} 个免费模型`}
                 </span>
                 <span className="truncate text-[10.5px] text-[var(--text-muted)]">
                   {activeProfile
                     ? `当前：${activeProfile.provider} · ${activeProfile.name}`
-                    : "点击「新增模型」添加服务商与接入参数，即可在对话界面切换"}
+                    : "新增自己的模型，或直接选中下方的免费模型开始对话"}
                 </span>
               </div>
             </div>
@@ -988,27 +1005,27 @@ export function SettingsDialog({ open, onClose, initialSection }: SettingsDialog
             <div className="flex flex-col gap-1.5">
               <div className="flex items-center justify-between">
                 <span className="text-[11.5px] text-[var(--text-muted)]">
-                  模型配置
+                  我的模型
                 </span>
                 <button
                   type="button"
-                  className="data-action-btn primary"
+                  className="data-action-btn primary shrink-0 whitespace-nowrap"
                   disabled={aiBusy}
                   onClick={openAddDialog}
                 >
                   新增模型
                 </button>
               </div>
-              {aiProfiles.length === 0 ? (
+              {customProfiles.length === 0 ? (
                 <button
                   type="button"
                   className="cursor-pointer rounded-[8px] border border-dashed border-[var(--border)] bg-transparent px-2.5 py-3 text-[11px] text-[var(--text-muted)] transition-colors hover:border-[var(--card-border-hover)] hover:text-[var(--text)]"
                   onClick={openAddDialog}
                 >
-                  还没有模型配置，点击添加
+                  还没有自己的模型配置，点击添加（也可以直接使用下方免费模型）
                 </button>
               ) : (
-                aiProfiles.map((profile) => {
+                customProfiles.map((profile) => {
                   const active = profile.id === aiStatus?.activeId;
                   return (
                     <div
@@ -1091,6 +1108,109 @@ export function SettingsDialog({ open, onClose, initialSection }: SettingsDialog
               )}
             </div>
 
+            {/* 分隔线：自己的模型与内置免费模型分开展示 */}
+            <div className="h-px shrink-0 bg-[var(--border)]" />
+
+            {/* 内置免费模型：无需密钥，按来源分组展示接口地址与限速说明 */}
+            <div className="flex flex-col gap-1.5">
+              <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
+                <span className="text-[11.5px] text-[var(--text-muted)]">
+                  内置免费模型
+                </span>
+                <div className="flex shrink-0 items-center gap-2">
+                  <span className="whitespace-nowrap text-[10px] text-[var(--text-muted)]">
+                    {freeProfiles.length} 个 · 无需 API Key
+                  </span>
+                  <button
+                    type="button"
+                    className="data-action-btn shrink-0 whitespace-nowrap"
+                    disabled={aiLoading}
+                    onClick={() => void aiLoad(true).catch(() => undefined)}
+                  >
+                    {aiLoading ? "获取中…" : "重新获取"}
+                  </button>
+                </div>
+              </div>
+              <div className="rounded-[8px] border border-[var(--border)] bg-[var(--hover-fill)] px-2.5 py-2 text-[10.5px] leading-relaxed text-[var(--text-muted)]">
+                模型清单在运行时从各网关的 /models 接口获取；接口不可用时回退到本地缓存或内置默认模型。以下服务均为公开第三方网关，选中后提问会直接发送给对应服务商，提示词可能被记录，请勿发送敏感内容。
+              </div>
+              {freeGroups.map((group) => (
+                <div
+                  key={group.source}
+                  className="flex flex-col gap-1 rounded-[8px] border border-[var(--border)] px-2.5 py-2"
+                >
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span className="min-w-0 truncate text-[12px] font-semibold text-[var(--text)]">
+                      {group.label}
+                    </span>
+                    <FreeBadge />
+                    <span
+                      className={`shrink-0 text-[9.5px] ${FREE_SOURCE_LABELS[group.status].className}`}
+                    >
+                      {FREE_SOURCE_LABELS[group.status].text}
+                    </span>
+                    <span className="ml-auto shrink-0 text-[9.5px] text-[var(--text-muted)]">
+                      {group.items.length} 个模型
+                    </span>
+                  </div>
+                  <span
+                    className="select-all truncate font-mono text-[10px] text-[var(--text-muted)]"
+                    title={group.baseUrl}
+                  >
+                    {group.baseUrl}
+                  </span>
+                  {group.note && (
+                    <span className="text-[10px] leading-relaxed text-[var(--text-muted)]">
+                      {group.note}
+                    </span>
+                  )}
+                  {group.items.length === 0 && (
+                    <span className="text-[10px] leading-relaxed text-[var(--text-muted)]">
+                      该网关暂不可用，可点击「重新获取」重试。
+                    </span>
+                  )}
+                  <div className="flex flex-col">
+                    {group.items.map((profile) => {
+                      const active = profile.id === aiStatus?.activeId;
+                      return (
+                        <button
+                          key={profile.id}
+                          type="button"
+                          title={
+                            active
+                              ? "当前使用中的模型"
+                              : `切换为 ${profile.name}`
+                          }
+                          className={`flex cursor-pointer items-center gap-2 rounded-[6px] border-0 px-1.5 py-1 text-left transition-colors ${
+                            active
+                              ? "bg-[var(--card-active-bg)]"
+                              : "bg-transparent hover:bg-[var(--hover-fill)]"
+                          }`}
+                          onClick={() => void handleActivateProfile(profile)}
+                        >
+                          <span className="flex min-w-0 flex-1 flex-col">
+                            <span className="flex items-center gap-1.5">
+                              <span className="truncate text-[11.5px] text-[var(--text)]">
+                                {profile.name}
+                              </span>
+                              {active && (
+                                <span className="shrink-0 rounded-full border border-[var(--card-active-border)] px-1.5 text-[9.5px] leading-[15px] font-semibold text-[var(--kind-accent)]">
+                                  当前
+                                </span>
+                              )}
+                            </span>
+                            <span className="truncate font-mono text-[10px] text-[var(--text-muted)]">
+                              {profile.model}
+                            </span>
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+
             {aiMessage && <div className="data-status">{aiMessage}</div>}
           </div>
         );
@@ -1143,6 +1263,11 @@ export function SettingsDialog({ open, onClose, initialSection }: SettingsDialog
       centered
       footer={null}
       width={560}
+      styles={{
+        container: { padding: 0 },
+        header: { padding: "10px 12px 6px" },
+        body: { padding: "0 12px 10px" },
+      }}
     >
       <div className="settings-tree">
         <div className="settings-tree-nav">
