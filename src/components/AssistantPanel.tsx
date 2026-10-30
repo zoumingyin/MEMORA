@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Button, Popconfirm, Select, Tooltip } from 'antd'
+import { Button, Popconfirm, Select, Tooltip, message as antdMessage } from 'antd'
 import {
   ArrowUp,
+  Check,
+  Copy,
   Plus,
   RotateCcw,
   Settings2,
@@ -101,6 +103,48 @@ function ErrorCard({
   )
 }
 
+function CopyReplyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false)
+  const timerRef = useRef<number | undefined>(undefined)
+
+  useEffect(
+    () => () => {
+      if (timerRef.current !== undefined) window.clearTimeout(timerRef.current)
+    },
+    [],
+  )
+
+  const handleCopy = async () => {
+    const write = navigator.clipboard?.writeText?.bind(navigator.clipboard)
+    if (!write) {
+      antdMessage.error('当前环境不支持复制')
+      return
+    }
+    try {
+      await write(text)
+      setCopied(true)
+      if (timerRef.current !== undefined) window.clearTimeout(timerRef.current)
+      timerRef.current = window.setTimeout(() => setCopied(false), 1600)
+    } catch {
+      antdMessage.error('复制失败，请手动选择文本')
+    }
+  }
+
+  return (
+    <Tooltip title={copied ? '已复制' : '复制回答'}>
+      <button
+        type="button"
+        className="flex h-6 items-center gap-1 rounded-full border-0 bg-transparent px-1.5 text-[10.5px] text-[var(--text-muted)] transition-colors hover:bg-[var(--hover-fill)] hover:text-[var(--text)]"
+        onClick={() => void handleCopy()}
+        aria-label="复制回答"
+      >
+        {copied ? <Check size={12} /> : <Copy size={12} />}
+        <span>{copied ? '已复制' : '复制'}</span>
+      </button>
+    </Tooltip>
+  )
+}
+
 function MessageBubble({
   message,
   onRetry,
@@ -124,7 +168,7 @@ function MessageBubble({
   }
 
   return (
-    <div className="flex items-start gap-2">
+    <div className="group flex items-start gap-2">
       <div className="flex-center h-6 w-6 shrink-0 rounded-full bg-[var(--card-active-bg)] text-[var(--kind-accent)]">
         <Sparkles size={13} />
       </div>
@@ -144,6 +188,11 @@ function MessageBubble({
             <div className="mt-1 text-[11px] text-[var(--text-muted)]">已停止生成</div>
           )}
         </div>
+        {message.content && message.status !== 'streaming' && (
+          <div className="mt-0.5 flex justify-end opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+            <CopyReplyButton text={message.content} />
+          </div>
+        )}
         {message.status === 'error' && (
           <ErrorCard message={message} onRetry={onRetry} />
         )}
@@ -263,7 +312,7 @@ function AssistantPanelBody() {
   }
 
   return (
-    <section className="assistant-panel" aria-label="AI 助手">
+    <section className="assistant-panel" aria-label="AI 助手" data-tauri-drag-region="false">
       <header className="flex h-11 shrink-0 items-center gap-2 border-b border-[var(--border)] bg-[rgba(var(--panel-soft-rgb),var(--chrome-alpha))] px-3">
         <Sparkles size={16} className="text-[var(--kind-accent)]" />
         <div className="min-w-0 flex-1">
