@@ -5,6 +5,8 @@ use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 use tauri_plugin_global_shortcut::{Code, Modifiers, ShortcutState};
 use tauri_plugin_sql::{Migration, MigrationKind};
 
+mod ai;
+
 /// 托盘菜单中的「开机自启动」勾选项：事件回调里通过 state 同步勾选状态
 /// （TrayIcon 没有读取菜单的 API，只能保存引用后 set_checked）
 struct TrayMenuState(std::sync::Mutex<Option<CheckMenuItem<tauri::Wry>>>);
@@ -123,6 +125,8 @@ CREATE INDEX IF NOT EXISTS idx_entries_deleted ON entries(deleted_at);
     ];
 
     tauri::Builder::default()
+        // AI 助手请求取消标记（跨命令共享）
+        .manage(ai::AiState::default())
         .plugin(tauri_plugin_notification::init())
         .plugin(
             tauri_plugin_sql::Builder::default()
@@ -190,7 +194,16 @@ CREATE INDEX IF NOT EXISTS idx_entries_deleted ON entries(deleted_at);
             backup_db,
             restore_db,
             write_entries_json,
-            read_entries_json
+            read_entries_json,
+            ai::ai_get_status,
+            ai::ai_save_profile,
+            ai::ai_activate_profile,
+            ai::ai_delete_profile,
+            ai::ai_clear_key,
+            ai::ai_test,
+            ai::ai_list_models,
+            ai::ai_chat,
+            ai::ai_cancel
         ])
         .run(tauri::generate_context!())
         .expect("启动便签应用失败");

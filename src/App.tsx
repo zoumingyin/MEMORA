@@ -37,6 +37,7 @@ import { CloseConfirmDialog } from "./components/CloseConfirmDialog";
 import { CalendarPane } from "./components/CalendarPane";
 import { CreateKindDialog } from "./components/CreateKindDialog";
 import { TrashPane } from "./components/TrashPane";
+import { AssistantPanel } from "./components/AssistantPanel";
 
 /** 移动事件停止多久后再判定吸附，避免读到拖拽中的旧坐标 */
 const SNAP_DEBOUNCE_MS = 160;
@@ -127,6 +128,8 @@ export default function App() {
   const surfaceAlpha = darkGlass
     ? Math.max(opacity, 0.25)
     : Math.max(opacity, 0.6);
+  // AI 面板为覆盖层：保底更高的不透明衬底，避免背后列表文字透过玻璃干扰阅读
+  const assistantAlpha = Math.max(chromeAlpha, 0.86);
   const glassTokens = useMemo(
     () => (darkGlass ? DARK_TOKENS : LIGHT_TOKENS),
     [darkGlass]
@@ -503,13 +506,14 @@ export default function App() {
   return (
     <ConfigProvider theme={antdThemeConfig}>
       <main
-        className={`app-shell kind-${kindClass}`}
+        className={`app-shell kind-${kindClass} relative`}
         data-tauri-drag-region="deep"
         style={
           {
             "--panel-alpha": panelAlpha,
             "--chrome-alpha": chromeAlpha,
             "--surface-alpha": surfaceAlpha,
+            "--assistant-alpha": assistantAlpha,
             ...glassTokens,
           } as CSSProperties
         }
@@ -576,6 +580,7 @@ export default function App() {
             />
           )}
         </div>
+        <AssistantPanel />
       </main>
       <CloseConfirmDialog
         open={closeConfirmOpen}

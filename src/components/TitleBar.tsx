@@ -1,8 +1,10 @@
 import { useEffect, useState } from "react";
 import { Input } from "antd";
-import { Pin, Search, Settings, Timer, X, Zap } from "lucide-react";
+import { Pin, Search, Settings, Sparkles, Timer, X, Zap } from "lucide-react";
 import { useWindowStore } from "../store/useWindowStore";
 import { useEntryStore } from "../store/useEntryStore";
+import { useAssistantStore } from "../store/useAssistantStore";
+import { useUiStore } from "../store/useUiStore";
 import { closeWindow } from "../window/tauriWindow";
 import { SettingsDialog } from "./SettingsDialog";
 import { QuickCapture } from "./QuickCapture";
@@ -18,8 +20,14 @@ interface TitleBarProps {
 export function TitleBar({ quickOpen, setQuickOpen }: TitleBarProps) {
   const { alwaysOnTop } = useWindowStore();
   const { setAlwaysOnTop } = useWindowStore();
-  const [settingsOpen, setSettingsOpen] = useState(false);
   const [pomodoroOpen, setPomodoroOpen] = useState(false);
+  // 设置弹窗状态提升到 UI store：AI 助手的「去设置」可定位到指定设置页
+  const settingsOpen = useUiStore((state) => state.settingsOpen);
+  const settingsSection = useUiStore((state) => state.settingsSection);
+  const openSettings = useUiStore((state) => state.openSettings);
+  const closeSettings = useUiStore((state) => state.closeSettings);
+  const assistantOpen = useAssistantStore((state) => state.open);
+  const toggleAssistant = useAssistantStore((state) => state.togglePanel);
   const pomodoro = usePomodoro();
   const pomodoroLabel = pomodoro.getRemainingLabel();
   const search = useEntryStore((state) => state.search);
@@ -98,9 +106,19 @@ export function TitleBar({ quickOpen, setQuickOpen }: TitleBarProps) {
 
         <button
           type="button"
+          className={`titlebar-btn ${assistantOpen ? "active" : ""}`}
+          title="AI 助手"
+          aria-label="AI 助手"
+          onClick={toggleAssistant}
+        >
+          <Sparkles size={15} />
+        </button>
+
+        <button
+          type="button"
           className={`titlebar-btn ${settingsOpen ? "active" : ""}`}
           title="设置"
-          onClick={() => setSettingsOpen(true)}
+          onClick={() => openSettings()}
         >
           <Settings size={15} />
         </button>
@@ -125,8 +143,10 @@ export function TitleBar({ quickOpen, setQuickOpen }: TitleBarProps) {
       </div>
 
       <SettingsDialog
+        key={settingsOpen ? `open-${settingsSection ?? "default"}` : "closed"}
         open={settingsOpen}
-        onClose={() => setSettingsOpen(false)}
+        onClose={closeSettings}
+        initialSection={settingsSection}
       />
       <QuickCapture open={quickOpen} onClose={() => setQuickOpen(false)} />
       <PomodoroDialog

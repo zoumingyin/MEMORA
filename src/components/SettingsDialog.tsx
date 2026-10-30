@@ -1,15 +1,26 @@
-import { Modal, Switch, Tree } from "antd";
-import type { TreeDataNode } from "antd";
+import { AutoComplete, Input, Modal, Popconfirm, Select, Switch, Tree } from "antd";
+import type { InputRef, TreeDataNode } from "antd";
 import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
 import {
   open as dialogOpen,
   save as dialogSave,
 } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { isTauriRuntime } from "../repository";
 import { useWindowStore } from "../store/useWindowStore";
 import { useEntryStore } from "../store/useEntryStore";
+import { useAssistantStore } from "../store/useAssistantStore";
+import { useAiProfileStore } from "../store/useAiProfileStore";
+import type { AiProfileInput, AiProfileStatus } from "../types/ai";
+import {
+  clearAiKey,
+  deleteAiProfile,
+  isLocalBaseUrl,
+  listModels,
+  saveAiProfile,
+  testAiConnection,
+} from "../services/aiClient";
 import type { Entry } from "../types/entry";
 import {
   clearCloseBehavior,
@@ -23,12 +34,72 @@ import { collapseToStrip, detectDockEdge } from "../window/edgeDock";
 interface SettingsDialogProps {
   open: boolean;
   onClose: () => void;
+  /** 打开时定位的叶子设置页（AI 助手「去设置」跳转用） */
+  initialSection?: string | null;
 }
 
 const CLOSE_ACTION_LABEL: { value: CloseAction | null; label: string }[] = [
   { value: null, label: "每次询问" },
   { value: "hide", label: "最小化" },
   { value: "quit", label: "退出应用" },
+];
+
+/**
+ * AI 服务预设：选择后自动填入接口地址与默认模型；模型名可自由修改
+ */
+const AI_PRESETS: {
+  label: string;
+  baseUrl: string;
+  model: string;
+  models: string[];
+}[] = [
+  {
+    label: "DeepSeek",
+    baseUrl: "https://api.deepseek.com/v1",
+    model: "deepseek-chat",
+    models: ["deepseek-chat", "deepseek-reasoner"],
+  },
+  {
+    label: "Moonshot Kimi",
+    baseUrl: "https://api.moonshot.cn/v1",
+    model: "moonshot-v1-8k",
+    models: ["moonshot-v1-8k", "moonshot-v1-32k", "moonshot-v1-128k", "kimi-latest"],
+  },
+  {
+    label: "OpenAI",
+    baseUrl: "https://api.openai.com/v1",
+    model: "gpt-4o-mini",
+    models: ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini", "gpt-4.1"],
+  },
+  {
+    label: "通义千问（兼容模式）",
+    baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    model: "qwen-plus",
+    models: ["qwen-plus", "qwen-max", "qwen-turbo", "qwen-long"],
+  },
+  {
+    // 火山引擎方舟 OpenAI 兼容接口；模型也可填控制台的推理接入点 ID（ep-xxx）
+    label: "火山引擎（方舟）",
+    baseUrl: "https://ark.cn-beijing.volces.com/api/v3",
+    model: "doubao-seed-1-6-250615",
+    models: [
+      "doubao-seed-1-6-250615",
+      "doubao-1-5-pro-32k-250115",
+      "doubao-1-5-lite-32k-250115",
+    ],
+  },
+  {
+    label: "智谱 GLM",
+    baseUrl: "https://open.bigmodel.cn/api/paas/v4",
+    model: "glm-4-flash",
+    models: ["glm-4-flash", "glm-4-air", "glm-4-plus"],
+  },
+  {
+    label: "Ollama（本地）",
+    baseUrl: "http://127.0.0.1:11434/v1",
+    model: "qwen2.5:7b",
+    models: ["qwen2.5:7b", "qwen2.5:14b", "llama3.1:8b", "deepseek-r1:7b"],
+  },
 ];
 
 /** 设置树：分组 → 条目，左侧树导航（可折叠）、右侧内容区 */
@@ -80,6 +151,22 @@ const SETTING_TREE: SettingGroup[] = [
         key: "autostart",
         label: "开机自启动",
         hint: "登录 Windows 后自动启动",
+      },
+    ],
+  },
+  {
+    key: "assistant",
+    label: "AI 助手",
+    children: [
+      {
+        key: "ai-config",
+        label: "接入配置",
+        hint: "管理多个模型配置与 API 密钥",
+      },
+      {
+        key: "ai-privacy",
+        label: "上下文与隐私",
+        hint: "控制 AI 可读取的便签内容",
       },
     ],
   },
@@ -161,12 +248,16 @@ function parseExportFile(raw: string): Entry[] {
  * 边缘吸附与收纳到屏幕边缘自标题栏移入此处集中管理。
  * 关闭行为持久化 `bianqian.closeBehavior.v1`；开机自启动走 tauri-plugin-autostart。
  */
-export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
+export function SettingsDialog({ open, onClose, initialSection }: SettingsDialogProps) {
   const { alwaysOnTop, opacity, edgeDocking, theme } = useWindowStore();
   const { setAlwaysOnTop, setOpacity, setEdgeDocking, setDock, setTheme } =
     useWindowStore();
-  // 当前树节点：默认定位到「主题」
-  const [activeKey, setActiveKey] = useState("theme");
+  // 当前树节点：默认「主题」；由「去设置」跳转时直接定位到目标页
+  const [activeKey, setActiveKey] = useState(() =>
+    initialSection && SETTING_LEAF_KEYS.has(initialSection)
+      ? initialSection
+      : "theme"
+  );
   // 关闭窗口时的默认行为：null=每次询问；hide/quit=记住并直接执行
   const [closeAction, setCloseAction] = useState<CloseAction | null>(() => {
     const behavior = loadCloseBehavior();
@@ -179,6 +270,309 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
   const [busy, setBusy] = useState(false);
   // 预览环境（浏览器 localStorage）导入用的隐藏文件选择器
   const previewFileRef = useRef<HTMLInputElement>(null);
+
+  // ===== AI 助手配置（多模型） =====
+  const aiStatus = useAiProfileStore((state) => state.status);
+  const aiLoad = useAiProfileStore((state) => state.load);
+  const aiActivate = useAiProfileStore((state) => state.activate);
+  const aiSync = useAiProfileStore((state) => state.sync);
+  // 表单：null 表示新增，否则编辑该配置；表单在弹窗中展示
+  const [aiEditingId, setAiEditingId] = useState<string | null>(null);
+  const [aiDialogOpen, setAiDialogOpen] = useState(false);
+  const [aiName, setAiName] = useState("");
+  const [aiNameTouched, setAiNameTouched] = useState(false);
+  const [aiProvider, setAiProvider] = useState(AI_PRESETS[0].label);
+  const [aiBaseUrl, setAiBaseUrl] = useState(AI_PRESETS[0].baseUrl);
+  const [aiModel, setAiModel] = useState(AI_PRESETS[0].model);
+  const [aiKey, setAiKey] = useState("");
+  const [aiBusy, setAiBusy] = useState(false);
+  const [aiMessage, setAiMessage] = useState("");
+  const [aiRemoteModels, setAiRemoteModels] = useState<string[]>([]);
+  const [aiModelHint, setAiModelHint] = useState("");
+  const [aiLoadingModels, setAiLoadingModels] = useState(false);
+  const baseUrlRef = useRef<InputRef>(null);
+  const modelRequestSeq = useRef(0);
+  const aiContextEnabled = useAssistantStore((state) => state.contextEnabled);
+  const setAiContextEnabled = useAssistantStore(
+    (state) => state.setContextEnabled
+  );
+  const entryCount = useEntryStore((state) => state.entries.length);
+
+  const aiProfiles = aiStatus?.profiles ?? [];
+  const editingProfile = aiEditingId
+    ? aiProfiles.find((profile) => profile.id === aiEditingId) ?? null
+    : null;
+  const activeProfile =
+    aiProfiles.find((profile) => profile.id === aiStatus?.activeId) ??
+    aiProfiles[0] ??
+    null;
+  // 服务商下拉值：已保存的自定义服务名不在预设内时统一显示为「自定义服务」
+  const aiProviderValue = AI_PRESETS.some((preset) => preset.label === aiProvider)
+    ? aiProvider
+    : "自定义服务";
+  const aiKeyPlaceholder = editingProfile?.keyMasked
+    ? `已保存 ${editingProfile.keyMasked}，留空表示不修改`
+    : isLocalBaseUrl(aiBaseUrl)
+      ? "本机服务通常无需密钥，可留空"
+      : "sk-…";
+
+  // 模型候选：官方 /models 接口结果 + 预设内置建议（去重，接口结果优先）
+  const matchedPreset = AI_PRESETS.find(
+    (preset) => preset.baseUrl === aiBaseUrl.trim().replace(/\/+$/, "")
+  );
+  const aiModelOptions = Array.from(
+    new Set([...aiRemoteModels, ...(matchedPreset?.models ?? [])])
+  ).map((value) => ({ value }));
+
+  /** 拉取官方模型列表；失败时保留内置建议并提示可手动输入 */
+  const loadRemoteModels = useCallback(async (input: AiProfileInput) => {
+    const seq = modelRequestSeq.current + 1;
+    modelRequestSeq.current = seq;
+    setAiLoadingModels(true);
+    try {
+      const models = await listModels(input);
+      if (modelRequestSeq.current !== seq) return;
+      setAiRemoteModels(models);
+      setAiModelHint(`已从官方接口获取 ${models.length} 个模型`);
+    } catch (error) {
+      if (modelRequestSeq.current !== seq) return;
+      setAiRemoteModels([]);
+      setAiModelHint("未能从官方接口获取模型列表，已保留本地建议，可手动输入");
+      console.warn("获取模型列表失败", error);
+    } finally {
+      if (modelRequestSeq.current === seq) setAiLoadingModels(false);
+    }
+  }, []);
+
+  /** 地址 + 密钥可用时自动拉取；密钥未填写且服务需要鉴权时只给提示 */
+  const refreshModelsIfPossible = (
+    baseUrl: string,
+    model: string,
+    target: AiProfileStatus | null = editingProfile
+  ) => {
+    if (!baseUrl.trim()) return;
+    if (!aiKey.trim() && !target?.keyMasked && !isLocalBaseUrl(baseUrl)) {
+      setAiRemoteModels([]);
+      setAiModelHint("填写 API 密钥后可从官方接口获取模型列表");
+      return;
+    }
+    void loadRemoteModels({
+      id: target?.id,
+      baseUrl,
+      model,
+      apiKey: aiKey.trim() || undefined,
+    });
+  };
+
+  /** 表单重置为新增模式：默认填入第一个预设，显示名称默认取模型名 */
+  const resetAiForm = () => {
+    setAiEditingId(null);
+    setAiName(AI_PRESETS[0].model);
+    setAiNameTouched(false);
+    setAiProvider(AI_PRESETS[0].label);
+    setAiBaseUrl(AI_PRESETS[0].baseUrl);
+    setAiModel(AI_PRESETS[0].model);
+    setAiKey("");
+    setAiRemoteModels([]);
+    setAiModelHint("");
+  };
+
+  const openAddDialog = () => {
+    resetAiForm();
+    setAiMessage("");
+    setAiDialogOpen(true);
+  };
+
+  const closeAiDialog = () => {
+    setAiDialogOpen(false);
+    resetAiForm();
+    setAiMessage("");
+  };
+
+  /** 模型变化时，未自定义的显示名称跟随模型名 */
+  const handleModelChange = (value: string) => {
+    const previous = aiModel;
+    setAiModel(value);
+    if (!aiNameTouched || !aiName.trim() || aiName === previous) {
+      setAiName(value);
+    }
+  };
+
+  // 每次打开时读取配置列表（只同步状态，表单保持当前编辑内容）
+  useEffect(() => {
+    if (!open) return;
+    void aiLoad().catch(() => undefined);
+    return () => {
+      modelRequestSeq.current += 1;
+    };
+  }, [open, aiLoad]);
+
+  const handleAiSave = async () => {
+    const baseUrl = aiBaseUrl.trim();
+    const model = aiModel.trim();
+    if (!baseUrl) {
+      setAiMessage("请填写接口地址（Base URL）");
+      baseUrlRef.current?.focus();
+      return;
+    }
+    if (!/^https?:\/\//i.test(baseUrl)) {
+      setAiMessage("接口地址需以 http:// 或 https:// 开头");
+      baseUrlRef.current?.focus();
+      return;
+    }
+    if (!model) {
+      setAiMessage("请填写模型名称");
+      return;
+    }
+    if (!aiKey.trim() && !editingProfile?.keyMasked && !isLocalBaseUrl(baseUrl)) {
+      setAiMessage("请填写 API 密钥（本机服务可留空）");
+      return;
+    }
+
+    setAiBusy(true);
+    setAiMessage("");
+    const knownIds = new Set(aiProfiles.map((profile) => profile.id));
+    try {
+      const status = await saveAiProfile({
+        id: aiEditingId ?? undefined,
+        name: aiName.trim() || undefined,
+        provider: aiProvider,
+        baseUrl,
+        model,
+        apiKey: aiKey.trim() || undefined,
+      });
+      aiSync(status);
+      const savedId =
+        aiEditingId ??
+        status.profiles.find((profile) => !knownIds.has(profile.id))?.id ??
+        status.activeId;
+      const saved = status.profiles.find((profile) => profile.id === savedId);
+      setAiDialogOpen(false);
+      resetAiForm();
+      setAiMessage(
+        saved?.configured
+          ? `已保存「${saved.name}」，可在对话界面的模型选择器中切换使用`
+          : "已保存，但还缺少 API 密钥（本机服务可忽略此项）"
+      );
+      if (saved?.configured) {
+        void loadRemoteModels({
+          id: saved.id,
+          baseUrl: saved.baseUrl,
+          model: saved.model,
+        });
+      }
+    } catch (error) {
+      setAiMessage(
+        `保存失败：${error instanceof Error ? error.message : String(error)}`
+      );
+    } finally {
+      setAiBusy(false);
+    }
+  };
+
+  const handleAiTest = async () => {
+    if (!aiBaseUrl.trim() || !aiModel.trim()) {
+      setAiMessage("请先填写接口地址与模型名称");
+      return;
+    }
+    setAiBusy(true);
+    setAiMessage("正在测试连接…");
+    try {
+      const result = await testAiConnection({
+        id: aiEditingId ?? undefined,
+        baseUrl: aiBaseUrl,
+        model: aiModel,
+        apiKey: aiKey.trim() || undefined,
+      });
+      setAiMessage(result);
+    } catch (error) {
+      setAiMessage(
+        `测试失败：${error instanceof Error ? error.message : String(error)}`
+      );
+    } finally {
+      setAiBusy(false);
+    }
+  };
+
+  /** 开始编辑一条已保存配置（密钥只回显掩码，输入框留空） */
+  const startEditProfile = (profile: AiProfileStatus) => {
+    setAiEditingId(profile.id);
+    setAiName(profile.name);
+    setAiNameTouched(true);
+    setAiProvider(profile.provider);
+    setAiBaseUrl(profile.baseUrl);
+    setAiModel(profile.model);
+    setAiKey("");
+    setAiRemoteModels([]);
+    setAiModelHint("");
+    setAiMessage("");
+    setAiDialogOpen(true);
+    refreshModelsIfPossible(profile.baseUrl, profile.model, profile);
+  };
+
+  /** 切换对话使用的模型配置 */
+  const handleActivateProfile = async (profile: AiProfileStatus) => {
+    if (aiStatus?.activeId === profile.id) return;
+    try {
+      await aiActivate(profile.id);
+      setAiMessage(`已切换到 ${profile.provider} · ${profile.model}`);
+    } catch (error) {
+      setAiMessage(
+        `切换失败：${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+  };
+
+  const handleDeleteProfile = async (profile: AiProfileStatus) => {
+    setAiBusy(true);
+    setAiMessage("");
+    try {
+      const status = await deleteAiProfile(profile.id);
+      aiSync(status);
+      if (aiEditingId === profile.id) resetAiForm();
+      setAiMessage(`已删除 ${profile.provider} · ${profile.model}`);
+    } catch (error) {
+      setAiMessage(
+        `删除失败：${error instanceof Error ? error.message : String(error)}`
+      );
+    } finally {
+      setAiBusy(false);
+    }
+  };
+
+  const handleAiClearKey = async () => {
+    if (!editingProfile) return;
+    setAiBusy(true);
+    setAiMessage("");
+    try {
+      const status = await clearAiKey(editingProfile.id);
+      aiSync(status);
+      setAiMessage(
+        isTauriRuntime()
+          ? "已清除该配置保存在本机的密钥"
+          : "已清除该配置保存在本浏览器的密钥"
+      );
+    } catch (error) {
+      setAiMessage(
+        `清除失败：${error instanceof Error ? error.message : String(error)}`
+      );
+    } finally {
+      setAiBusy(false);
+    }
+  };
+
+  /** 服务商下拉：选中预设时自动填入接口地址与默认模型（显示名称跟随模型名） */
+  const applyAiPreset = (label: string) => {
+    setAiProvider(label);
+    const preset = AI_PRESETS.find((item) => item.label === label);
+    if (!preset) return;
+    setAiBaseUrl(preset.baseUrl);
+    handleModelChange(preset.model);
+    setAiMessage("");
+    setAiRemoteModels([]);
+    setAiModelHint("");
+    refreshModelsIfPossible(preset.baseUrl, preset.model);
+  };
 
   useEffect(() => {
     if (open && isTauriRuntime()) {
@@ -564,6 +958,178 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
             </button>
           </div>
         );
+      case "ai-config": {
+        return (
+          <div className="flex flex-col gap-3 py-1">
+            {/* 概览：配置数量 + 当前使用的模型 */}
+            <div className="flex items-center gap-2.5 rounded-[8px] border border-[var(--border)] bg-[var(--hover-fill)] px-2.5 py-2">
+              <span
+                className={`h-2 w-2 shrink-0 rounded-full ${
+                  activeProfile?.configured
+                    ? "bg-[var(--todo)]"
+                    : "bg-[var(--danger)]"
+                }`}
+              />
+              <div className="flex min-w-0 flex-1 flex-col">
+                <span className="truncate text-[12px] font-semibold text-[var(--text)]">
+                  {aiProfiles.length === 0
+                    ? "尚未添加模型配置"
+                    : `已配置 ${aiProfiles.length} 个模型`}
+                </span>
+                <span className="truncate text-[10.5px] text-[var(--text-muted)]">
+                  {activeProfile
+                    ? `当前：${activeProfile.provider} · ${activeProfile.name}`
+                    : "点击「新增模型」添加服务商与接入参数，即可在对话界面切换"}
+                </span>
+              </div>
+            </div>
+
+            {/* 已保存配置：点击切换为当前使用，编辑 / 删除走弹窗 */}
+            <div className="flex flex-col gap-1.5">
+              <div className="flex items-center justify-between">
+                <span className="text-[11.5px] text-[var(--text-muted)]">
+                  模型配置
+                </span>
+                <button
+                  type="button"
+                  className="data-action-btn primary"
+                  disabled={aiBusy}
+                  onClick={openAddDialog}
+                >
+                  新增模型
+                </button>
+              </div>
+              {aiProfiles.length === 0 ? (
+                <button
+                  type="button"
+                  className="cursor-pointer rounded-[8px] border border-dashed border-[var(--border)] bg-transparent px-2.5 py-3 text-[11px] text-[var(--text-muted)] transition-colors hover:border-[var(--card-border-hover)] hover:text-[var(--text)]"
+                  onClick={openAddDialog}
+                >
+                  还没有模型配置，点击添加
+                </button>
+              ) : (
+                aiProfiles.map((profile) => {
+                  const active = profile.id === aiStatus?.activeId;
+                  return (
+                    <div
+                      key={profile.id}
+                      className={`flex items-start gap-2 rounded-[8px] border px-2.5 py-2 ${
+                        active
+                          ? "border-[var(--card-active-border)] bg-[var(--card-active-bg)]"
+                          : "border-[var(--border)]"
+                      }`}
+                    >
+                      <button
+                        type="button"
+                        title={active ? "当前使用中的模型" : "切换为当前使用"}
+                        className="min-w-0 flex-1 cursor-pointer border-0 bg-transparent p-0 text-left"
+                        onClick={() => void handleActivateProfile(profile)}
+                      >
+                        <span className="flex items-center gap-1.5">
+                          <span className="truncate text-[12px] font-semibold text-[var(--text)]">
+                            {profile.name}
+                          </span>
+                          {active && (
+                            <span className="shrink-0 rounded-full border border-[var(--card-active-border)] px-1.5 text-[9.5px] leading-[15px] font-semibold text-[var(--kind-accent)]">
+                              当前
+                            </span>
+                          )}
+                          {profile.readOnly && (
+                            <span className="shrink-0 rounded-full border border-[var(--border)] px-1.5 text-[9.5px] leading-[15px] text-[var(--text-muted)]">
+                              环境变量
+                            </span>
+                          )}
+                          {profile.keySource === "browser" && (
+                            <span className="shrink-0 rounded-full border border-[var(--border)] px-1.5 text-[9.5px] leading-[15px] text-[var(--text-muted)]">
+                              本浏览器
+                            </span>
+                          )}
+                          {!profile.configured && (
+                            <span className="shrink-0 rounded-full border border-[var(--danger)] px-1.5 text-[9.5px] leading-[15px] text-[var(--danger)]">
+                              缺少密钥
+                            </span>
+                          )}
+                        </span>
+                        <span className="mt-0.5 block truncate text-[10.5px] text-[var(--text-muted)]">
+                          {profile.provider} · {profile.model}
+                        </span>
+                        <span className="block truncate text-[10px] text-[var(--text-muted)]">
+                          {profile.baseUrl}
+                        </span>
+                      </button>
+                      {!profile.readOnly && (
+                        <div className="flex shrink-0 flex-col gap-1">
+                          <button
+                            type="button"
+                            className="cursor-pointer border-0 bg-transparent p-0 text-[10.5px] text-[var(--text-muted)] hover:text-[var(--text)]"
+                            onClick={() => startEditProfile(profile)}
+                          >
+                            编辑
+                          </button>
+                          <Popconfirm
+                            title="删除该模型配置？"
+                            description="仅删除本机保存的接口参数与密钥，不影响聊天记录。"
+                            okText="删除"
+                            cancelText="取消"
+                            okButtonProps={{ danger: true }}
+                            disabled={aiBusy}
+                            onConfirm={() => void handleDeleteProfile(profile)}
+                          >
+                            <button
+                              type="button"
+                              disabled={aiBusy}
+                              className="cursor-pointer border-0 bg-transparent p-0 text-[10.5px] text-[var(--danger)] hover:underline disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              删除
+                            </button>
+                          </Popconfirm>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+
+            {aiMessage && <div className="data-status">{aiMessage}</div>}
+          </div>
+        );
+      }
+      case "ai-privacy":
+        return (
+          <div className="flex flex-col gap-3">
+            <div className="settings-item">
+              <div className="settings-item-main">
+                <span className="settings-item-label">读取便签作为上下文</span>
+                <span className="settings-item-hint">
+                  开启后提问会附带笔记摘要；关闭则只回答通用问题
+                </span>
+              </div>
+              <Switch
+                size="small"
+                checked={aiContextEnabled}
+                onChange={setAiContextEnabled}
+              />
+            </div>
+            <div className="rounded-[8px] bg-[var(--hover-fill)] p-2.5 text-[11px] leading-relaxed text-[var(--text-muted)]">
+              <p className="m-0">
+                发送范围：当前 {entryCount} 条便签的标题、正文摘要与标签，最多约
+                6000 字；不含图片、废纸篓与已删除内容。
+              </p>
+              <p className="m-0 mt-1">
+                对话记录仅保存在本机（localStorage，最多 40 条），不会上传到本应用服务器。
+              </p>
+              {!isTauriRuntime() && (
+                <p className="m-0 mt-1">
+                  浏览器预览会直连你在「接入配置」中填写的 AI 服务，便签摘要随请求发往该服务。
+                </p>
+              )}
+              <p className="m-0 mt-1">
+                关闭上下文后，之前已发送的内容无法撤回；如涉及敏感笔记，请保持关闭。
+              </p>
+            </div>
+          </div>
+        );
       default:
         return null;
     }
@@ -597,6 +1163,169 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
           {dataStatus && <div className="data-status">{dataStatus}</div>}
         </div>
       </div>
+      {/* 新增 / 编辑模型：独立弹窗，避免表单挤占设置页 */}
+      <Modal
+        open={aiDialogOpen}
+        onCancel={closeAiDialog}
+        title={aiEditingId ? "编辑模型" : "新增模型"}
+        centered
+        footer={null}
+        width={420}
+        destroyOnHidden
+      >
+        <div className="flex flex-col gap-2.5 pt-1">
+          <label className="flex flex-col gap-1">
+            <span className="text-[11px] text-[var(--text-muted)]">
+              显示名称
+            </span>
+            <Input
+              size="small"
+              value={aiName}
+              placeholder={`默认：${aiModel || "模型名称"}`}
+              onChange={(event) => {
+                setAiName(event.target.value);
+                setAiNameTouched(true);
+              }}
+            />
+          </label>
+
+          <label className="flex flex-col gap-1">
+            <span className="text-[11px] text-[var(--text-muted)]">服务商</span>
+            <Select
+              size="small"
+              value={aiProviderValue}
+              onChange={(value) => applyAiPreset(value)}
+              options={[
+                ...AI_PRESETS.map((preset) => ({
+                  value: preset.label,
+                  label: preset.label,
+                })),
+                { value: "自定义服务", label: "自定义服务" },
+              ]}
+            />
+          </label>
+
+          <label className="flex flex-col gap-1">
+            <span className="text-[11px] text-[var(--text-muted)]">
+              接口地址（Base URL）
+            </span>
+            <Input
+              ref={baseUrlRef}
+              size="small"
+              value={aiBaseUrl}
+              placeholder="https://api.deepseek.com/v1"
+              onChange={(event) => {
+                setAiBaseUrl(event.target.value);
+                // 换服务后旧服务的模型候选立即失效，失焦时再按新地址拉取
+                setAiRemoteModels([]);
+                setAiModelHint("");
+              }}
+              onBlur={() => refreshModelsIfPossible(aiBaseUrl, aiModel)}
+            />
+          </label>
+
+          <label className="flex flex-col gap-1">
+            <span className="flex items-center justify-between text-[11px] text-[var(--text-muted)]">
+              <span>模型</span>
+              <button
+                type="button"
+                className="cursor-pointer border-0 bg-transparent p-0 text-[10.5px] text-[var(--text-muted)] hover:text-[var(--text)] disabled:cursor-not-allowed disabled:opacity-50"
+                disabled={aiLoadingModels || !aiBaseUrl.trim()}
+                onClick={() => refreshModelsIfPossible(aiBaseUrl, aiModel)}
+              >
+                {aiLoadingModels ? "获取中…" : "从服务获取"}
+              </button>
+            </span>
+            <AutoComplete
+              size="small"
+              value={aiModel}
+              options={aiModelOptions}
+              placeholder={
+                aiModelOptions.length > 0
+                  ? "从下拉选择，或直接输入模型名"
+                  : "输入模型名称"
+              }
+              filterOption={(inputValue, option) =>
+                String(option?.value ?? "")
+                  .toLowerCase()
+                  .includes(inputValue.toLowerCase())
+              }
+              onChange={handleModelChange}
+            />
+            {/* 提示位固定高度：异步出现的模型候选提示不能让弹窗高度跳动 */}
+            <span
+              className="block h-[15px] truncate text-[10px] leading-[15px] text-[var(--text-muted)]"
+              title={aiModelHint || undefined}
+            >
+              {aiModelHint}
+            </span>
+          </label>
+
+          <label className="flex flex-col gap-1">
+            <span className="flex items-center justify-between text-[11px] text-[var(--text-muted)]">
+              <span>API 密钥</span>
+              {editingProfile?.keyMasked &&
+                editingProfile.keySource !== "env" && (
+                  <button
+                    type="button"
+                    className="cursor-pointer border-0 bg-transparent p-0 text-[10.5px] text-[var(--danger)] hover:underline disabled:cursor-not-allowed disabled:opacity-50"
+                    disabled={aiBusy}
+                    onClick={() => void handleAiClearKey()}
+                  >
+                    清除已保存密钥
+                  </button>
+                )}
+            </span>
+            <Input.Password
+              size="small"
+              value={aiKey}
+              autoComplete="off"
+              placeholder={aiKeyPlaceholder}
+              onChange={(event) => setAiKey(event.target.value)}
+              onBlur={() => {
+                if (aiKey.trim()) {
+                  refreshModelsIfPossible(aiBaseUrl, aiModel);
+                }
+              }}
+            />
+          </label>
+
+          <p className="m-0 text-[10px] leading-relaxed text-[var(--text-muted)]">
+            {isTauriRuntime()
+              ? "支持任意 OpenAI 兼容接口。密钥由桌面端 Rust 后端保管，不会写入前端代码或聊天记录；也可通过环境变量 BIANQIAN_AI_API_KEY 注入（优先于本机保存值）。"
+              : "浏览器预览下配置与密钥保存在本浏览器 localStorage，仅供本地调试，请避免在公共设备填写正式密钥。"}
+          </p>
+
+          <div className="flex items-center justify-end gap-2">
+            <button
+              type="button"
+              className="data-action-btn"
+              disabled={aiBusy}
+              onClick={() => void handleAiTest()}
+            >
+              测试连接
+            </button>
+            <button
+              type="button"
+              className="data-action-btn"
+              disabled={aiBusy}
+              onClick={closeAiDialog}
+            >
+              取消
+            </button>
+            <button
+              type="button"
+              className="data-action-btn primary"
+              disabled={aiBusy}
+              onClick={() => void handleAiSave()}
+            >
+              {aiBusy ? "处理中…" : aiEditingId ? "保存修改" : "添加配置"}
+            </button>
+          </div>
+
+          {aiMessage && <div className="data-status">{aiMessage}</div>}
+        </div>
+      </Modal>
       {/* 预览环境（浏览器 localStorage）导入用的隐藏文件选择器 */}
       <input
         ref={previewFileRef}
