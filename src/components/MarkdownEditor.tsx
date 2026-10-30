@@ -274,9 +274,14 @@ export function MarkdownEditor({
     }
   };
 
-  /** 独立右键菜单窗口尺寸（逻辑/CSS 像素）：菜单本体 ~220 宽；高度按「完整字号子菜单（360px）向下展开」预留，
-      右侧预留子菜单/拾色器横向展开空间，保证所有子菜单完整可见不裁剪 */
-  const CTX_MENU_WIN_W = 520;
+  /**
+   * 独立菜单窗口尺寸（CSS px）：
+   * 宽 780 = 面板（约 165）+ 面板内移 240（左侧给子菜单留空间）+ 右侧子菜单横向展开余量，
+   * 使子菜单贴屏幕边缘时既能向左也能向右完整展开；高 520 容纳完整字号子菜单（360）。
+   * 面板内移量见 CtxMenuDialog 的 CTX_PANEL_OFFSET（240），两者须满足：
+   * 面板左缘 + 触发项偏移 - 最宽子菜单(244) ≥ 0，且 面板左缘 + 触发项右缘 + 最宽子菜单 ≤ 780。
+   */
+  const CTX_MENU_WIN_W = 780;
   const CTX_MENU_WIN_H = 520;
 
   /** 打开独立右键菜单窗口（Tauri 环境，参考图片预览窗口实现）：
@@ -320,31 +325,10 @@ export function MarkdownEditor({
     } catch {
       // 读取失败时退化为视口换算定位
     }
-    const snapshot = {
-      selectedText: getSelectedText(),
-      bold: toolActive("bold"),
-      strike: toolActive("strike"),
-      italic: toolActive("italic"),
-      underline: toolActive("underline"),
-      color: editor?.getAttributes("textStyle").color as string | undefined,
-      isDark: document.documentElement.classList.contains("dark-glass"),
-      cssVars,
-      // 定位信息：系统光标物理坐标 + 菜单窗口期望的 CSS 尺寸
-      cursorX,
-      cursorY,
-      cursorCaptured,
-      winW: CTX_MENU_WIN_W,
-      winH: CTX_MENU_WIN_H,
-    };
-    const storageKey = `md-ctx-menu-${Date.now()}`;
-    try {
-      localStorage.setItem(storageKey, JSON.stringify(snapshot));
-    } catch {
-      console.error("保存右键菜单状态失败");
-      return;
-    }
     // 兜底定位（cursorPosition 失败时）：主窗口内容区位置（innerPosition，物理像素）+ 视口内偏移 × 缩放比，
     // 换算后钳制在当前显示器工作区内。
+    const winW = CTX_MENU_WIN_W;
+    const winH = CTX_MENU_WIN_H;
     let scale = 1;
     let area: WorkArea | null = null;
     let baseX = 0;
@@ -359,8 +343,6 @@ export function MarkdownEditor({
     } catch {
       // 缩放 / 工作区 / 位置查询失败时按 1:1、主窗口位于 (0,0) 处理
     }
-    const winW = CTX_MENU_WIN_W;
-    const winH = CTX_MENU_WIN_H;
     const winWP = Math.round(winW * scale);
     const winHP = Math.round(winH * scale);
     let cx = baseX + Math.round(clientX * scale);
@@ -368,6 +350,31 @@ export function MarkdownEditor({
     if (area) {
       cx = Math.min(Math.max(cx, area.x), area.x + area.width - winWP);
       cy = Math.min(Math.max(cy, area.y), area.y + area.height - winHP);
+    }
+    const snapshot = {
+      selectedText: getSelectedText(),
+      bold: toolActive("bold"),
+      strike: toolActive("strike"),
+      italic: toolActive("italic"),
+      underline: toolActive("underline"),
+      color: editor?.getAttributes("textStyle").color as string | undefined,
+      isDark: document.documentElement.classList.contains("dark-glass"),
+      cssVars,
+      // 定位信息：系统光标物理坐标 + 菜单窗口期望的 CSS 尺寸
+      cursorX,
+      cursorY,
+      cursorCaptured,
+      winW,
+      winH,
+      // 点击所在显示器工作区（物理像素）：主窗口就在该显示器上，作为菜单翻转/钳制的权威边界
+      workArea: area,
+    };
+    const storageKey = `md-ctx-menu-${Date.now()}`;
+    try {
+      localStorage.setItem(storageKey, JSON.stringify(snapshot));
+    } catch {
+      console.error("保存右键菜单状态失败");
+      return;
     }
     // 创建选项按物理像素传入（实测运行时按物理像素解释），菜单窗口创建后还会用
     // setPosition/setSize 按物理像素精确定位与校正尺寸，双保险保证落在鼠标处。
@@ -408,18 +415,24 @@ export function MarkdownEditor({
 
   /** 页面内右键菜单（浏览器环境回退 / 独立窗口创建失败时兜底） */
   const showInPageCtxMenu = (clientX: number, clientY: number): void => {
-    const menuWidth = 220;
-    const menuHeight = 520;
+    // 面板实际渲染尺寸（内容固定，实测约 165×267；留少量余量避免贴边被裁）
+    const menuWidth = 170;
+    const menuHeight = 272;
     let left = clientX;
     let top = clientY;
-    // 防止菜单超出右边界
-    if (left + menuWidth > window.innerWidth)
-      left = window.innerWidth - menuWidth - 8;
-    // 如果往下弹会超出底部，就往上弹
-    if (top + menuHeight > window.innerHeight) {
-      top = clientY;
-    }
-    if (top < 0) top = 0;
+    // 右边界放不下 → 向左翻转（面板右缘贴近鼠标）
+    if (left + menuWidth > window.innerWidth) left = clientX - menuWidth;
+    // 下边界放不下 → 向上翻转（面板底缘贴近鼠标）
+    if (top + menuHeight > window.innerHeight) top = clientY - menuHeight;
+    // 左/上边界兜底钳制：面板比视口还大时贴住边缘，保证尽可能完整可见
+    left = Math.min(
+      Math.max(left, 0),
+      Math.max(0, window.innerWidth - menuWidth)
+    );
+    top = Math.min(
+      Math.max(top, 0),
+      Math.max(0, window.innerHeight - menuHeight)
+    );
     setCtxMenu({ top, left });
   };
 

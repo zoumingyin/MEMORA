@@ -2943,6 +2943,12 @@ button.note-row[data-paper="dots"] {
   bottom: -6px;
 }
 
+/* 子菜单向左展开（右侧空间不足时） */
+.md-ctx-submenu.submenu-left {
+  left: auto;
+  right: 100%;
+}
+
 .md-ctx-color-item {
   display: flex;
   align-items: center;
@@ -2977,11 +2983,13 @@ button.note-row[data-paper="dots"] {
   z-index: 1499;
 }
 
-/* 菜单独立窗口：窗口高度已按完整字号子菜单预留，子菜单统一向下展开且不裁剪 */
-.md-ctx-window .md-ctx-submenu.submenu-up {
-  top: -6px;
-  bottom: auto;
-  max-height: none;
+/* 表情选择面板分类条：横向滚动时隐藏滚动条 */
+.emoji-cat-scroll {
+  scrollbar-width: none;
+}
+
+.emoji-cat-scroll::-webkit-scrollbar {
+  display: none;
 }
 
 /* 表情选择子菜单：搜索 + 分类 + 网格（与 EmojiPicker 同数据源） */
@@ -2993,8 +3001,44 @@ button.note-row[data-paper="dots"] {
   min-width: 244px;
 }
 
+/* 表情分类行：左右箭头 + 可横向滚动标签条（与 EmojiPicker 一致） */
+.md-ctx-emoji-tabrow {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.md-ctx-emoji-nav {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition:
+    background-color 0.15s ease,
+    opacity 0.15s ease;
+}
+
+.md-ctx-emoji-nav:hover:not(:disabled) {
+  background: var(--hover-fill);
+}
+
+.md-ctx-emoji-nav:disabled {
+  cursor: default;
+  opacity: 0.25;
+}
+
 .md-ctx-emoji-tabs {
   display: flex;
+  flex: 1;
+  min-width: 0;
   gap: 4px;
   overflow-x: auto;
   scrollbar-width: none;

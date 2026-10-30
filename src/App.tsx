@@ -4,7 +4,6 @@ import {
   ConfigProvider,
   Button,
   Badge,
-  message,
   theme as antdTheme,
 } from "antd";
 import { PlusOutlined, RestOutlined } from "@ant-design/icons";

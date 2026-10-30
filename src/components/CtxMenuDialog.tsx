@@ -4,6 +4,14 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { PhysicalPosition, PhysicalSize } from "@tauri-apps/api/dpi";
 import { emit } from "@tauri-apps/api/event";
 import { isTauriRuntime } from "../repository";
+import { currentWorkArea } from "../window/tauriWindow";
+
+/**
+ * 菜单面板在窗口内的左移量（CSS px）：面板不贴窗口左缘，给子菜单左侧留出展开空间，
+ * 使子菜单贴屏幕边缘时能向左完整展开（与 MarkdownEditor 的 CTX_MENU_WIN_W=780 配套：
+ * 240 + 触发项左缘(≈10) - 最宽子菜单(244) ≥ 0，且 240 + 触发项右缘(≈403) + 244 ≤ 780）。
+ */
+const CTX_PANEL_OFFSET = 240;
 import {
   ContextMenuPanel,
   type CtxMenuAction,
@@ -30,6 +38,11 @@ interface CtxMenuState {
   /** 菜单窗口期望的 CSS 像素尺寸（主窗口按此换算物理尺寸校正） */
   winW: number;
   winH: number;
+  /**
+   * 点击所在显示器的工作区（物理像素）：主窗口就在该显示器上，
+   * 作为菜单翻转/钳制的权威边界（多显示器场景下窗口初始位置所在显示器可能不同）。
+   */
+  workArea: { x: number; y: number; width: number; height: number } | null;
 }
 
 /** 菜单命令：菜单窗口点击后通过 Tauri 事件回传给主窗口执行 */
@@ -113,8 +126,18 @@ export function CtxMenuDialog() {
     }
   }, [state]);
 
-  // 窗口以隐藏方式创建（visible:false）：定位（系统光标物理坐标）并校正尺寸后再显示聚焦，
-  // 不依赖创建选项的单位换算，任何 DPI/缩放下都精确落在鼠标点击处，且不闪现白屏
+  // 窗口以隐藏方式创建（visible:false）：先移动到光标处，使窗口落在点击所在显示器，
+  // 再取该显示器的缩放与工作区，按四方向碰撞规则（右/下放不下则向左/上翻转，
+  // 左/上兜底钳制）计算落点，用物理坐标精确定位；同时把「屏幕工作区 ∩ 窗口内部」
+  // 映射为可见区域，供子菜单展开方向自适应。全部完成后才显示聚焦。
+  // 多显示器关键：翻转/钳制必须用「点击所在显示器」的工作区（主窗口传入优先），
+  // 而不是窗口创建时所在显示器的，否则右/下边缘判断会失效。
+  const [viewArea, setViewArea] = useState<{
+    left: number;
+    top: number;
+    right: number;
+    bottom: number;
+  } | null>(null);
   useEffect(() => {
     if (!state) return;
     if (isTauriRuntime()) {
@@ -122,19 +145,82 @@ export function CtxMenuDialog() {
       void (async () => {
         try {
           if (state.cursorCaptured) {
-            const scale = await win.scaleFactor();
+            // ① 先移动到光标处（物理坐标）：窗口落在点击所在显示器，
+            //    之后 scaleFactor/工作区查询都以该显示器为准
             await win.setPosition(
-              new PhysicalPosition(state.cursorX, state.cursorY),
+              new PhysicalPosition(state.cursorX, state.cursorY)
             );
+            const scale = await win.scaleFactor();
+            // ② 边界：优先用主窗口传入的「点击所在显示器」工作区；
+            //    缺失时回退为移动后当前显示器的工作区
+            const area = state.workArea ?? (await currentWorkArea());
+            // ③ 面板实际尺寸（CSS px，面板落在窗口左上角）
+            const panel = document.querySelector(".md-ctx-menu");
+            const panelW = panel
+              ? (panel as HTMLElement).getBoundingClientRect().width
+              : state.winW;
+            const panelH = panel
+              ? (panel as HTMLElement).getBoundingClientRect().height
+              : state.winH;
+            // 期望落点：面板左上角对齐光标（右下展开）
+            let wx = state.cursorX;
+            let wy = state.cursorY;
+            const pWP = Math.round(panelW * scale);
+            const pHP = Math.round(panelH * scale);
+            if (area) {
+              // 右边界放不下 → 向左翻转（面板右缘贴近鼠标）
+              if (wx + pWP > area.x + area.width) wx = state.cursorX - pWP;
+              // 下边界放不下 → 向上翻转（面板底缘贴近鼠标）
+              if (wy + pHP > area.y + area.height) wy = state.cursorY - pHP;
+              // 左/上边界兜底钳制：面板比工作区还大时贴住边缘
+              wx = Math.min(
+                Math.max(wx, area.x),
+                area.x + Math.max(0, area.width - pWP)
+              );
+              wy = Math.min(
+                Math.max(wy, area.y),
+                area.y + Math.max(0, area.height - pHP)
+              );
+            }
+            await win.setPosition(
+              new PhysicalPosition(
+                wx - Math.round(CTX_PANEL_OFFSET * scale),
+                wy
+              )
+            );
+            // ④ 可见区域：点击所在显示器工作区映射进窗口坐标系后与窗口内部取交集（CSS px）。
+            //    窗口左缘 = 面板锚点 - 面板内移量（物理像素），子菜单方向以窗口内的实际位置计算
+            const winX = wx - Math.round(CTX_PANEL_OFFSET * scale);
+            const winY = wy;
+            const va = area
+              ? {
+                  left: Math.max(0, Math.round((area.x - winX) / scale)),
+                  top: Math.max(0, Math.round((area.y - winY) / scale)),
+                  right: Math.min(
+                    state.winW,
+                    Math.round((area.x + area.width - winX) / scale)
+                  ),
+                  bottom: Math.min(
+                    state.winH,
+                    Math.round((area.y + area.height - winY) / scale)
+                  ),
+                }
+              : {
+                  left: 0,
+                  top: 0,
+                  right: state.winW,
+                  bottom: state.winH,
+                };
+            setViewArea(va);
             await win.setSize(
               new PhysicalSize(
                 Math.round(state.winW * scale),
-                Math.round(state.winH * scale),
-              ),
+                Math.round(state.winH * scale)
+              )
             );
           }
         } catch (e) {
-          // 权限未生效 / 单位换算失败时，保持创建选项的位置与尺寸（同样按物理像素传入）
+          // 权限未生效 / 单位换算失败时，保持创建选项的位置与尺寸
           console.error("右键菜单窗口定位/校正失败", e);
         }
         await win.show();
@@ -273,6 +359,8 @@ export function CtxMenuDialog() {
             underline: state.underline,
           }}
           colorValue={state.color}
+          style={{ left: CTX_PANEL_OFFSET }}
+          viewArea={viewArea}
           onAction={(action) => void handleAction(action)}
         />
       </div>

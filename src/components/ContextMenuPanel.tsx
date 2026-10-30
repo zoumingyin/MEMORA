@@ -1,11 +1,13 @@
-import { useMemo, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import {
   CheckSquareOutlined,
   CopyOutlined,
   FontColorsOutlined,
   FontSizeOutlined,
   KeyOutlined,
+  LeftOutlined,
   PictureOutlined,
+  RightOutlined,
   ScissorOutlined,
   SmileOutlined,
   SnippetsOutlined,
@@ -56,8 +58,21 @@ interface ContextMenuPanelProps {
   colorValue?: string;
   /** 定位样式（页面内菜单传 top/left；独立窗口菜单不传，落在窗口左上角） */
   style?: CSSProperties;
+  /**
+   * 子菜单可展开的可见区域（CSS px，面板所在视口坐标系）。
+   * 不传时默认整个窗口视口（页面内菜单即浏览器/应用视口；独立窗口即窗口自身 520×520）。
+   * 独立窗口传「屏幕工作区 ∩ 窗口内部」的映射区域，使子菜单在靠近屏幕边缘时也能正确翻转。
+   */
+  viewArea?: { left: number; top: number; right: number; bottom: number } | null;
   onAction: (action: CtxMenuAction) => void;
 }
+
+/** 各子菜单的近似展开尺寸（CSS px），用于在展开前判断可用空间并决定方向 */
+const SUBMENU_EST: Record<"color" | "size" | "emoji", { w: number; h: number }> = {
+  color: { w: 180, h: 110 },
+  size: { w: 180, h: 360 },
+  emoji: { w: 244, h: 264 },
+};
 
 /**
  * Markdown 右键上下文菜单面板（VS Code 风格垂直列表）：
@@ -69,12 +84,64 @@ export function ContextMenuPanel({
   active,
   colorValue,
   style,
+  viewArea,
   onAction,
 }: ContextMenuPanelProps) {
   /** 展开的子菜单（color / size / emoji），null 表示收起 */
   const [ctxSubmenu, setCtxSubmenu] = useState<string | null>(null);
   /** 拾色器弹层打开状态（防止鼠标移入弹层时误关子菜单） */
   const [ctxColorPickerOpen, setCtxColorPickerOpen] = useState(false);
+  /** 当前展开子菜单的方向（左右/上下自适应）与限高（空间不足时内部滚动） */
+  const [submenuDir, setSubmenuDir] = useState<{
+    x: "right" | "left";
+    y: "down" | "up";
+  }>({ x: "right", y: "down" });
+  const [submenuMaxH, setSubmenuMaxH] = useState<number | undefined>(undefined);
+
+  /** 打开子菜单：根据触发项位置与可见区域计算展开方向，空间不足时翻转并限高 */
+  const openSubmenu = (
+    kind: "color" | "size" | "emoji",
+    trigger: HTMLElement
+  ): void => {
+    setCtxSubmenu(kind);
+    const est = SUBMENU_EST[kind];
+    const tr = trigger.getBoundingClientRect();
+    const va = viewArea ?? {
+      left: 0,
+      top: 0,
+      right: window.innerWidth,
+      bottom: window.innerHeight,
+    };
+    // 横向：右方放不下且左方放得下 → 向左展开；否则向右
+    const rightOk = tr.right + est.w <= va.right;
+    const leftOk = tr.left - est.w >= va.left;
+    const dirX = rightOk || !leftOk ? "right" : "left";
+    // 纵向：下方放不下且上方放得下 → 向上展开；都放不下时选空间大的一侧并限高滚动
+    const downOk = tr.top + est.h <= va.bottom;
+    const upOk = tr.bottom - est.h >= va.top;
+    let dirY: "down" | "up";
+    let maxH: number | undefined;
+    if (downOk || upOk) {
+      dirY = downOk ? "down" : "up";
+    } else {
+      const downAvail = va.bottom - tr.top - 6;
+      const upAvail = tr.bottom - va.top - 6;
+      if (downAvail >= upAvail) {
+        dirY = "down";
+        maxH = Math.max(downAvail, 80);
+      } else {
+        dirY = "up";
+        maxH = Math.max(upAvail, 80);
+      }
+    }
+    setSubmenuDir({ x: dirX, y: dirY });
+    setSubmenuMaxH(maxH);
+  };
+
+  /** 子菜单类名：方向自适应（左/右、上/下） */
+  const submenuClass = `md-ctx-submenu${
+    submenuDir.y === "up" ? " submenu-up" : ""
+  }${submenuDir.x === "left" ? " submenu-left" : ""}`;
 
   // —— 表情子菜单（与 EmojiPicker 共用数据源：最近使用 + 分类 + 搜索）——
   const [emojiQuery, setEmojiQuery] = useState("");
@@ -84,6 +151,30 @@ export function ContextMenuPanel({
   const [recentEmojis, setRecentEmojis] = useState<string[]>(() =>
     loadRecentEmojis()
   );
+
+  /** 表情分类条：10 个分类超出子菜单宽度，左右箭头 + 横向滚动（与 EmojiPicker 一致） */
+  const emojiTabsRef = useRef<HTMLDivElement>(null);
+  const [emojiArrows, setEmojiArrows] = useState<{ left: boolean; right: boolean }>(
+    { left: false, right: false }
+  );
+
+  const updateEmojiArrows = (): void => {
+    const el = emojiTabsRef.current;
+    if (!el) return;
+    const max = el.scrollWidth - el.clientWidth;
+    setEmojiArrows({
+      left: el.scrollLeft > 2,
+      right: el.scrollLeft < max - 2,
+    });
+  };
+
+  /** 分类箭头点击：即时滚动一步并立刻同步箭头可用状态（不依赖 scroll 事件） */
+  const scrollEmojiTabs = (dir: -1 | 1): void => {
+    const el = emojiTabsRef.current;
+    if (!el) return;
+    el.scrollBy({ left: 120 * dir });
+    updateEmojiArrows();
+  };
 
   const emojiMatched = useMemo(
     () => (emojiQuery.trim() ? searchEmojis(emojiQuery) : null),
@@ -97,6 +188,12 @@ export function ContextMenuPanel({
     }
     return base;
   }, [recentEmojis]);
+
+  // 表情子菜单打开（或分类增减）时刷新分类箭头可用状态
+  useEffect(() => {
+    if (ctxSubmenu === "emoji") updateEmojiArrows();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ctxSubmenu, emojiOptions.length]);
 
   const emojiList = useMemo<EmojiItem[]>(() => {
     if (emojiMatched) return emojiMatched;
@@ -211,7 +308,7 @@ export function ContextMenuPanel({
       {/* 文字颜色 */}
       <div
         className="md-ctx-item"
-        onMouseEnter={() => setCtxSubmenu("color")}
+        onMouseEnter={(e) => openSubmenu("color", e.currentTarget)}
       >
         <span className="md-ctx-label">
           <FontColorsOutlined style={{ color: "#e5484d" }} />
@@ -220,7 +317,8 @@ export function ContextMenuPanel({
         <span className="md-ctx-arrow">›</span>
         {ctxSubmenu === "color" && (
           <div
-            className="md-ctx-submenu submenu-up"
+            className={submenuClass}
+            style={{ maxHeight: submenuMaxH }}
             onMouseEnter={() => {
               setCtxSubmenu("color");
               setCtxColorPickerOpen(false);
@@ -289,7 +387,7 @@ export function ContextMenuPanel({
       {/* 文字大小 */}
       <div
         className="md-ctx-item"
-        onMouseEnter={() => setCtxSubmenu("size")}
+        onMouseEnter={(e) => openSubmenu("size", e.currentTarget)}
       >
         <span className="md-ctx-label">
           <FontSizeOutlined />
@@ -298,7 +396,8 @@ export function ContextMenuPanel({
         <span className="md-ctx-arrow">›</span>
         {ctxSubmenu === "size" && (
           <div
-            className="md-ctx-submenu submenu-up"
+            className={submenuClass}
+            style={{ maxHeight: submenuMaxH }}
             onMouseEnter={() => setCtxSubmenu("size")}
           >
             {FONT_SIZES.map((size) => (
@@ -336,7 +435,7 @@ export function ContextMenuPanel({
       {/* 插入表情（与文字颜色/大小一致：悬停展开子菜单） */}
       <div
         className="md-ctx-item"
-        onMouseEnter={() => setCtxSubmenu("emoji")}
+        onMouseEnter={(e) => openSubmenu("emoji", e.currentTarget)}
       >
         <span className="md-ctx-label">
           <SmileOutlined />
@@ -345,7 +444,8 @@ export function ContextMenuPanel({
         <span className="md-ctx-arrow">›</span>
         {ctxSubmenu === "emoji" && (
           <div
-            className="md-ctx-submenu md-ctx-emoji-menu"
+            className={`${submenuClass} md-ctx-emoji-menu`}
+            style={{ maxHeight: submenuMaxH }}
             onMouseEnter={() => setCtxSubmenu("emoji")}
           >
             <Input
@@ -356,19 +456,43 @@ export function ContextMenuPanel({
               value={emojiQuery}
               onChange={(event) => setEmojiQuery(event.target.value)}
             />
-            <div className="md-ctx-emoji-tabs">
-              {emojiOptions.map((opt) => (
-                <button
-                  key={opt.value}
-                  type="button"
-                  className={`md-ctx-emoji-tab${
-                    emojiCategory === opt.value ? " active" : ""
-                  }`}
-                  onClick={() => setEmojiCategory(opt.value)}
-                >
-                  {opt.label}
-                </button>
-              ))}
+            <div className="md-ctx-emoji-tabrow">
+              <button
+                type="button"
+                disabled={!emojiArrows.left}
+                aria-label="上一个分类"
+                className="md-ctx-emoji-nav"
+                onClick={() => scrollEmojiTabs(-1)}
+              >
+                <LeftOutlined className="text-[10px]" />
+              </button>
+              <div
+                ref={emojiTabsRef}
+                onScroll={updateEmojiArrows}
+                className="md-ctx-emoji-tabs"
+              >
+                {emojiOptions.map((opt) => (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    className={`md-ctx-emoji-tab${
+                      emojiCategory === opt.value ? " active" : ""
+                    }`}
+                    onClick={() => setEmojiCategory(opt.value)}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+              <button
+                type="button"
+                disabled={!emojiArrows.right}
+                aria-label="下一个分类"
+                className="md-ctx-emoji-nav"
+                onClick={() => scrollEmojiTabs(1)}
+              >
+                <RightOutlined className="text-[10px]" />
+              </button>
             </div>
             <div className="md-ctx-emoji-grid">
               {emojiList.map((item, index) => (
