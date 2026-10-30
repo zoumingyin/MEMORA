@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { buildAssistantContext } from '../services/assistantContext'
 import { cancelChat, streamChat } from '../services/aiClient'
+import { parseAssistantActions } from '../utils/assistantActions'
 import { useAiProfileStore } from './useAiProfileStore'
 import { useEntryStore } from './useEntryStore'
 import type { AiChatMessage, AiErrorInfo, AssistantMessage } from '../types/ai'
@@ -8,9 +9,10 @@ import type { AiChatMessage, AiErrorInfo, AssistantMessage } from '../types/ai'
 /** 对话持久化：仅保留最近若干条，避免 localStorage 无限增长 */
 const STORAGE_KEY = 'bianqian.assistant.v1'
 const MAX_STORED_MESSAGES = 40
-/** 每次请求携带的历史条数（不含 system），控制 token 消耗 */
-const MAX_HISTORY_MESSAGES = 14
-const MAX_MESSAGE_CHARS = 4000
+/** 每次请求携带的历史条数与总字数上限（不含 system）：输入越小首字越快 */
+const MAX_HISTORY_MESSAGES = 12
+const MAX_MESSAGE_CHARS = 2000
+const MAX_HISTORY_CHARS = 8000
 /** 流式增量合并刷新间隔：逐 token setState 会导致整个消息列表高频重渲染 */
 const FLUSH_INTERVAL_MS = 50
 
@@ -136,6 +138,29 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
     const content = (text ?? state.input).trim()
     if (!content) return
 
+    // 仅开发环境：记录首字/总耗时与实际接收量，便于区分「上游慢」与「本地处理慢」
+    const devTiming = import.meta.env.DEV
+      ? {
+          startedAt: performance.now(),
+          firstDeltaAt: null as number | null,
+          chunks: 0,
+          chars: 0,
+        }
+      : null
+    let timingReported = false
+    const reportTiming = (outcome: string) => {
+      if (!devTiming || timingReported) return
+      timingReported = true
+      const elapsed = Math.round(performance.now() - devTiming.startedAt)
+      const first =
+        devTiming.firstDeltaAt === null
+          ? '无'
+          : `${Math.round(devTiming.firstDeltaAt - devTiming.startedAt)}ms`
+      console.info(
+        `[AI] ${outcome}：首字 ${first} · 总耗时 ${elapsed}ms · 接收 ${devTiming.chunks} 段 / ${devTiming.chars} 字`,
+      )
+    }
+
     const now = Date.now()
     const userMessage: AssistantMessage = {
       id: crypto.randomUUID(),
@@ -164,26 +189,46 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
     const requestId = crypto.randomUUID()
     active = { requestId, assistantId }
 
-    // 历史消息：排除出错的回答与空内容，截断超长文本
-    const history = state.messages
-      .filter((message) => message.status !== 'error' && message.content.trim())
-      .slice(-MAX_HISTORY_MESSAGES)
-      .map<AiChatMessage>((message) => ({
-        role: message.role,
-        content: message.content.slice(0, MAX_MESSAGE_CHARS),
-      }))
+    // 历史消息：排除出错的回答，剥掉 <action> 操作块，从新到旧累加并受总字数约束；
+    // 输入越小，首字越快（免费网关排队时长也随输入体积增长）
+    const history: AiChatMessage[] = []
+    let historyChars = content.length
+    for (let index = state.messages.length - 1; index >= 0; index -= 1) {
+      if (history.length >= MAX_HISTORY_MESSAGES) break
+      const message = state.messages[index]
+      if (message.status === 'error') continue
+      const text = (
+        message.role === 'assistant'
+          ? parseAssistantActions(message.content).text
+          : message.content
+      ).slice(0, MAX_MESSAGE_CHARS)
+      if (!text) continue
+      if (historyChars + text.length > MAX_HISTORY_CHARS) break
+      history.unshift({ role: message.role, content: text })
+      historyChars += text.length
+    }
     history.push({ role: 'user', content })
 
     const entriesState = useEntryStore.getState()
+    const contextStartedAt = performance.now()
     const context = buildAssistantContext(
       entriesState.entries,
       entriesState.selectedId,
       state.contextEnabled,
     )
+    const contextMs = performance.now() - contextStartedAt
     const apiMessages: AiChatMessage[] = [
       { role: 'system', content: context.systemPrompt },
       ...history,
     ]
+
+    // 使用对话界面当前选中的模型配置；未加载时由后端回落到当前配置
+    const profileId = useAiProfileStore.getState().status?.activeId ?? null
+    if (devTiming) {
+      console.info(
+        `[AI] 请求：上下文构建 ${contextMs.toFixed(1)}ms · system ${context.systemPrompt.length} 字 · 历史 ${history.length} 条 / ${historyChars} 字 · 模型 ${profileId ?? '默认'}`,
+      )
+    }
 
     let pending = ''
     let flushTimer: number | undefined
@@ -221,16 +266,25 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
     const isStale = () => active?.requestId !== requestId
 
     try {
-      // 使用对话界面当前选中的模型配置；未加载时由后端回落到当前配置
-      const profileId = useAiProfileStore.getState().status?.activeId ?? null
       await streamChat(requestId, profileId, apiMessages, {
         onDelta: (delta) => {
           if (isStale()) return
+          if (devTiming) {
+            devTiming.chunks += 1
+            devTiming.chars += delta.length
+            if (devTiming.firstDeltaAt === null) {
+              devTiming.firstDeltaAt = performance.now()
+              console.info(
+                `[AI] 首字：${Math.round(devTiming.firstDeltaAt - devTiming.startedAt)}ms`,
+              )
+            }
+          }
           pending += delta
           scheduleFlush()
         },
         onDone: (finishReason) => {
           if (isStale()) return
+          reportTiming(finishReason === 'cancelled' ? '已停止' : '完成')
           finalize((current) => ({
             sending: false,
             messages: current.messages.map((message) =>
@@ -246,6 +300,7 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
         },
         onError: (error: AiErrorInfo) => {
           if (isStale()) return
+          reportTiming(`失败 ${error.code}`)
           finalize((current) => ({
             sending: false,
             messages: current.messages.map((message) =>
@@ -275,6 +330,8 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
         active = null
         persistSnapshot(get().messages, get().contextEnabled)
       }
+      // 用户停止或异常退出时收尾，确保每个请求都有且仅有一条计时日志
+      reportTiming('中断')
     }
   },
 

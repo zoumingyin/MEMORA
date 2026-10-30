@@ -13,7 +13,12 @@ import { useEntryStore } from "../store/useEntryStore";
 import { useAssistantStore } from "../store/useAssistantStore";
 import { useAiProfileStore } from "../store/useAiProfileStore";
 import { FreeBadge } from "./FreeBadge";
-import type { AiFreeSource, AiProfileInput, AiProfileStatus } from "../types/ai";
+import type {
+  AiFreeSource,
+  AiProfileInput,
+  AiProfileStatus,
+  ReasoningEffort,
+} from "../types/ai";
 import {
   clearAiKey,
   deleteAiProfile,
@@ -286,6 +291,7 @@ export function SettingsDialog({ open, onClose, initialSection }: SettingsDialog
   const [aiProvider, setAiProvider] = useState(AI_PRESETS[0].label);
   const [aiBaseUrl, setAiBaseUrl] = useState(AI_PRESETS[0].baseUrl);
   const [aiModel, setAiModel] = useState(AI_PRESETS[0].model);
+  const [aiReasoning, setAiReasoning] = useState<ReasoningEffort | "">("");
   const [aiKey, setAiKey] = useState("");
   const [aiBusy, setAiBusy] = useState(false);
   const [aiMessage, setAiMessage] = useState("");
@@ -388,6 +394,7 @@ export function SettingsDialog({ open, onClose, initialSection }: SettingsDialog
     setAiProvider(AI_PRESETS[0].label);
     setAiBaseUrl(AI_PRESETS[0].baseUrl);
     setAiModel(AI_PRESETS[0].model);
+    setAiReasoning("");
     setAiKey("");
     setAiRemoteModels([]);
     setAiModelHint("");
@@ -456,6 +463,7 @@ export function SettingsDialog({ open, onClose, initialSection }: SettingsDialog
         baseUrl,
         model,
         apiKey: aiKey.trim() || undefined,
+        reasoning: aiReasoning || "",
       });
       aiSync(status);
       const savedId =
@@ -518,6 +526,7 @@ export function SettingsDialog({ open, onClose, initialSection }: SettingsDialog
     setAiProvider(profile.provider);
     setAiBaseUrl(profile.baseUrl);
     setAiModel(profile.model);
+    setAiReasoning(profile.reasoning ?? "");
     setAiKey("");
     setAiRemoteModels([]);
     setAiModelHint("");
@@ -1383,6 +1392,27 @@ export function SettingsDialog({ open, onClose, initialSection }: SettingsDialog
               title={aiModelHint || undefined}
             >
               {aiModelHint}
+            </span>
+          </label>
+
+          <label className="flex flex-col gap-1">
+            <span className="text-[11px] text-[var(--text-muted)]">推理强度</span>
+            <Select
+              size="small"
+              value={aiReasoning}
+              onChange={(value) =>
+                setAiReasoning(value as ReasoningEffort | "")
+              }
+              options={[
+                { value: "", label: "默认（由服务商决定）" },
+                { value: "none", label: "无 · 关闭思考，最快" },
+                { value: "low", label: "低" },
+                { value: "medium", label: "中" },
+                { value: "high", label: "高" },
+              ]}
+            />
+            <span className="text-[10px] leading-relaxed text-[var(--text-muted)]">
+              思考模型（豆包 Seed、DeepSeek 等）会先推理再回复；关闭思考可显著降低首字延迟，复杂任务质量会下降。
             </span>
           </label>
 

@@ -1,5 +1,8 @@
 /** AI 助手：前后端共享的类型定义（与 src-tauri/src/ai.rs 对应） */
 
+/** 推理强度：none 关闭思考；low / medium / high 为思考强度分档 */
+export type ReasoningEffort = 'none' | 'low' | 'medium' | 'high'
+
 /** 单条模型配置的展示状态（后端永不返回明文密钥） */
 export interface AiProfileStatus {
   id: string
@@ -24,6 +27,8 @@ export interface AiProfileStatus {
   note: string | null
   temperature: number
   maxTokens: number
+  /** 推理强度；null 表示不干预，由服务商决定 */
+  reasoning: ReasoningEffort | null
 }
 
 /** 免费模型来源的可用状态：实时拉取 / 本地缓存 / 内置兜底 / 不可用 */
@@ -58,6 +63,8 @@ export interface AiProfileInput {
   apiKey?: string
   temperature?: number
   maxTokens?: number
+  /** 推理强度；传空字符串表示清除设置，恢复服务商默认 */
+  reasoning?: ReasoningEffort | ''
 }
 
 /** 稳定错误码：前端据此决定兜底文案与操作按钮 */
@@ -92,6 +99,8 @@ export type AiStreamEvent =
   | { type: 'delta'; text: string }
   | { type: 'done'; finishReason?: string | null }
   | { type: 'error'; code: string; message: string }
+  /** 仅开发环境：后端诊断信息，前端只打印到控制台 */
+  | { type: 'debug'; message: string }
 
 /** 对话界面中的一条消息 */
 export interface AssistantMessage {

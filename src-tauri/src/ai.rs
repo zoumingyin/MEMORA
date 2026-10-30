@@ -57,6 +57,9 @@ struct AiProfile {
     temperature: Option<f32>,
     #[serde(default)]
     max_tokens: Option<u32>,
+    /// 推理强度：none / low / medium / high；None 表示不上送参数，由服务商决定
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reasoning: Option<String>,
 }
 
 /// 本地配置文件（v2：多配置列表 + 当前使用项）；保留旧版单配置字段用于迁移
@@ -98,6 +101,7 @@ impl FileConfig {
                     api_key: self.api_key.take(),
                     temperature: self.temperature.take(),
                     max_tokens: self.max_tokens.take(),
+                    reasoning: None,
                 };
                 self.active_id = Some(profile.id.clone());
                 self.profiles.push(profile);
@@ -127,6 +131,8 @@ pub struct AiProfileInput {
     pub api_key: Option<String>,
     pub temperature: Option<f32>,
     pub max_tokens: Option<u32>,
+    /// 推理强度；空字符串表示清除（回到服务商默认）
+    pub reasoning: Option<String>,
 }
 
 /// 单条配置的展示状态（不含明文密钥）
@@ -153,6 +159,8 @@ pub struct AiProfileStatus {
     note: Option<String>,
     temperature: f32,
     max_tokens: u32,
+    /// 推理强度：none / low / medium / high；None 表示不干预
+    reasoning: Option<String>,
 }
 
 /// 单个免费来源的可用状态：用于界面展示「缓存 / 默认 / 暂不可用」
@@ -201,6 +209,9 @@ pub enum AiStreamEvent {
     Delta { text: String },
     Done { finish_reason: Option<String> },
     Error { code: String, message: String },
+    /// 仅开发环境：诊断信息，前端只打印到控制台，不进入消息内容
+    #[cfg(debug_assertions)]
+    Debug { message: String },
 }
 
 #[derive(Debug, Clone)]
@@ -215,6 +226,8 @@ struct ResolvedConfig {
     keyless: bool,
     /// 内置免费模型的固定公开令牌（如 OpenCode 的 `Bearer public`）
     bearer: Option<&'static str>,
+    /// 推理强度：none / low / medium / high；None 表示不干预
+    reasoning: Option<String>,
 }
 
 impl ResolvedConfig {
@@ -319,6 +332,7 @@ fn env_profile() -> Option<AiProfile> {
         api_key: env_non_empty(ENV_API_KEY),
         temperature: env_non_empty(ENV_TEMPERATURE).and_then(|value| value.parse::<f32>().ok()),
         max_tokens: env_non_empty(ENV_MAX_TOKENS).and_then(|value| value.parse::<u32>().ok()),
+        reasoning: None,
     })
 }
 
@@ -761,6 +775,18 @@ fn resolve_profile(profile: &AiProfile) -> ResolvedConfig {
         key_source,
         keyless: is_free_profile(&profile.id),
         bearer: parse_free_profile(&profile.id).and_then(|(provider, _)| provider.bearer),
+        reasoning: normalize_reasoning(profile.reasoning.as_deref()),
+    }
+}
+
+/// 推理强度只接受固定四档，其他取值（含旧配置里的脏数据）按「未设置」处理
+fn normalize_reasoning(value: Option<&str>) -> Option<String> {
+    match value.map(str::trim) {
+        Some("none") => Some("none".to_string()),
+        Some("low") => Some("low".to_string()),
+        Some("medium") => Some("medium".to_string()),
+        Some("high") => Some("high".to_string()),
+        _ => None,
     }
 }
 
@@ -873,6 +899,7 @@ fn profile_status(profile: &AiProfile) -> AiProfileStatus {
         note: free.map(|provider| provider.note.to_string()),
         temperature: resolved.temperature,
         max_tokens: resolved.max_tokens,
+        reasoning: resolved.reasoning,
     }
 }
 
@@ -923,11 +950,21 @@ fn validate_base_url(base_url: &str) -> Result<(), String> {
 }
 
 fn http_client() -> Result<reqwest::Client, String> {
-    reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(15))
+    // 全局复用一个客户端：保留连接池与 TLS/HTTP2 会话，
+    // 否则每条消息都要重新做 DNS + TCP + TLS 握手，首字延迟会多出几百毫秒
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    if let Some(client) = CLIENT.get() {
+        return Ok(client.clone());
+    }
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(180))
+        // SSE 是小包连续下行，禁用 Nagle 合包避免逐帧延迟
+        .tcp_nodelay(true)
+        .pool_idle_timeout(Duration::from_secs(90))
         .build()
-        .map_err(|error| format!("初始化网络客户端失败：{error}"))
+        .map_err(|error| format!("初始化网络客户端失败：{error}"))?;
+    Ok(CLIENT.get_or_init(|| client).clone())
 }
 
 /// 把上游 HTTP 错误转换成稳定错误码 + 可操作的中文提示
@@ -1077,6 +1114,10 @@ pub fn ai_save_profile(app: AppHandle, profile: AiProfileInput) -> Result<AiStat
             if let Some(max_tokens) = profile.max_tokens {
                 item.max_tokens = Some(max_tokens.clamp(64, 8192));
             }
+            // 推理强度：显式传入时覆盖（空字符串表示回到服务商默认）
+            if let Some(reasoning) = profile.reasoning.as_deref() {
+                item.reasoning = normalize_reasoning(Some(reasoning));
+            }
         }
         None => {
             if requested_id.is_some() {
@@ -1097,6 +1138,7 @@ pub fn ai_save_profile(app: AppHandle, profile: AiProfileInput) -> Result<AiStat
                     .map(str::to_string),
                 temperature: profile.temperature.map(|value| value.clamp(0.0, 2.0)),
                 max_tokens: profile.max_tokens.map(|value| value.clamp(64, 8192)),
+                reasoning: normalize_reasoning(profile.reasoning.as_deref()),
             });
             // 新增后直接设为当前使用项：返回对话界面即可用
             file.active_id = Some(id);
@@ -1179,6 +1221,7 @@ impl Default for ResolvedConfig {
             key_source: None,
             keyless: false,
             bearer: None,
+            reasoning: None,
         }
     }
 }
@@ -1214,6 +1257,7 @@ fn apply_override(base: ResolvedConfig, input: Option<AiProfileInput>) -> Resolv
         key_source: base.key_source,
         keyless: base.keyless,
         bearer: base.bearer,
+        reasoning: base.reasoning,
     }
 }
 
@@ -1403,6 +1447,26 @@ struct StreamChoice {
 struct StreamDelta {
     #[serde(default)]
     content: Option<String>,
+    /// 推理模型（豆包 Seed、DeepSeek R1 等）的思考过程：只统计，不展示
+    #[serde(default)]
+    reasoning_content: Option<String>,
+}
+
+/// 流式统计：仅开发环境用于诊断「上游在思考还是在输出」
+#[derive(Default)]
+struct StreamStats {
+    reasoning_frames: usize,
+    reasoning_chars: usize,
+}
+
+#[cfg(debug_assertions)]
+fn send_debug(channel: &Channel<AiStreamEvent>, message: impl Into<String>) {
+    let _ = send_event(
+        channel,
+        AiStreamEvent::Debug {
+            message: message.into(),
+        },
+    );
 }
 
 fn send_event(channel: &Channel<AiStreamEvent>, event: AiStreamEvent) -> bool {
@@ -1431,6 +1495,7 @@ fn process_sse_frame(
     channel: &Channel<AiStreamEvent>,
     finish_reason: &mut Option<String>,
     emitted: &mut bool,
+    stats: &mut StreamStats,
 ) -> SseOutcome {
     for line in frame.lines() {
         let Some(data) = line.strip_prefix("data:") else {
@@ -1451,6 +1516,12 @@ fn process_sse_frame(
             if let Some(reason) = choice.finish_reason {
                 if !reason.is_empty() {
                     *finish_reason = Some(reason);
+                }
+            }
+            if let Some(reasoning) = choice.delta.reasoning_content {
+                if !reasoning.is_empty() {
+                    stats.reasoning_frames += 1;
+                    stats.reasoning_chars += reasoning.chars().count();
                 }
             }
             if let Some(text) = choice.delta.content {
@@ -1520,13 +1591,25 @@ pub async fn ai_chat(
         return Ok(());
     }
 
-    let payload = serde_json::json!({
+    let mut payload = serde_json::json!({
         "model": resolved.model,
         "messages": request.messages,
         "temperature": resolved.temperature,
         "max_tokens": resolved.max_tokens,
         "stream": true,
     });
+    // 火山方舟 / 豆包：thinking.type 控制开关，reasoning_effort 控制强度；
+    // disabled 时不能同时带 effort，否则上游返回 400
+    match resolved.reasoning.as_deref() {
+        Some("none") => {
+            payload["thinking"] = serde_json::json!({ "type": "disabled" });
+        }
+        Some(level @ ("low" | "medium" | "high")) => {
+            payload["thinking"] = serde_json::json!({ "type": "enabled" });
+            payload["reasoning_effort"] = serde_json::json!(level);
+        }
+        _ => {}
+    }
 
     let client = match http_client() {
         Ok(client) => client,
@@ -1551,6 +1634,14 @@ pub async fn ai_chat(
         http_request = http_request.bearer_auth(token);
     }
 
+    // 仅开发环境：拆开「建连+排队（响应头）」与「上游生成首个 token」两段耗时
+    #[cfg(debug_assertions)]
+    let send_started_at = std::time::Instant::now();
+    #[cfg(debug_assertions)]
+    let mut first_delta_logged = false;
+    #[cfg(debug_assertions)]
+    let mut reasoning_logged = false;
+
     let response = match http_request.send().await {
         Ok(response) => response,
         Err(error) => {
@@ -1564,6 +1655,13 @@ pub async fn ai_chat(
             return Ok(());
         }
     };
+    #[cfg(debug_assertions)]
+    let headers_ms = send_started_at.elapsed().as_millis();
+    #[cfg(debug_assertions)]
+    send_debug(
+        &on_event,
+        format!("上游响应头 {headers_ms}ms · {}", resolved.base_url),
+    );
 
     let status = response.status().as_u16();
     if !response.status().is_success() {
@@ -1578,6 +1676,7 @@ pub async fn ai_chat(
     let mut finish_reason: Option<String> = None;
     let mut emitted = false;
     let mut cancelled = false;
+    let mut stats = StreamStats::default();
 
     'outer: while let Some(chunk) = stream.next().await {
         if is_cancelled(&state, &request_id) {
@@ -1607,7 +1706,13 @@ pub async fn ai_chat(
         while let Some(index) = buffer.find("\n\n") {
             let frame: String = buffer[..index].to_string();
             buffer.drain(..index + 2);
-            match process_sse_frame(&frame, &on_event, &mut finish_reason, &mut emitted) {
+            match process_sse_frame(
+                &frame,
+                &on_event,
+                &mut finish_reason,
+                &mut emitted,
+                &mut stats,
+            ) {
                 SseOutcome::Continue => {}
                 SseOutcome::Done => break 'outer,
                 SseOutcome::Closed => {
@@ -1616,13 +1721,46 @@ pub async fn ai_chat(
                 }
             }
         }
+
+        // 仅开发环境：思考内容只被统计、不进入界面，用来解释「首字为什么这么晚」
+        #[cfg(debug_assertions)]
+        if stats.reasoning_frames > 0 && !reasoning_logged {
+            reasoning_logged = true;
+            send_debug(
+                &on_event,
+                format!(
+                    "上游开始思考 reasoning_content：{}ms · 已接收 {} 段 / {} 字（这些内容不展示）",
+                    send_started_at.elapsed().as_millis(),
+                    stats.reasoning_frames,
+                    stats.reasoning_chars
+                ),
+            );
+        }
+
+        // 仅开发环境：首个增量到达即说明上游「排队/思考」阶段结束
+        #[cfg(debug_assertions)]
+        if emitted && !first_delta_logged {
+            first_delta_logged = true;
+            let total = send_started_at.elapsed().as_millis();
+            send_debug(
+                &on_event,
+                format!(
+                    "上游首字 {total}ms（响应头 {headers_ms}ms + 首包 {}ms）",
+                    total.saturating_sub(headers_ms)
+                ),
+            );
+        }
     }
 
     // 上游未以空行收尾时，处理缓冲区中最后一个完整帧
     if !cancelled && !buffer.trim().is_empty() {
-        if let SseOutcome::Closed =
-            process_sse_frame(&buffer, &on_event, &mut finish_reason, &mut emitted)
-        {
+        if let SseOutcome::Closed = process_sse_frame(
+            &buffer,
+            &on_event,
+            &mut finish_reason,
+            &mut emitted,
+            &mut stats,
+        ) {
             cancelled = true;
         }
     }

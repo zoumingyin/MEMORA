@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
-import { Button, Flex, Popconfirm, Select, Tooltip, message as antdMessage } from 'antd'
+import { Button, Dropdown, Flex, Popconfirm, Select, Tooltip, message as antdMessage } from 'antd'
 import dayjs from 'dayjs'
 import {
   ArrowUp,
   Bell,
+  Brain,
   Check,
   Copy,
   FileText,
@@ -21,13 +22,14 @@ import {
 } from 'lucide-react'
 import { markdownToHtml } from '../utils/markdown'
 import { parseAssistantActions, type AssistantAction } from '../utils/assistantActions'
+import { saveAiProfile } from '../services/aiClient'
 import { FreeBadge } from './FreeBadge'
 import { ProviderMark } from './ProviderMark'
 import { useAssistantStore } from '../store/useAssistantStore'
 import { useAiProfileStore } from '../store/useAiProfileStore'
 import { useEntryStore } from '../store/useEntryStore'
 import { useUiStore } from '../store/useUiStore'
-import type { AssistantMessage } from '../types/ai'
+import type { AssistantMessage, ReasoningEffort } from '../types/ai'
 import type { EntryKind } from '../types/entry'
 
 /** 空态引导问题：覆盖检索、统计、日程与整理四类常见诉求 */
@@ -37,6 +39,22 @@ const SUGGESTIONS = [
   '帮我梳理最近的提醒安排',
   '把最近的想法整理成提纲',
 ]
+
+/** 推理强度档位：default 表示不上送参数，由服务商决定 */
+const REASONING_ITEMS: { key: ReasoningEffort | 'default'; label: string }[] = [
+  { key: 'default', label: '默认（服务商决定）' },
+  { key: 'none', label: '无 · 关闭思考，最快' },
+  { key: 'low', label: '低' },
+  { key: 'medium', label: '中' },
+  { key: 'high', label: '高' },
+]
+const REASONING_SHORT: Record<ReasoningEffort | 'default', string> = {
+  default: '默认',
+  none: '无',
+  low: '低',
+  medium: '中',
+  high: '高',
+}
 
 /** 错误码 → 用户可理解的标题；未知错误回落到「生成失败」 */
 const ERROR_TITLE: Record<string, string> = {
@@ -63,6 +81,29 @@ function TypingDots() {
       <span />
       <span />
     </span>
+  )
+}
+
+/**
+ * 首字前的等待反馈：推理模型（如豆包 Seed）会先思考十几秒，
+ * 这里按秒计时，避免用户以为卡住
+ */
+function ThinkingIndicator({ startedAt }: { startedAt: number }) {
+  const [elapsed, setElapsed] = useState(0)
+  useEffect(() => {
+    const tick = () =>
+      setElapsed(Math.max(0, Math.floor((Date.now() - startedAt) / 1000)))
+    tick()
+    const timer = window.setInterval(tick, 1000)
+    return () => window.clearInterval(timer)
+  }, [startedAt])
+  return (
+    <Flex align="center" gap={4}>
+      <TypingDots />
+      <span className="text-[12px] text-[var(--text-muted)]">
+        思考中{elapsed >= 2 ? ` ${elapsed}s` : ''}
+      </span>
+    </Flex>
   )
 }
 
@@ -306,7 +347,9 @@ function MessageBubble({
       <div className="min-w-0 flex-1">
         {showBubble && (
           <div className="rounded-[12px] border border-[var(--border)] bg-[var(--field)] px-3 py-2 text-[13px] leading-relaxed text-[var(--text)]">
-            {message.status === 'streaming' && !parsed.text && <TypingDots />}
+            {message.status === 'streaming' && !parsed.text && (
+              <ThinkingIndicator startedAt={message.createdAt} />
+            )}
             {parsed.text && (
               <div
                 className="note-md assistant-md"
@@ -363,6 +406,8 @@ function AssistantPanelBody() {
   const aiStatus = useAiProfileStore((state) => state.status)
   const aiLoad = useAiProfileStore((state) => state.load)
   const aiActivate = useAiProfileStore((state) => state.activate)
+  const aiSync = useAiProfileStore((state) => state.sync)
+  const [reasoningBusy, setReasoningBusy] = useState(false)
   const aiProfiles = aiStatus?.profiles ?? []
   const activeProfile =
     aiProfiles.find((profile) => profile.id === aiStatus?.activeId) ?? null
@@ -454,6 +499,35 @@ function AssistantPanelBody() {
   const handleSend = (text?: string) => {
     atBottomRef.current = true
     void send(text)
+  }
+
+  /** 推理强度保存在模型配置里：切换后同一条配置的后续提问都生效 */
+  const handleReasoningChange = async (key: string) => {
+    if (!activeProfile || reasoningBusy || sending) return
+    const next: ReasoningEffort | '' =
+      key === 'default' ? '' : (key as ReasoningEffort)
+    if ((activeProfile.reasoning ?? '') === next) return
+    setReasoningBusy(true)
+    try {
+      const status = await saveAiProfile({
+        id: activeProfile.id,
+        name: activeProfile.name,
+        provider: activeProfile.provider,
+        baseUrl: activeProfile.baseUrl,
+        model: activeProfile.model,
+        reasoning: next,
+      })
+      aiSync(status)
+      antdMessage.success(
+        next ? `推理强度：${REASONING_SHORT[next]}` : '推理强度：默认',
+      )
+    } catch (error) {
+      antdMessage.error(
+        `设置失败：${error instanceof Error ? error.message : String(error)}`,
+      )
+    } finally {
+      setReasoningBusy(false)
+    }
   }
 
   return (
@@ -583,6 +657,42 @@ function AssistantPanelBody() {
               {contextEnabled ? <ShieldCheck size={13} /> : <ShieldOff size={13} />}
               <span>上下文</span>
             </button>
+
+            {activeProfile && (
+              <Dropdown
+                trigger={['click']}
+                placement="top"
+                disabled={sending || reasoningBusy || activeProfile.readOnly}
+                menu={{
+                  selectable: true,
+                  selectedKeys: [activeProfile.reasoning ?? 'default'],
+                  items: REASONING_ITEMS.map((item) => ({
+                    key: item.key,
+                    label: item.label,
+                  })),
+                  onClick: ({ key }) => void handleReasoningChange(key),
+                }}
+              >
+                <button
+                  type="button"
+                  className={`flex h-7 shrink-0 cursor-pointer items-center gap-1 rounded-full border-0 bg-transparent px-2 text-[10.5px] transition-colors hover:bg-[var(--hover-fill)] disabled:cursor-not-allowed disabled:opacity-40 ${
+                    activeProfile.reasoning
+                      ? 'text-[var(--text)]'
+                      : 'text-[var(--text-muted)]'
+                  }`}
+                  aria-label="切换推理强度"
+                  title={
+                    activeProfile.readOnly
+                      ? '内置免费模型不支持调整推理强度'
+                      : `推理强度：${REASONING_SHORT[activeProfile.reasoning ?? 'default']}，点击切换（关闭思考可显著加快首字）`
+                  }
+                  disabled={sending || reasoningBusy || activeProfile.readOnly}
+                >
+                  <Brain size={12} />
+                  <span>推理·{REASONING_SHORT[activeProfile.reasoning ?? 'default']}</span>
+                </button>
+              </Dropdown>
+            )}
 
             <div ref={modelSelectRef} className="ml-auto flex min-w-0 items-center gap-1">
               {aiProfiles.length > 0 ? (

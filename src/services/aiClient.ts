@@ -15,6 +15,7 @@ import type {
   AiProfileStatus,
   AiStatus,
   AiStreamEvent,
+  ReasoningEffort,
 } from '../types/ai'
 
 /**
@@ -37,6 +38,7 @@ interface BrowserProfile {
   apiKey: string
   temperature: number
   maxTokens: number
+  reasoning: ReasoningEffort | null
 }
 
 interface BrowserStore {
@@ -49,6 +51,25 @@ const EMPTY_STORE: BrowserStore = { version: 2, activeId: null, profiles: [] }
 
 /** 浏览器端进行中的请求：取消时中断 fetch */
 const browserRequests = new Map<string, AbortController>()
+
+const REASONING_VALUES: ReasoningEffort[] = ['none', 'low', 'medium', 'high']
+
+/** 推理强度只接受固定四档，其他取值按「未设置」处理 */
+function normalizeReasoning(value: unknown): ReasoningEffort | null {
+  return typeof value === 'string' &&
+    (REASONING_VALUES as string[]).includes(value)
+    ? (value as ReasoningEffort)
+    : null
+}
+
+/** 与 Rust 端一致的请求参数：none 走 thinking.disabled，其余走 enabled + effort */
+function reasoningPayload(
+  reasoning: ReasoningEffort | null,
+): Record<string, unknown> {
+  if (!reasoning) return {}
+  if (reasoning === 'none') return { thinking: { type: 'disabled' } }
+  return { thinking: { type: 'enabled' }, reasoning_effort: reasoning }
+}
 
 function normalizeProfile(raw: unknown): BrowserProfile | null {
   if (typeof raw !== 'object' || raw === null) return null
@@ -68,6 +89,7 @@ function normalizeProfile(raw: unknown): BrowserProfile | null {
         : DEFAULT_TEMPERATURE,
     maxTokens:
       typeof item.maxTokens === 'number' ? item.maxTokens : DEFAULT_MAX_TOKENS,
+    reasoning: normalizeReasoning(item.reasoning),
   }
 }
 
@@ -102,6 +124,7 @@ function migrateLegacyConfig(): BrowserStore {
         typeof parsed.maxTokens === 'number'
           ? parsed.maxTokens
           : DEFAULT_MAX_TOKENS,
+      reasoning: normalizeReasoning(parsed.reasoning),
     }
     return { version: 2, activeId: profile.id, profiles: [profile] }
   } catch {
@@ -165,6 +188,7 @@ interface ChatTarget {
   keyless: boolean
   /** 免费网关的固定公开令牌（OpenCode 为 public） */
   bearer: string | null
+  reasoning: ReasoningEffort | null
 }
 
 function targetFromProfile(profile: BrowserProfile): ChatTarget {
@@ -195,6 +219,7 @@ function targetFromFree(model: FreeModel): ChatTarget {
     note: model.note,
     keyless: true,
     bearer: model.bearer,
+    reasoning: null,
   }
 }
 
@@ -270,6 +295,7 @@ function targetStatus(target: ChatTarget): AiProfileStatus {
     note: target.note,
     temperature: target.temperature,
     maxTokens: target.maxTokens,
+    reasoning: target.reasoning,
   }
 }
 
@@ -479,6 +505,7 @@ async function browserStreamChat(
           temperature: target.temperature,
           max_tokens: target.maxTokens,
           stream: true,
+          ...reasoningPayload(target.reasoning),
         }),
         signal: controller.signal,
       })
@@ -603,6 +630,11 @@ export async function streamChat(
   const channel = new Channel<AiStreamEvent>()
   let settled = false
   channel.onmessage = (event) => {
+    if (event.type === 'debug') {
+      // 开发版后端下发的诊断数据（计时、思考字数），不参与对话状态
+      if (import.meta.env.DEV) console.info(`[AI] ${event.message}`)
+      return
+    }
     if (event.type === 'delta') {
       if (!settled) handlers.onDelta(event.text)
       return
@@ -717,6 +749,10 @@ export async function saveAiProfile(input: AiProfileInput): Promise<AiStatus> {
         typeof input.maxTokens === 'number'
           ? input.maxTokens
           : current.maxTokens,
+      reasoning:
+        input.reasoning === undefined
+          ? current.reasoning
+          : input.reasoning || null,
     }
   } else {
     const id = `p${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`
@@ -735,6 +771,7 @@ export async function saveAiProfile(input: AiProfileInput): Promise<AiStatus> {
         typeof input.maxTokens === 'number'
           ? input.maxTokens
           : DEFAULT_MAX_TOKENS,
+      reasoning: input.reasoning || null,
     })
     store.activeId = id
   }
