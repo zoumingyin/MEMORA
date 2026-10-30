@@ -1,6 +1,6 @@
 import Database from '@tauri-apps/plugin-sql'
 import type { AlarmItem, Entry, EntryKind, EntryRow, NewEntryInput, TodoItem } from '../types/entry'
-import { parseAlarms, rowToEntry, type EntryRepository } from './repository'
+import { parseAlarms, rowToEntry, todoItemsFromTexts, type EntryRepository } from './repository'
 
 let db: Database | null = null
 
@@ -60,7 +60,7 @@ export class SqliteEntryRepository implements EntryRepository {
         syncStatus: 'pending',
         done: false,
         completedAt: null,
-        items: [],
+        items: todoItemsFromTexts(input.items),
         tags,
       }
     } else {
@@ -100,7 +100,7 @@ export class SqliteEntryRepository implements EntryRepository {
       await database.execute(
         `INSERT INTO entries
           (id, kind, title, content, remind_at, done, completed_at, notified, created_at, updated_at, sync_status, items, tags)
-         VALUES ($1, $2, $3, $4, NULL, $5, $6, 0, $7, $8, 'pending', '[]', $9)`,
+         VALUES ($1, $2, $3, $4, NULL, $5, $6, 0, $7, $8, 'pending', $9, $10)`,
         [
           todo.id,
           todo.kind,
@@ -110,6 +110,7 @@ export class SqliteEntryRepository implements EntryRepository {
           todo.completedAt,
           todo.createdAt,
           todo.updatedAt,
+          JSON.stringify(todo.items),
           JSON.stringify(tags),
         ],
       )

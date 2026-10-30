@@ -67,6 +67,15 @@ export function parseTodoItems(raw: string | null | undefined): TodoItem[] {
   return []
 }
 
+/** 新建待办时把子任务文本转成清单项：去空白、去重，id 本地生成 */
+export function todoItemsFromTexts(texts: string[] | undefined): TodoItem[] {
+  if (!texts) return []
+  return texts
+    .map((text) => text.trim())
+    .filter((text, index, all) => text.length > 0 && all.indexOf(text) === index)
+    .map((text) => ({ id: crypto.randomUUID(), text, done: false }))
+}
+
 /** 闹钟清单：列内 JSON 数组，解析失败或缺失时回退为空清单 */
 export function parseAlarms(raw: string | null | undefined): AlarmItem[] {
   if (!raw) return []

@@ -1,9 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Button, Popconfirm, Select, Tooltip, message as antdMessage } from 'antd'
+import type { ReactNode } from 'react'
+import { Button, Flex, Popconfirm, Select, Tooltip, message as antdMessage } from 'antd'
+import dayjs from 'dayjs'
 import {
   ArrowUp,
+  Bell,
   Check,
   Copy,
+  FileText,
+  ListChecks,
   Plus,
   RotateCcw,
   Settings2,
@@ -15,6 +20,7 @@ import {
   X,
 } from 'lucide-react'
 import { markdownToHtml } from '../utils/markdown'
+import { parseAssistantActions, type AssistantAction } from '../utils/assistantActions'
 import { FreeBadge } from './FreeBadge'
 import { ProviderMark } from './ProviderMark'
 import { useAssistantStore } from '../store/useAssistantStore'
@@ -22,6 +28,7 @@ import { useAiProfileStore } from '../store/useAiProfileStore'
 import { useEntryStore } from '../store/useEntryStore'
 import { useUiStore } from '../store/useUiStore'
 import type { AssistantMessage } from '../types/ai'
+import type { EntryKind } from '../types/entry'
 
 /** 空态引导问题：覆盖检索、统计、日程与整理四类常见诉求 */
 const SUGGESTIONS = [
@@ -145,6 +152,116 @@ function CopyReplyButton({ text }: { text: string }) {
   )
 }
 
+const ACTION_META: Record<EntryKind, { label: string; icon: ReactNode }> = {
+  note: { label: '备忘', icon: <FileText size={12} /> },
+  todo: { label: '待办', icon: <ListChecks size={12} /> },
+  reminder: { label: '提醒', icon: <Bell size={12} /> },
+}
+
+/** AI 提议新建的便签：卡片确认后才写入仓储，避免模型直接改数据 */
+function ActionCard({
+  action,
+  created,
+  onCreated,
+}: {
+  action: AssistantAction
+  created: boolean
+  onCreated: () => void
+}) {
+  const [status, setStatus] = useState<'idle' | 'creating' | 'dismissed'>('idle')
+  const meta = ACTION_META[action.kind]
+  if (status === 'dismissed') return null
+
+  const handleCreate = async () => {
+    if (created || status !== 'idle') return
+    setStatus('creating')
+    const entry = await useEntryStore.getState().addEntry(
+      {
+        title: action.title,
+        content: action.content,
+        remindAt: action.remindAt,
+        items: action.items,
+      },
+      action.kind,
+    )
+    if (!entry) {
+      setStatus('idle')
+      antdMessage.error(`创建${meta.label}失败，请稍后重试`)
+      return
+    }
+    setStatus('idle')
+    // 记到消息里并持久化：重开面板或重启应用后不再重复提供创建按钮
+    onCreated()
+    antdMessage.success(`已创建${meta.label}`)
+  }
+
+  return (
+    <div className="rounded-[10px] border border-[var(--border)] bg-[var(--field)] px-3 py-2.5">
+      <div className="flex items-center gap-1.5 text-[10.5px] text-[var(--text-muted)]">
+        <span className="flex-center text-[var(--kind-accent)]">{meta.icon}</span>
+        <span>新建{meta.label}</span>
+        {action.remindAt !== undefined && (
+          <span className="text-[var(--text)]">
+            · {dayjs(action.remindAt).format('M月D日 HH:mm')}
+          </span>
+        )}
+        {created && (
+          <span className="ml-auto flex items-center gap-0.5 text-[var(--kind-accent)]">
+            <Check size={11} />
+            已创建
+          </span>
+        )}
+      </div>
+      <div className="mt-1 whitespace-pre-wrap break-words text-[12.5px] font-semibold leading-snug text-[var(--text)]">
+        {action.title}
+      </div>
+      {action.content && (
+        <p className="mt-0.5 line-clamp-2 whitespace-pre-wrap break-words text-[11.5px] leading-relaxed text-[var(--text-muted)]">
+          {action.content}
+        </p>
+      )}
+      {action.items && action.items.length > 0 && (
+        <>
+          <Flex vertical gap={2} className="mt-1">
+            {action.items.slice(0, 4).map((item) => (
+              <Flex
+                key={item}
+                align="flex-start"
+                gap={6}
+                className="text-[11.5px] leading-relaxed text-[var(--text-muted)]"
+              >
+                <span className="mt-[7px] h-[3px] w-[3px] shrink-0 rounded-full bg-[var(--text-muted)]" />
+                <span className="min-w-0 break-words">{item}</span>
+              </Flex>
+            ))}
+          </Flex>
+          {action.items.length > 4 && (
+            <div className="pl-[9px] text-[11px] text-[var(--text-muted)]">
+              还有 {action.items.length - 4} 项…
+            </div>
+          )}
+        </>
+      )}
+      {!created && (
+        <div className="mt-2 flex items-center gap-2">
+          <Button
+            size="small"
+            type="primary"
+            icon={<Plus size={12} />}
+            loading={status === 'creating'}
+            onClick={() => void handleCreate()}
+          >
+            创建{meta.label}
+          </Button>
+          <Button size="small" type="text" onClick={() => setStatus('dismissed')}>
+            忽略
+          </Button>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function MessageBubble({
   message,
   onRetry,
@@ -152,10 +269,21 @@ function MessageBubble({
   message: AssistantMessage
   onRetry: () => void
 }) {
-  const html = useMemo(
-    () => (message.role === 'assistant' ? markdownToHtml(message.content) : ''),
+  const parsed = useMemo(
+    () =>
+      message.role === 'assistant'
+        ? parseAssistantActions(message.content)
+        : { text: '', actions: [] as AssistantAction[] },
     [message.role, message.content],
   )
+  const html = useMemo(
+    () => (message.role === 'assistant' ? markdownToHtml(parsed.text) : ''),
+    [message.role, parsed.text],
+  )
+  const markActionCreated = useAssistantStore((state) => state.markActionCreated)
+  const createdActions = Array.isArray(message.createdActions)
+    ? message.createdActions
+    : []
 
   if (message.role === 'user') {
     return (
@@ -167,30 +295,47 @@ function MessageBubble({
     )
   }
 
+  const showBubble =
+    message.status === 'streaming' || message.stopped || Boolean(parsed.text)
+
   return (
     <div className="group flex items-start gap-2">
       <div className="flex-center h-6 w-6 shrink-0 rounded-full bg-[var(--card-active-bg)] text-[var(--kind-accent)]">
         <Sparkles size={13} />
       </div>
       <div className="min-w-0 flex-1">
-        <div className="rounded-[12px] border border-[var(--border)] bg-[var(--field)] px-3 py-2 text-[13px] leading-relaxed text-[var(--text)]">
-          {message.status === 'streaming' && !message.content && <TypingDots />}
-          {message.content && (
-            <div
-              className="note-md assistant-md"
-              dangerouslySetInnerHTML={{ __html: html }}
-            />
-          )}
-          {message.status === 'streaming' && message.content && (
-            <span className="assistant-caret" aria-hidden />
-          )}
-          {message.stopped && (
-            <div className="mt-1 text-[11px] text-[var(--text-muted)]">已停止生成</div>
-          )}
-        </div>
-        {message.content && message.status !== 'streaming' && (
+        {showBubble && (
+          <div className="rounded-[12px] border border-[var(--border)] bg-[var(--field)] px-3 py-2 text-[13px] leading-relaxed text-[var(--text)]">
+            {message.status === 'streaming' && !parsed.text && <TypingDots />}
+            {parsed.text && (
+              <div
+                className="note-md assistant-md"
+                dangerouslySetInnerHTML={{ __html: html }}
+              />
+            )}
+            {message.status === 'streaming' && parsed.text && (
+              <span className="assistant-caret" aria-hidden />
+            )}
+            {message.stopped && (
+              <div className="mt-1 text-[11px] text-[var(--text-muted)]">已停止生成</div>
+            )}
+          </div>
+        )}
+        {message.status !== 'streaming' && parsed.actions.length > 0 && (
+          <div className="mt-2 flex flex-col gap-2">
+            {parsed.actions.map((action, index) => (
+              <ActionCard
+                key={`${message.id}:${index}`}
+                action={action}
+                created={createdActions.includes(index)}
+                onCreated={() => markActionCreated(message.id, index)}
+              />
+            ))}
+          </div>
+        )}
+        {parsed.text && message.status !== 'streaming' && (
           <div className="mt-0.5 flex justify-end opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
-            <CopyReplyButton text={message.content} />
+            <CopyReplyButton text={parsed.text} />
           </div>
         )}
         {message.status === 'error' && (

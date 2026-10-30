@@ -134,6 +134,8 @@ export interface NewEntryInput {
   title: string
   content: string
   remindAt?: number
+  /** 待办子任务文本（可选，创建时生成带 id 的清单项） */
+  items?: string[]
   /** 标签（可选，默认空数组） */
   tags?: string[]
 }

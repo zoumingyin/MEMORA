@@ -107,6 +107,8 @@ interface AssistantState {
   stop: () => void
   retry: () => Promise<void>
   clear: () => void
+  /** 记录某条回答里的操作已创建，避免重复写入 */
+  markActionCreated: (messageId: string, index: number) => void
 }
 
 const initial = loadPersisted()
@@ -311,5 +313,21 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
     }
     set({ messages: [], input: '', sending: false })
     persistSnapshot([], get().contextEnabled)
+  },
+
+  markActionCreated: (messageId, index) => {
+    set((state) => ({
+      messages: state.messages.map((message) =>
+        message.id === messageId
+          ? {
+              ...message,
+              createdActions: Array.from(
+                new Set([...(message.createdActions ?? []), index]),
+              ),
+            }
+          : message,
+      ),
+    }))
+    persistSnapshot(get().messages, get().contextEnabled)
   },
 }))

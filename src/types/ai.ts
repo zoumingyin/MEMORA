@@ -104,4 +104,6 @@ export interface AssistantMessage {
   error?: AiErrorInfo
   /** 用户主动停止生成 */
   stopped?: boolean
+  /** 已确认创建的操作下标：随消息持久化，避免重开面板或重启后重复创建 */
+  createdActions?: number[]
 }

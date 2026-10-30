@@ -1,5 +1,5 @@
 import type { AlarmItem, Entry, EntryKind, NewEntryInput, TodoItem } from '../types/entry'
-import type { EntryRepository } from './repository'
+import { todoItemsFromTexts, type EntryRepository } from './repository'
 
 const STORAGE_KEY = 'bianqian.entries.v1'
 
@@ -74,7 +74,7 @@ export class MemoryEntryRepository implements EntryRepository {
     if (kind === 'note') {
       entry = { kind: 'note', ...base }
     } else if (kind === 'todo') {
-      entry = { kind: 'todo', ...base, done: false, completedAt: null, items: [] }
+      entry = { kind: 'todo', ...base, done: false, completedAt: null, items: todoItemsFromTexts(input.items) }
     } else {
       entry = {
         kind: 'reminder',
