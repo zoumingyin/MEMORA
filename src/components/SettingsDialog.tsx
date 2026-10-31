@@ -1,4 +1,12 @@
-import { AutoComplete, Input, Modal, Popconfirm, Select, Switch, Tree } from "antd";
+import {
+  AutoComplete,
+  Input,
+  Modal,
+  Popconfirm,
+  Select,
+  Switch,
+  Tree,
+} from "antd";
 import type { InputRef, TreeDataNode } from "antd";
 import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
 import {
@@ -69,7 +77,12 @@ const AI_PRESETS: {
     label: "Moonshot Kimi",
     baseUrl: "https://api.moonshot.cn/v1",
     model: "moonshot-v1-8k",
-    models: ["moonshot-v1-8k", "moonshot-v1-32k", "moonshot-v1-128k", "kimi-latest"],
+    models: [
+      "moonshot-v1-8k",
+      "moonshot-v1-32k",
+      "moonshot-v1-128k",
+      "kimi-latest",
+    ],
   },
   {
     label: "OpenAI",
@@ -254,7 +267,11 @@ function parseExportFile(raw: string): Entry[] {
  * 边缘吸附与收纳到屏幕边缘自标题栏移入此处集中管理。
  * 关闭行为持久化 `bianqian.closeBehavior.v1`；开机自启动走 tauri-plugin-autostart。
  */
-export function SettingsDialog({ open, onClose, initialSection }: SettingsDialogProps) {
+export function SettingsDialog({
+  open,
+  onClose,
+  initialSection,
+}: SettingsDialogProps) {
   const { alwaysOnTop, opacity, edgeDocking, theme } = useWindowStore();
   const { setAlwaysOnTop, setOpacity, setEdgeDocking, setDock, setTheme } =
     useWindowStore();
@@ -291,10 +308,11 @@ export function SettingsDialog({ open, onClose, initialSection }: SettingsDialog
   const [aiProvider, setAiProvider] = useState(AI_PRESETS[0].label);
   const [aiBaseUrl, setAiBaseUrl] = useState(AI_PRESETS[0].baseUrl);
   const [aiModel, setAiModel] = useState(AI_PRESETS[0].model);
-  const [aiReasoning, setAiReasoning] = useState<ReasoningEffort | "">("");
+  const [aiReasoning, setAiReasoning] = useState<ReasoningEffort | "">("low");
   const [aiKey, setAiKey] = useState("");
   const [aiBusy, setAiBusy] = useState(false);
   const [aiMessage, setAiMessage] = useState("");
+  // 免费来源密钥：按来源保存输入草稿，保存成功后清空（只展示掩码）
   const [aiRemoteModels, setAiRemoteModels] = useState<string[]>([]);
   const [aiModelHint, setAiModelHint] = useState("");
   const [aiLoadingModels, setAiLoadingModels] = useState(false);
@@ -308,7 +326,7 @@ export function SettingsDialog({ open, onClose, initialSection }: SettingsDialog
 
   const aiProfiles = aiStatus?.profiles ?? [];
   const editingProfile = aiEditingId
-    ? aiProfiles.find((profile) => profile.id === aiEditingId) ?? null
+    ? (aiProfiles.find((profile) => profile.id === aiEditingId) ?? null)
     : null;
   const activeProfile =
     aiProfiles.find((profile) => profile.id === aiStatus?.activeId) ?? null;
@@ -329,7 +347,9 @@ export function SettingsDialog({ open, onClose, initialSection }: SettingsDialog
     unavailable: { text: "不可用", className: "text-[var(--danger)]" },
   };
   // 服务商下拉值：已保存的自定义服务名不在预设内时统一显示为「自定义服务」
-  const aiProviderValue = AI_PRESETS.some((preset) => preset.label === aiProvider)
+  const aiProviderValue = AI_PRESETS.some(
+    (preset) => preset.label === aiProvider
+  )
     ? aiProvider
     : "自定义服务";
   const aiKeyPlaceholder = editingProfile?.keyMasked
@@ -447,7 +467,11 @@ export function SettingsDialog({ open, onClose, initialSection }: SettingsDialog
       setAiMessage("请填写模型名称");
       return;
     }
-    if (!aiKey.trim() && !editingProfile?.keyMasked && !isLocalBaseUrl(baseUrl)) {
+    if (
+      !aiKey.trim() &&
+      !editingProfile?.keyMasked &&
+      !isLocalBaseUrl(baseUrl)
+    ) {
       setAiMessage("请填写 API 密钥（本机服务可留空）");
       return;
     }
@@ -1000,7 +1024,8 @@ export function SettingsDialog({ open, onClose, initialSection }: SettingsDialog
                   {customProfiles.length === 0
                     ? "尚未添加自己的模型配置"
                     : `已配置 ${customProfiles.length} 个模型`}
-                  {freeProfiles.length > 0 && ` · ${freeProfiles.length} 个免费模型`}
+                  {freeProfiles.length > 0 &&
+                    ` · ${freeProfiles.length} 个免费模型`}
                 </span>
                 <span className="truncate text-[10.5px] text-[var(--text-muted)]">
                   {activeProfile
@@ -1120,7 +1145,7 @@ export function SettingsDialog({ open, onClose, initialSection }: SettingsDialog
             {/* 分隔线：自己的模型与内置免费模型分开展示 */}
             <div className="h-px shrink-0 bg-[var(--border)]" />
 
-            {/* 内置免费模型：无需密钥，按来源分组展示接口地址与限速说明 */}
+            {/* 内置免费模型：按来源分组展示接口地址、限速说明与所需密钥 */}
             <div className="flex flex-col gap-1.5">
               <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
                 <span className="text-[11.5px] text-[var(--text-muted)]">
@@ -1128,7 +1153,7 @@ export function SettingsDialog({ open, onClose, initialSection }: SettingsDialog
                 </span>
                 <div className="flex shrink-0 items-center gap-2">
                   <span className="whitespace-nowrap text-[10px] text-[var(--text-muted)]">
-                    {freeProfiles.length} 个 · 无需 API Key
+                    {freeProfiles.length} 个 · 运行时拉取
                   </span>
                   <button
                     type="button"
@@ -1141,7 +1166,9 @@ export function SettingsDialog({ open, onClose, initialSection }: SettingsDialog
                 </div>
               </div>
               <div className="rounded-[8px] border border-[var(--border)] bg-[var(--hover-fill)] px-2.5 py-2 text-[10.5px] leading-relaxed text-[var(--text-muted)]">
-                模型清单在运行时从各网关的 /models 接口获取；接口不可用时回退到本地缓存或内置默认模型。以下服务均为公开第三方网关，选中后提问会直接发送给对应服务商，提示词可能被记录，请勿发送敏感内容。
+                模型清单在运行时从各网关的 /models
+                接口获取；接口不可用时回退到本地缓存或内置默认模型。OpenCode
+                Zen 使用应用内置的账号密钥，只保留零费用模型；其余为公开第三方网关，选中后提问会直接发送给对应服务商，提示词可能被记录，请勿发送敏感内容。
               </div>
               {freeGroups.map((group) => (
                 <div
@@ -1246,11 +1273,13 @@ export function SettingsDialog({ open, onClose, initialSection }: SettingsDialog
                 6000 字；不含图片、废纸篓与已删除内容。
               </p>
               <p className="m-0 mt-1">
-                对话记录仅保存在本机（localStorage，最多 40 条），不会上传到本应用服务器。
+                对话记录仅保存在本机（localStorage，最多 40
+                条），不会上传到本应用服务器。
               </p>
               {!isTauriRuntime() && (
                 <p className="m-0 mt-1">
-                  浏览器预览会直连你在「接入配置」中填写的 AI 服务，便签摘要随请求发往该服务。
+                  浏览器预览会直连你在「接入配置」中填写的 AI
+                  服务，便签摘要随请求发往该服务。
                 </p>
               )}
               <p className="m-0 mt-1">
@@ -1396,7 +1425,9 @@ export function SettingsDialog({ open, onClose, initialSection }: SettingsDialog
           </label>
 
           <label className="flex flex-col gap-1">
-            <span className="text-[11px] text-[var(--text-muted)]">推理强度</span>
+            <span className="text-[11px] text-[var(--text-muted)]">
+              推理强度
+            </span>
             <Select
               size="small"
               value={aiReasoning}
@@ -1412,7 +1443,8 @@ export function SettingsDialog({ open, onClose, initialSection }: SettingsDialog
               ]}
             />
             <span className="text-[10px] leading-relaxed text-[var(--text-muted)]">
-              思考模型（豆包 Seed、DeepSeek 等）会先推理再回复；关闭思考可显著降低首字延迟，复杂任务质量会下降。
+              思考模型（豆包 Seed、DeepSeek
+              等）会先推理再回复；关闭思考可显著降低首字延迟，复杂任务质量会下降。
             </span>
           </label>
 

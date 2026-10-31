@@ -13,8 +13,8 @@ export interface FreeProviderSpec {
   source: string
   label: string
   baseUrl: string
-  /** 网关要求的固定公开令牌（OpenCode Zen 为 `public`） */
-  bearer: string | null
+  /** 是否需要用户自己的密钥（OpenCode Zen 用个人免费额度） */
+  requiresKey: boolean
   /** 来源说明：限速、隐私提示等 */
   note: string
   /** 接口不可用时的兜底模型；为空则该来源直接隐藏 */
@@ -26,15 +26,17 @@ const PROVIDERS: FreeProviderSpec[] = [
     source: 'opencode',
     label: 'OpenCode Zen',
     baseUrl: 'https://opencode.ai/inference/v1',
-    bearer: 'public',
-    note: '无需注册；固定 Bearer public；IP 限速，高峰可能 429；提示词可能被上游记录。',
-    fallback: [{ id: 'deepseek-v4.1-flash', name: 'DeepSeek V4.1 Flash' }],
+    requiresKey: true,
+    note: '使用应用内置的 OpenCode API Key（仅使用账号下的零费用模型）；免费额度按账号限速，超限返回 429；提示词可能被上游记录。',
+    fallback: [
+      { id: 'deepseek-v4.1-flash-free', name: 'DeepSeek V4.1 Flash Free' },
+    ],
   },
   {
     source: 'kilo',
     label: 'Kilo AI',
     baseUrl: 'https://api.kilo.ai/api/gateway',
-    bearer: null,
+    requiresKey: false,
     note: '无需 Key；自动路由免费模型池，约 200 次/小时；提示词可能被上游记录。',
     fallback: [{ id: 'kilo-auto/free', name: 'Auto Free（自动路由）' }],
   },
@@ -42,7 +44,7 @@ const PROVIDERS: FreeProviderSpec[] = [
     source: 'llm7',
     label: 'LLM7.io',
     baseUrl: 'https://api.llm7.io/v1',
-    bearer: null,
+    requiresKey: false,
     note: '无需 Key；匿名约 60 次/分钟、250 次/小时。',
     fallback: [{ id: 'gpt-oss-20b', name: 'GPT-OSS 20B' }],
   },
@@ -50,7 +52,7 @@ const PROVIDERS: FreeProviderSpec[] = [
     source: 'pollinations',
     label: 'Pollinations',
     baseUrl: 'https://text.pollinations.ai/openai',
-    bearer: null,
+    requiresKey: false,
     note: '无需 Key；匿名层模型随上游调整，以接口返回为准。',
     fallback: [{ id: 'openai-fast', name: 'GPT-OSS 20B（匿名）' }],
   },
@@ -65,7 +67,8 @@ export interface FreeModel {
   /** 来源展示名，同时作为 provider 显示 */
   sourceLabel: string
   baseUrl: string
-  bearer: string | null
+  /** 该来源是否需要用户自己的密钥 */
+  requiresKey: boolean
   /** 来源说明：限速、隐私提示等 */
   note: string
 }
@@ -77,6 +80,10 @@ export interface FreeSourceInfo {
   note: string
   status: FreeSourceStatus
   count: number
+  requiresKey: boolean
+  keyMasked: string | null
+  /** browser：浏览器 localStorage；builtin：编译期内置；null：未设置 */
+  keySource: 'browser' | 'builtin' | null
 }
 
 interface FreeModelEntry {
@@ -97,14 +104,22 @@ interface FreeCatalogCache {
 }
 
 const CACHE_KEY = 'bianqian.assistant.ai.free.v1'
+/** 来源密钥（source → key）：浏览器预览只存 localStorage，桌面端存 ai-config.json */
+const KEYS_KEY = 'bianqian.assistant.ai.free.keys.v1'
+/**
+ * 编译期内置的来源密钥：vite.config.ts 与 src-tauri/build.rs 读同一个
+ * src-tauri/keys/opencode.key，浏览器预览没有 Rust 后端时由此兜底。
+ * 文件缺失时为空字符串，行为与未内置一致。
+ */
+const BUILTIN_SOURCE_KEYS: Record<string, string> = {
+  opencode: __BUILTIN_OPENCODE_KEY__,
+}
 /** 拉取成功后的缓存有效期；失败且已有模型时的重试间隔 */
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000
 const RETRY_MS = 10 * 60 * 1000
 /** 单个网关最多展示的模型数，避免选择器过长 */
 const MODEL_LIMIT = 40
 const FETCH_TIMEOUT_MS = 10_000
-
-const EMPTY_CACHE: FreeCatalogCache = { version: 1, fetchedAt: 0, sources: {} }
 
 let cache: FreeCatalogCache | null = null
 let inflight: Promise<void> | null = null
@@ -182,6 +197,44 @@ export function findFreeProvider(source: string): FreeProviderSpec | undefined {
   return PROVIDERS.find((provider) => provider.source === source)
 }
 
+function readSourceKeys(): Record<string, string> {
+  try {
+    const raw = localStorage.getItem(KEYS_KEY)
+    if (!raw) return {}
+    const parsed = JSON.parse(raw) as unknown
+    if (typeof parsed !== 'object' || parsed === null) return {}
+    const keys: Record<string, string> = {}
+    for (const [source, value] of Object.entries(parsed as Record<string, unknown>)) {
+      if (typeof value === 'string' && value.trim()) keys[source] = value.trim()
+    }
+    return keys
+  } catch {
+    return {}
+  }
+}
+
+/** 某个来源已保存在 localStorage 的密钥；未设置时返回 null */
+function savedSourceKey(source: string): string | null {
+  return readSourceKeys()[source] ?? null
+}
+
+/**
+ * 某个来源实际生效的密钥：localStorage 优先，其次编译期内置，
+ * 与 Rust 端 env > file > builtin 的优先级保持一致。
+ */
+export function freeSourceKey(source: string): string | null {
+  const saved = savedSourceKey(source)
+  if (saved) return saved
+  const builtin = (BUILTIN_SOURCE_KEYS[source] ?? '').trim()
+  return builtin || null
+}
+
+/** 与 Rust 端 mask_key 一致：只保留末 4 位 */
+function maskFreeKey(key: string | null): string | null {
+  if (!key) return null
+  return key.length <= 8 ? '••••' : `••••${key.slice(-4)}`
+}
+
 /** 免费模型 id 形如 `free:{source}:{modelId}`；模型 id 自身可能含 `:`，只切前两段 */
 export function parseFreeModelId(
   id: string,
@@ -218,7 +271,7 @@ function toFreeModel(provider: FreeProviderSpec, entry: FreeModelEntry): FreeMod
     source: provider.source,
     sourceLabel: provider.label,
     baseUrl: provider.baseUrl,
-    bearer: provider.bearer,
+    requiresKey: provider.requiresKey,
     note: provider.note,
   }
 }
@@ -228,6 +281,10 @@ function sourceSnapshot(provider: FreeProviderSpec): {
   models: FreeModelEntry[]
   status: FreeSourceStatus
 } {
+  // 需要密钥但尚未填写时不展示兜底模型：选中后请求必然失败
+  if (provider.requiresKey && !freeSourceKey(provider.source)) {
+    return { models: [], status: 'unavailable' }
+  }
   const entry = readCache().sources[provider.source]
   if (entry && entry.models.length > 0) {
     const status: FreeSourceStatus =
@@ -258,6 +315,7 @@ export function allFreeModels(): FreeModel[] {
 export function freeSourceInfos(): FreeSourceInfo[] {
   return PROVIDERS.map((provider) => {
     const snapshot = sourceSnapshot(provider)
+    const key = freeSourceKey(provider.source)
     return {
       source: provider.source,
       label: provider.label,
@@ -265,6 +323,13 @@ export function freeSourceInfos(): FreeSourceInfo[] {
       note: provider.note,
       status: snapshot.status,
       count: snapshot.models.length,
+      requiresKey: provider.requiresKey,
+      keyMasked: maskFreeKey(key),
+      keySource: savedSourceKey(provider.source)
+        ? 'browser'
+        : key
+          ? 'builtin'
+          : null,
     }
   })
 }
@@ -278,6 +343,10 @@ export function findFreeModel(id: string): FreeModel | undefined {
   if (cached) return cached
   const parsed = parseFreeModelId(id)
   if (!parsed) return undefined
+  // 需要密钥的来源在密钥被清除后不再按 id 还原，与桌面端一致
+  if (parsed.provider.requiresKey && !freeSourceKey(parsed.provider.source)) {
+    return undefined
+  }
   return toFreeModel(parsed.provider, { id: parsed.model, name: null })
 }
 
@@ -310,6 +379,10 @@ interface ModelsResponse {
 async function fetchProviderModels(
   provider: FreeProviderSpec,
 ): Promise<FreeModelEntry[]> {
+  const key = freeSourceKey(provider.source)
+  if (provider.requiresKey && !key) {
+    throw new Error(`${provider.label} 缺少可用密钥（构建时未内置，请在设置中配置）`)
+  }
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS)
   let response: Response
@@ -317,7 +390,7 @@ async function fetchProviderModels(
     response = await fetch(modelsUrl(provider.baseUrl), {
       headers: {
         Accept: 'application/json',
-        ...(provider.bearer ? { Authorization: `Bearer ${provider.bearer}` } : {}),
+        ...(key ? { Authorization: `Bearer ${key}` } : {}),
       },
       signal: controller.signal,
     })

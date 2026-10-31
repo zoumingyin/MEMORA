@@ -1,11 +1,30 @@
 import react from '@vitejs/plugin-react'
 import UnoCSS from '@unocss/vite'
+import { readFileSync } from 'node:fs'
 import { fileURLToPath, URL } from 'node:url'
 import { defineConfig } from 'vite'
+
+// 编译期内置 OpenCode 密钥：与 src-tauri/build.rs 读同一个密钥文件
+// （src-tauri/keys/opencode.key，已 gitignore）。浏览器预览没有 Rust
+// 后端，免费模型请求由前端直连，密钥通过 define 注入为编译期常量；
+// 文件缺失时置空，构建照常通过。
+const BUILTIN_OPENCODE_KEY = (() => {
+  try {
+    return readFileSync(
+      fileURLToPath(new URL('./src-tauri/keys/opencode.key', import.meta.url)),
+      'utf8',
+    ).trim()
+  } catch {
+    return ''
+  }
+})()
 
 // Tauri 开发端口固定为 1420，与 tauri.conf.json 的 devUrl 保持一致
 export default defineConfig({
   plugins: [react(), UnoCSS()],
+  define: {
+    __BUILTIN_OPENCODE_KEY__: JSON.stringify(BUILTIN_OPENCODE_KEY),
+  },
   clearScreen: false,
   build: {
     rollupOptions: {

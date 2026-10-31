@@ -1,8 +1,10 @@
 //! AI 助手后端：OpenAI 兼容接口代理。
 //!
 //! 设计要点：
-//! - API Key 只存在于 Rust 进程（环境变量或应用数据目录下的 ai-config.json），
-//!   永远不回传前端，避免密钥进入 WebView / 对话记录 / 前端 bundle。
+//! - 用户的 API Key 只存在于 Rust 进程（环境变量或应用数据目录下的
+//!   ai-config.json），永远不回传前端，避免用户密钥进入 WebView / 对话记录 /
+//!   前端 bundle。例外：OpenCode 免费源密钥本身即构建期内置（build.rs），
+//!   且经 vite define 同步注入前端 bundle 以支持浏览器预览直连。
 //! - 接口按 OpenAI Chat Completions 规范调用，可对接 DeepSeek / Moonshot / 通义 /
 //!   智谱 / OpenAI / Ollama 等兼容服务。
 //! - 流式响应通过 Tauri Channel 逐段推送，前端边收边渲染；支持请求取消与错误归类。
@@ -24,6 +26,15 @@ const ENV_BASE_URL: &str = "BIANQIAN_AI_BASE_URL";
 const ENV_MODEL: &str = "BIANQIAN_AI_MODEL";
 const ENV_TEMPERATURE: &str = "BIANQIAN_AI_TEMPERATURE";
 const ENV_MAX_TOKENS: &str = "BIANQIAN_AI_MAX_TOKENS";
+/// 环境变量：OpenCode Zen 免费源的账号密钥，优先级最高
+const ENV_OPENCODE_KEY: &str = "BIANQIAN_OPENCODE_API_KEY";
+/// 编译期内置的 OpenCode 密钥：build.rs 从本机 `keys/opencode.key` 注入，
+/// 打包后的 exe 无需任何运行时配置即可调用（vite 构建亦读同一文件注入前端）。
+/// 文件缺失时为空字符串。
+const BUILTIN_OPENCODE_KEY: &str = match option_env!("BIANQIAN_BUILTIN_OPENCODE_KEY") {
+    Some(key) => key,
+    None => "",
+};
 
 const DEFAULT_TEMPERATURE: f32 = 0.7;
 const DEFAULT_MAX_TOKENS: u32 = 1200;
@@ -83,6 +94,10 @@ struct FileConfig {
     temperature: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     max_tokens: Option<u32>,
+    /// 内置免费网关的来源密钥（source → key）：只存本机，
+    /// 不写入单条配置，也不回传前端（前端只拿掩码）
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    free_keys: HashMap<String, String>,
 }
 
 impl FileConfig {
@@ -173,6 +188,12 @@ struct AiFreeSourceStatus {
     note: String,
     status: FreeSourceState,
     count: usize,
+    /// 需要用户自己的账号密钥（OpenCode Zen）
+    requires_key: bool,
+    /// 已保存密钥的掩码；None 表示未设置
+    key_masked: Option<String>,
+    /// env = 环境变量提供；file = 本机配置；builtin = 编译期内置；None = 未设置
+    key_source: Option<&'static str>,
 }
 
 /// 全部配置状态：当前选中的配置 + 配置列表 + 免费来源状态
@@ -222,10 +243,8 @@ struct ResolvedConfig {
     temperature: f32,
     max_tokens: u32,
     key_source: Option<&'static str>,
-    /// 内置免费模型：公共网关本身不校验密钥
+    /// 内置免费模型：密钥由来源密钥提供，或网关本身不校验
     keyless: bool,
-    /// 内置免费模型的固定公开令牌（如 OpenCode 的 `Bearer public`）
-    bearer: Option<&'static str>,
     /// 推理强度：none / low / medium / high；None 表示不干预
     reasoning: Option<String>,
 }
@@ -336,36 +355,43 @@ fn env_profile() -> Option<AiProfile> {
     })
 }
 
-/// 内置免费网关：这里只描述接口地址、公开令牌与来源说明；
+/// 内置免费网关：这里只描述接口地址、是否需密钥与来源说明；
 /// 可用模型在运行时经 `GET {base_url}/models` 获取，不在代码里硬编码清单。
 /// `fallback` 仅在接口不可用且没有历史缓存时兜底，保证离线也能选到可用模型。
 struct FreeProviderSpec {
     source: &'static str,
     label: &'static str,
     base_url: &'static str,
-    /// 网关要求的固定公开令牌（OpenCode Zen 用 `Bearer public`）；
-    /// 与用户密钥互斥：apiKey 为空时才使用
-    bearer: Option<&'static str>,
+    /// 是否需要用户自己的账号密钥（OpenCode Zen 用个人免费额度）
+    requires_key: bool,
+    /// 密钥的环境变量名；requires_key 时生效，优先级最高
+    key_env: Option<&'static str>,
+    /// 编译期内置密钥（构建时从本机文件注入）；环境变量与本机保存的密钥都未提供时使用
+    builtin_key: Option<&'static str>,
     note: &'static str,
     fallback: &'static [(&'static str, &'static str)],
 }
 
 const FREE_PROVIDERS: &[FreeProviderSpec] = &[
-    // ===== OpenCode Zen（主上游：公开 Bearer public 通道） =====
+    // ===== OpenCode Zen（访问账号下的零费用模型） =====
     FreeProviderSpec {
         source: "opencode",
         label: "OpenCode Zen",
         base_url: "https://opencode.ai/inference/v1",
-        bearer: Some("public"),
-        note: "无需注册；固定 Bearer public；IP 限速，高峰可能 429；提示词可能被上游记录。",
-        fallback: &[("deepseek-v4.1-flash", "DeepSeek V4.1 Flash")],
+        requires_key: true,
+        key_env: Some(ENV_OPENCODE_KEY),
+        builtin_key: Some(BUILTIN_OPENCODE_KEY),
+        note: "使用应用内置的 OpenCode API Key（仅使用账号下的零费用模型）；免费额度按账号限速，超限返回 429；提示词可能被上游记录。",
+        fallback: &[("deepseek-v4.1-flash-free", "DeepSeek V4.1 Flash Free")],
     },
     // ===== Kilo AI 公共网关（免费池，无需账号） =====
     FreeProviderSpec {
         source: "kilo",
         label: "Kilo AI",
         base_url: "https://api.kilo.ai/api/gateway",
-        bearer: None,
+        requires_key: false,
+        key_env: None,
+        builtin_key: None,
         note: "无需 Key；自动轮换免费模型，约 200 次/小时；提示词可能被上游记录。",
         fallback: &[("kilo-auto/free", "Auto Free（自动路由）")],
     },
@@ -374,7 +400,9 @@ const FREE_PROVIDERS: &[FreeProviderSpec] = &[
         source: "llm7",
         label: "LLM7.io",
         base_url: "https://api.llm7.io/v1",
-        bearer: None,
+        requires_key: false,
+        key_env: None,
+        builtin_key: None,
         note: "无需 Key；匿名约 60 次/分钟、250 次/小时。",
         fallback: &[("gpt-oss-20b", "GPT-OSS 20B")],
     },
@@ -383,7 +411,9 @@ const FREE_PROVIDERS: &[FreeProviderSpec] = &[
         source: "pollinations",
         label: "Pollinations",
         base_url: "https://text.pollinations.ai/openai",
-        bearer: None,
+        requires_key: false,
+        key_env: None,
+        builtin_key: None,
         note: "无需 Key；官方匿名层限流较严。",
         fallback: &[("openai-fast", "GPT-OSS 20B（匿名）")],
     },
@@ -570,10 +600,15 @@ fn source_snapshot(provider: &FreeProviderSpec) -> (Vec<FreeModelEntry>, FreeSou
     }
 }
 
-/// 免费模型的内存条目：追加在用户配置之后，保持「自己的模型在前、免费模型在后」
-fn free_profiles() -> Vec<AiProfile> {
+/// 免费模型的内存条目：追加在用户配置之后，保持「自己的模型在前、免费模型在后」。
+/// 需要密钥但尚未填写密钥的来源直接跳过，避免选择器里出现一定失败的模型。
+fn free_profiles(file: &FileConfig) -> Vec<AiProfile> {
     let mut profiles = Vec::new();
     for provider in FREE_PROVIDERS {
+        let (key, _) = free_source_key(file, provider);
+        if provider.requires_key && key.is_none() {
+            continue;
+        }
         let (models, _) = source_snapshot(provider);
         for entry in models {
             profiles.push(AiProfile {
@@ -582,11 +617,38 @@ fn free_profiles() -> Vec<AiProfile> {
                 provider: provider.label.to_string(),
                 base_url: provider.base_url.to_string(),
                 model: entry.id,
+                // 来源密钥挂在这条临时配置上，请求时由 resolve_profile 取用
+                api_key: key.clone(),
                 ..Default::default()
             });
         }
     }
     profiles
+}
+
+/// 来源密钥：环境变量 → 本机配置 → 编译期内置；同时返回来源，供界面提示
+fn free_source_key(
+    file: &FileConfig,
+    provider: &FreeProviderSpec,
+) -> (Option<String>, Option<&'static str>) {
+    if let Some(key) = provider.key_env.and_then(env_non_empty) {
+        return (Some(key), Some("env"));
+    }
+    let key = file
+        .free_keys
+        .get(provider.source)
+        .map(|key| key.trim().to_string())
+        .filter(|key| !key.is_empty());
+    if let Some(key) = key {
+        return (Some(key), Some("file"));
+    }
+    if let Some(key) = provider
+        .builtin_key
+        .filter(|key| !key.trim().is_empty())
+    {
+        return (Some(key.to_string()), Some("builtin"));
+    }
+    (None, None)
 }
 
 fn free_catalog_is_fresh() -> bool {
@@ -611,13 +673,17 @@ fn free_catalog_is_fresh() -> bool {
 /// 运行时拉取单个网关的模型列表：只保留 chat 且免费（若接口给出价格）的条目
 async fn fetch_provider_models(
     provider: &'static FreeProviderSpec,
+    key: Option<&str>,
 ) -> Result<Vec<FreeModelEntry>, String> {
+    if provider.requires_key && key.is_none() {
+        return Err(format!("{} 缺少可用密钥（环境变量或构建时内置）", provider.label));
+    }
     let client = http_client()?;
     let mut request = client
         .get(models_url(provider.base_url))
         .timeout(Duration::from_secs(10))
         .header("Accept", "application/json");
-    if let Some(token) = provider.bearer {
+    if let Some(token) = key {
         request = request.bearer_auth(token);
     }
     let response = request
@@ -679,17 +745,27 @@ async fn fetch_provider_models(
     Ok(models)
 }
 
+/// 某个来源换了密钥后，旧模型清单不再可信：清掉该来源并让整份缓存过期，
+/// 下一次刷新会重新拉取（其余来源会顺手更新，代价可以接受）
+fn invalidate_free_source(source: &str) {
+    if let Ok(mut cache) = free_cache().lock() {
+        cache.fetched_at = 0;
+        cache.sources.remove(source);
+    }
+}
+
 /// 并发刷新各网关的模型列表；单个来源失败只影响该来源（沿用缓存 / 默认值）
 async fn refresh_free_catalog(app: &AppHandle) {
     ensure_free_cache_loaded(app);
     if free_catalog_is_fresh() {
         return;
     }
-    let results = join_all(
-        FREE_PROVIDERS
-            .iter()
-            .map(|provider| fetch_provider_models(provider)),
-    )
+    // 各来源密钥随请求带上：同一个来源换密钥后模型清单可能完全不同
+    let file = load_file_config(app);
+    let results = join_all(FREE_PROVIDERS.iter().map(|provider| {
+        let (key, _) = free_source_key(&file, provider);
+        async move { fetch_provider_models(provider, key.as_deref()).await }
+    }))
     .await;
     let fetched_at = now_secs();
     {
@@ -729,11 +805,18 @@ async fn refresh_free_catalog(app: &AppHandle) {
     persist_free_cache(app);
 }
 
-fn free_source_statuses() -> Vec<AiFreeSourceStatus> {
+fn free_source_statuses(file: &FileConfig) -> Vec<AiFreeSourceStatus> {
     FREE_PROVIDERS
         .iter()
         .map(|provider| {
-            let (models, state) = source_snapshot(provider);
+            let (key, key_source) = free_source_key(file, provider);
+            let missing_key = provider.requires_key && key.is_none();
+            // 缺少密钥时不展示兜底模型：否则选中后请求必然失败
+            let (models, state) = if missing_key {
+                (Vec::new(), FreeSourceState::Unavailable)
+            } else {
+                source_snapshot(provider)
+            };
             AiFreeSourceStatus {
                 source: provider.source.to_string(),
                 label: provider.label.to_string(),
@@ -741,6 +824,9 @@ fn free_source_statuses() -> Vec<AiFreeSourceStatus> {
                 note: provider.note.to_string(),
                 status: state,
                 count: models.len(),
+                requires_key: provider.requires_key,
+                key_masked: key.as_deref().and_then(mask_key),
+                key_source,
             }
         })
         .collect()
@@ -749,7 +835,12 @@ fn free_source_statuses() -> Vec<AiFreeSourceStatus> {
 /// 单条配置解析：环境变量密钥优先（部署时统一注入），其余取配置自身
 fn resolve_profile(profile: &AiProfile) -> ResolvedConfig {
     let file_key = profile.api_key.clone().unwrap_or_default().trim().to_string();
-    let env_key = env_non_empty(ENV_API_KEY);
+    // 内置免费模型的密钥由来源配置提供，不应被全局 BIANQIAN_AI_API_KEY 顶替
+    let env_key = if is_free_profile(&profile.id) {
+        None
+    } else {
+        env_non_empty(ENV_API_KEY)
+    };
     let (api_key, key_source) = match env_key {
         Some(key) => (key, Some("env")),
         None if !file_key.is_empty() => (file_key, Some("file")),
@@ -773,8 +864,9 @@ fn resolve_profile(profile: &AiProfile) -> ResolvedConfig {
         temperature,
         max_tokens,
         key_source,
-        keyless: is_free_profile(&profile.id),
-        bearer: parse_free_profile(&profile.id).and_then(|(provider, _)| provider.bearer),
+        // 只有免密钥网关才跳过密钥校验；OpenCode 这类需密钥的来源仍要真的拿到密钥
+        keyless: parse_free_profile(&profile.id)
+            .is_some_and(|(provider, _)| !provider.requires_key),
         reasoning: normalize_reasoning(profile.reasoning.as_deref()),
     }
 }
@@ -790,10 +882,10 @@ fn normalize_reasoning(value: Option<&str>) -> Option<String> {
     }
 }
 
-/// 请求鉴权令牌：用户密钥优先，其次内置免费网关的固定公开令牌
+/// 请求鉴权令牌：只使用已解析出的密钥（内置来源密钥同样解析到 api_key）
 fn auth_token(resolved: &ResolvedConfig) -> Option<&str> {
     if resolved.api_key.is_empty() {
-        resolved.bearer
+        None
     } else {
         Some(resolved.api_key.as_str())
     }
@@ -809,7 +901,7 @@ fn load_profiles(app: &AppHandle) -> (FileConfig, Vec<AiProfile>) {
         all.push(profile);
     }
     all.extend(file.profiles.iter().cloned());
-    all.extend(free_profiles());
+    all.extend(free_profiles(&file));
     restore_active_free_profile(&file, &mut all);
     (file, all)
 }
@@ -826,6 +918,11 @@ fn restore_active_free_profile(file: &FileConfig, all: &mut Vec<AiProfile>) {
     let Some((provider, model)) = parse_free_profile(id) else {
         return;
     };
+    let (key, _) = free_source_key(file, provider);
+    // 需要密钥的来源在清空密钥后不再还原：此时选中它只会报「配置不完整」
+    if provider.requires_key && key.is_none() {
+        return;
+    }
     let entry = FreeModelEntry {
         id: model.to_string(),
         name: None,
@@ -836,6 +933,7 @@ fn restore_active_free_profile(file: &FileConfig, all: &mut Vec<AiProfile>) {
         provider: provider.label.to_string(),
         base_url: provider.base_url.to_string(),
         model: entry.id,
+        api_key: key,
         ..Default::default()
     });
 }
@@ -915,7 +1013,7 @@ fn status_from(file: &FileConfig, all: &[AiProfile]) -> AiStatus {
         configured,
         active_id,
         profiles,
-        free_sources: free_source_statuses(),
+        free_sources: free_source_statuses(file),
     }
 }
 
@@ -1192,7 +1290,7 @@ pub fn ai_clear_key(app: AppHandle, profile_id: Option<String>) -> Result<AiStat
         return Err("该配置的密钥来自环境变量，无法在此清除".to_string());
     }
     if profile_id.as_deref().is_some_and(is_free_profile) {
-        return Err("内置免费模型不使用密钥，无需清除".to_string());
+        return Err("内置免费模型不使用配置级密钥，请在「内置免费模型」中管理来源密钥".to_string());
     }
     let mut file = load_file_config(&app);
     let target = profile_id
@@ -1210,6 +1308,46 @@ pub fn ai_clear_key(app: AppHandle, profile_id: Option<String>) -> Result<AiStat
     Ok(status_from(&file, &all))
 }
 
+/// 设置（key 为空则清除）某个免费来源的 API Key，并立即重新拉取该来源的模型。
+/// 密钥只写入本机配置文件；环境变量已提供时不允许在界面覆盖。
+#[tauri::command]
+pub async fn ai_set_free_key(
+    app: AppHandle,
+    source: String,
+    key: Option<String>,
+) -> Result<AiStatus, String> {
+    let Some(provider) = FREE_PROVIDERS
+        .iter()
+        .find(|item| item.source == source)
+    else {
+        return Err("未知的免费模型来源".to_string());
+    };
+    if !provider.requires_key {
+        return Err(format!("{} 无需密钥，可直接使用", provider.label));
+    }
+    if provider.key_env.and_then(env_non_empty).is_some() {
+        return Err(format!(
+            "{} 的密钥来自环境变量 {}，请移除该环境变量后再在界面中设置",
+            provider.label,
+            provider.key_env.unwrap_or_default()
+        ));
+    }
+
+    let trimmed = key.unwrap_or_default().trim().to_string();
+    let mut file = load_file_config(&app);
+    if trimmed.is_empty() {
+        file.free_keys.remove(provider.source);
+    } else {
+        file.free_keys
+            .insert(provider.source.to_string(), trimmed);
+    }
+    write_file_config(&app, &file)?;
+    invalidate_free_source(provider.source);
+    refresh_free_catalog(&app).await;
+    let (file, all) = load_profiles(&app);
+    Ok(status_from(&file, &all))
+}
+
 impl Default for ResolvedConfig {
     fn default() -> Self {
         Self {
@@ -1220,7 +1358,6 @@ impl Default for ResolvedConfig {
             max_tokens: DEFAULT_MAX_TOKENS,
             key_source: None,
             keyless: false,
-            bearer: None,
             reasoning: None,
         }
     }
@@ -1256,7 +1393,6 @@ fn apply_override(base: ResolvedConfig, input: Option<AiProfileInput>) -> Resolv
             .unwrap_or(base.max_tokens),
         key_source: base.key_source,
         keyless: base.keyless,
-        bearer: base.bearer,
         reasoning: base.reasoning,
     }
 }
@@ -1853,14 +1989,28 @@ mod tests {
     }
 
     #[test]
-    fn free_catalog_is_keyless_and_unique() {
-        // 无缓存且拉取失败时，每个来源回退到内置兜底模型，保证列表非空可用
-        let profiles = free_profiles();
+    fn free_catalog_uses_fallback_models() {
+        // 无缓存且拉取失败时，每个可用来源回退到内置兜底模型，保证列表非空可用
+        let file = FileConfig::default();
+        let profiles = free_profiles(&file);
         let expected: usize = FREE_PROVIDERS
             .iter()
+            .filter(|provider| !provider.requires_key || free_source_key(&file, provider).0.is_some())
             .map(|provider| provider.fallback.len())
             .sum();
         assert_eq!(profiles.len(), expected);
+        let opencode_present = profiles
+            .iter()
+            .any(|profile| profile.id.starts_with("free:opencode:"));
+        let opencode_has_key = FREE_PROVIDERS
+            .iter()
+            .find(|provider| provider.source == "opencode")
+            .map(|provider| free_source_key(&file, provider).0.is_some())
+            .unwrap_or(false);
+        assert_eq!(
+            opencode_present, opencode_has_key,
+            "只有拿到密钥时才应出现 OpenCode 模型"
+        );
         let mut ids: Vec<&str> = profiles.iter().map(|profile| profile.id.as_str()).collect();
         ids.sort_unstable();
         ids.dedup();
@@ -1869,23 +2019,75 @@ mod tests {
             assert!(profile.id.starts_with("free:"));
             assert!(profile.base_url.starts_with("https://"));
             let resolved = resolve_profile(profile);
-            assert!(resolved.keyless, "{} 应视为免密钥配置", profile.id);
+            assert!(
+                resolved.keyless || !resolved.api_key.is_empty(),
+                "{} 应拿到密钥或本身免密钥",
+                profile.id
+            );
             assert!(resolved.is_complete(), "{} 应可直接使用", profile.id);
         }
+    }
 
-        // 主上游使用固定公开令牌，不带用户密钥时请求仍应可发出
-        let (opencode, model) =
-            parse_free_profile("free:opencode:deepseek-v4.1-flash").expect("应含 OpenCode 主上游");
-        assert_eq!(opencode.bearer, Some("public"));
-        assert_eq!(opencode.base_url, "https://opencode.ai/inference/v1");
-        assert_eq!(model, "deepseek-v4.1-flash");
-        let resolved = resolve_profile(&AiProfile {
-            id: "free:opencode:any-model".to_string(),
-            base_url: opencode.base_url.to_string(),
-            model: model.to_string(),
-            ..Default::default()
-        });
-        assert_eq!(auth_token(&resolved), Some("public"));
+    #[test]
+    fn opencode_key_priority_is_env_then_file_then_builtin() {
+        let (provider, model) =
+            parse_free_profile("free:opencode:deepseek-v4.1-flash-free").expect("应含 OpenCode 来源");
+        assert!(provider.requires_key);
+        assert_eq!(provider.base_url, "https://opencode.ai/inference/v1");
+        assert_eq!(model, "deepseek-v4.1-flash-free");
+
+        // 没有环境变量与本机密钥时，回落到编译期内置密钥（未注入时应为空）
+        let env_present = env_non_empty(ENV_OPENCODE_KEY).is_some();
+        let builtin_present = !BUILTIN_OPENCODE_KEY.trim().is_empty();
+        let (key, key_source) = free_source_key(&FileConfig::default(), provider);
+        if !env_present {
+            if builtin_present {
+                assert_eq!(key_source, Some("builtin"));
+                assert_eq!(key.as_deref(), Some(BUILTIN_OPENCODE_KEY));
+            } else {
+                assert_eq!(key_source, None);
+                assert!(key.is_none());
+            }
+        }
+
+        // 本机配置优先于内置密钥
+        let mut file = FileConfig::default();
+        file.free_keys
+            .insert("opencode".to_string(), "oc_sk_test".to_string());
+        let (key, key_source) = free_source_key(&file, provider);
+        if !env_present {
+            assert_eq!(key_source, Some("file"));
+            assert_eq!(key.as_deref(), Some("oc_sk_test"));
+        }
+        let profiles = free_profiles(&file);
+        let opencode = profiles
+            .iter()
+            .find(|profile| profile.id.starts_with("free:opencode:"))
+            .expect("配置密钥后应出现 OpenCode 模型");
+        let resolved = resolve_profile(opencode);
+        assert_eq!(auth_token(&resolved), key.as_deref());
+        assert!(resolved.is_complete());
+
+        // 状态里区分密钥来源；缺密钥时该来源不可用且不展示兜底模型
+        let statuses = free_source_statuses(&FileConfig::default());
+        let opencode_status = statuses
+            .iter()
+            .find(|status| status.source == "opencode")
+            .expect("OpenCode 来源应始终展示");
+        assert!(opencode_status.requires_key);
+        if !env_present && !builtin_present {
+            assert_eq!(opencode_status.status, FreeSourceState::Unavailable);
+            assert_eq!(opencode_status.count, 0);
+            assert!(opencode_status.key_masked.is_none());
+            assert!(opencode_status.key_source.is_none());
+        } else {
+            assert!(opencode_status.key_masked.is_some());
+            assert_eq!(
+                opencode_status.key_source,
+                Some(if env_present { "env" } else { "builtin" })
+            );
+            assert!(opencode_status.count >= 1);
+        }
     }
 
     #[test]
@@ -1898,15 +2100,15 @@ mod tests {
             ..Default::default()
         };
         let mut all = vec![custom];
-        all.extend(free_profiles());
         let idle = FileConfig::default();
+        all.extend(free_profiles(&idle));
         assert_eq!(active_profile_id(&idle, &all).as_deref(), Some("p1"));
 
         // 只有免费模型时不自动选中：不应在用户不知情时把内容发给第三方网关
-        assert_eq!(active_profile_id(&idle, &free_profiles()), None);
+        assert_eq!(active_profile_id(&idle, &free_profiles(&idle)), None);
 
         // 用户显式选择过的免费模型仍然生效
-        let free = free_profiles();
+        let free = free_profiles(&idle);
         let kilo_id = free
             .iter()
             .find(|profile| profile.id.starts_with("free:kilo:"))

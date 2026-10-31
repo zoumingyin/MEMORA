@@ -200,6 +200,7 @@ CREATE INDEX IF NOT EXISTS idx_entries_deleted ON entries(deleted_at);
             ai::ai_activate_profile,
             ai::ai_delete_profile,
             ai::ai_clear_key,
+            ai::ai_set_free_key,
             ai::ai_test,
             ai::ai_list_models,
             ai::ai_chat,

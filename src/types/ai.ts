@@ -42,6 +42,12 @@ export interface AiFreeSource {
   note: string
   status: AiFreeSourceStatus
   count: number
+  /** 需要用户自己的账号密钥（OpenCode Zen） */
+  requiresKey: boolean
+  /** 已保存密钥的掩码；null 表示未设置 */
+  keyMasked: string | null
+  /** env：环境变量；file：本机配置；browser：浏览器 localStorage；builtin：编译期内置；null：未设置 */
+  keySource: 'env' | 'file' | 'browser' | 'builtin' | null
 }
 
 /** 全部配置状态：当前选中的模型 + 已配置列表 + 免费来源概况 */

@@ -5,6 +5,7 @@ import {
   ensureFreeCatalog,
   findFreeModel,
   freeSourceInfos,
+  freeSourceKey,
   isFreeModelId,
   type FreeModel,
 } from './freeModels'
@@ -21,7 +22,8 @@ import type {
 /**
  * 浏览器预览环境没有 Rust 后端，改为前端直连 OpenAI 兼容接口：
  * 配置与密钥保存在浏览器 localStorage，仅供本地预览/调试；
- * 桌面端仍走 Rust 代理，密钥不会进入 WebView。
+ * 桌面端仍走 Rust 代理。OpenCode 免费源的密钥由构建时分别注入
+ * Rust 常量（build.rs）与前端常量（vite define），两端读同一密钥文件。
  */
 const BROWSER_CONFIG_KEY = 'bianqian.assistant.ai.v2'
 /** 旧版单配置：读取时迁移为一条 v2 配置 */
@@ -186,8 +188,6 @@ interface ChatTarget {
   note: string | null
   /** 公共网关不校验密钥 */
   keyless: boolean
-  /** 免费网关的固定公开令牌（OpenCode 为 public） */
-  bearer: string | null
   reasoning: ReasoningEffort | null
 }
 
@@ -199,7 +199,6 @@ function targetFromProfile(profile: BrowserProfile): ChatTarget {
     sourceLabel: null,
     note: null,
     keyless: false,
-    bearer: null,
   }
 }
 
@@ -210,22 +209,22 @@ function targetFromFree(model: FreeModel): ChatTarget {
     provider: model.sourceLabel,
     baseUrl: model.baseUrl,
     model: model.model,
-    apiKey: '',
+    // 需密钥的来源（OpenCode）使用「内置免费模型」中保存的来源密钥
+    apiKey: freeSourceKey(model.source) ?? '',
     temperature: DEFAULT_TEMPERATURE,
     maxTokens: DEFAULT_MAX_TOKENS,
     free: true,
     source: model.source,
     sourceLabel: model.sourceLabel,
     note: model.note,
-    keyless: true,
-    bearer: model.bearer,
+    keyless: !model.requiresKey,
     reasoning: null,
   }
 }
 
-/** 请求鉴权令牌：用户密钥优先，其次免费网关的固定公开令牌 */
+/** 请求鉴权令牌：只使用已保存的密钥 */
 function targetAuthToken(target: ChatTarget): string {
-  return target.apiKey || target.bearer || ''
+  return target.apiKey
 }
 
 /** 用户配置在前、运行时获取的免费模型在后，与桌面端顺序一致 */
@@ -421,8 +420,6 @@ function resolveBrowserInput(input: AiProfileInput): {
   model: string
   apiKey: string
   keyless: boolean
-  /** 用户密钥为空时用于 Authorization 的固定公开令牌 */
-  bearer: string
 } {
   const store = readBrowserStore()
   const target = input.id ? findTarget(store, input.id) ?? null : activeTarget(store)
@@ -432,7 +429,6 @@ function resolveBrowserInput(input: AiProfileInput): {
     model: input.model.trim() || target?.model || '',
     apiKey: input.apiKey?.trim() || target?.apiKey || '',
     keyless: target?.keyless ?? false,
-    bearer: target?.bearer ?? '',
   }
 }
 
@@ -817,7 +813,7 @@ export async function clearAiKey(profileId?: string): Promise<AiStatus> {
   const store = readBrowserStore()
   const target = profileId ?? store.activeId ?? store.profiles[0]?.id
   if (target && isFreeModelId(target)) {
-    throw new Error('内置免费模型不使用密钥，无需清除')
+    throw new Error('内置免费模型不使用配置级密钥，请在「内置免费模型」中管理来源密钥')
   }
   const profile = target
     ? store.profiles.find((item) => item.id === target)
@@ -834,9 +830,9 @@ export async function testAiConnection(
 ): Promise<string> {
   if (isTauriRuntime()) return invoke<string>('ai_test', { config })
 
-  const { baseUrl, model, apiKey, keyless, bearer } = resolveBrowserInput(config)
+  const { baseUrl, model, apiKey, keyless } = resolveBrowserInput(config)
   validateBrowserInput(baseUrl, model)
-  const authToken = apiKey || bearer
+  const authToken = apiKey
   if (!authToken && !keyless && !isLocalBaseUrl(baseUrl)) {
     throw new Error('尚未填写 API 密钥')
   }
@@ -878,12 +874,12 @@ export async function testAiConnection(
 export async function listModels(config: AiProfileInput): Promise<string[]> {
   if (isTauriRuntime()) return invoke<string[]>('ai_list_models', { config })
 
-  const { baseUrl, apiKey, keyless, bearer } = resolveBrowserInput(config)
+  const { baseUrl, apiKey, keyless } = resolveBrowserInput(config)
   if (!baseUrl) throw new Error('请填写接口地址（Base URL）')
   if (!/^https?:\/\//i.test(baseUrl)) {
     throw new Error('接口地址必须以 http:// 或 https:// 开头')
   }
-  const authToken = apiKey || bearer
+  const authToken = apiKey
   if (!authToken && !keyless && !isLocalBaseUrl(baseUrl)) {
     throw new Error('请填写 API 密钥')
   }
