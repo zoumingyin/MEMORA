@@ -129,7 +129,7 @@ fn migrate_legacy_data_dir(identifier: &str) {
 }
 
 /// 应用入口：注册插件（SQL / 通知 / 自启动 / 单实例）、执行数据库迁移、
-/// 构建系统托盘菜单（显示/隐藏、新建便签、开机自启动开关、退出）、启动主窗口。
+/// 构建系统托盘菜单（显示/隐藏、新建便签、AI 助手、开机自启动开关、退出）、启动主窗口。
 /// 透明度由前端 CSS 背景 alpha 控制（背景半透明、文字不透明），无需 Rust 自定义命令。
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -292,12 +292,13 @@ CREATE INDEX IF NOT EXISTS idx_entries_deleted ON entries(deleted_at);
         .expect("启动便签应用失败");
 }
 
-/// 构建系统托盘：图标 + 菜单（显示/隐藏主窗口、新建便签、开机自启动勾选、退出）。
+/// 构建系统托盘：图标 + 菜单（显示/隐藏主窗口、新建便签、AI 助手、开机自启动勾选、退出）。
 /// 左键单击切换显示/隐藏，左键双击显示并聚焦。
 fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     let show_item = MenuItemBuilder::with_id("show", "显示主窗口").build(app)?;
     let hide_item = MenuItemBuilder::with_id("hide", "隐藏主窗口").build(app)?;
     let new_item = MenuItemBuilder::with_id("new", "新建便签").build(app)?;
+    let assistant_item = MenuItemBuilder::with_id("assistant", "AI 助手").build(app)?;
     // 开机自启动勾选状态：启动时读取插件当前开关
     let autostart_enabled = app.autolaunch().is_enabled().unwrap_or(false);
     let autostart_item = CheckMenuItemBuilder::with_id("autostart", "开机自启动")
@@ -314,6 +315,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
             &show_item,
             &hide_item,
             &new_item,
+            &assistant_item,
             &PredefinedMenuItem::separator(app)?,
             &autostart_item,
             &PredefinedMenuItem::separator(app)?,
@@ -342,12 +344,20 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                 }
             }
             "new" => {
-                // 通知前端新建一条便签（主窗口若隐藏则一并显示聚焦）
+                // 显示聚焦主窗口，由前端弹出「新建便签」类型选择弹窗
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = window.show();
                     let _ = window.set_focus();
                 }
-                let _ = app.emit("tray:new-note", ());
+                let _ = app.emit("tray:create-entry", ());
+            }
+            "assistant" => {
+                // 显示聚焦主窗口，由前端打开 AI 助手面板
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+                let _ = app.emit("tray:open-assistant", ());
             }
             "autostart" => {
                 let enabled = app.autolaunch().is_enabled().unwrap_or(false);

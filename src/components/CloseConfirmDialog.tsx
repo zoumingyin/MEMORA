@@ -27,21 +27,16 @@ export function CloseConfirmDialog({ open, onClose }: CloseConfirmDialogProps) {
   );
   const [remember, setRemember] = useState(true);
 
-  const run = (target: CloseAction) => {
-    if (!isTauriRuntime()) {
-      onClose();
-      return;
-    }
-    if (target === "quit") {
+  const confirm = () => {
+    if (remember) saveCloseBehavior({ action, remember: true });
+    // 先关弹窗：隐藏窗口后弹窗仍处于挂载状态，不关闭会在下次显示窗口时残留
+    onClose();
+    if (!isTauriRuntime()) return;
+    if (action === "quit") {
       void invoke("quit_app");
     } else {
       void getCurrentWindow().hide();
     }
-  };
-
-  const confirm = () => {
-    if (remember) saveCloseBehavior({ action, remember: true });
-    run(action);
   };
 
   return (

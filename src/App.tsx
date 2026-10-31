@@ -11,6 +11,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useEntryStore } from "./store/useEntryStore";
 import { useWindowStore } from "./store/useWindowStore";
+import { useAssistantStore } from "./store/useAssistantStore";
 import { useViewport } from "./hooks/useViewport";
 import {
   applyAlwaysOnTop,
@@ -196,11 +197,20 @@ export default function App() {
     let detachMoved: () => void = () => undefined;
     let detachResized: () => void = () => undefined;
     let detachOpenNote: () => void = () => undefined;
-    let detachTrayNew: () => void = () => undefined;
+    let detachTrayCreate: () => void = () => undefined;
+    let detachTrayAssistant: () => void = () => undefined;
     let detachSecondInstance: () => void = () => undefined;
     let detachCloseRequested: () => void = () => undefined;
     let detachQuickCapture: () => void = () => undefined;
     let detachFocusShown: () => void = () => undefined;
+
+    // 收纳窄条态不渲染列表与弹窗：托盘 / 提醒唤起前先展开回普通窗口
+    const expandIfDocked = () => {
+      const winState = useWindowStore.getState();
+      if (!winState.docked) return;
+      if (winState.restoredBounds) void restoreBounds(winState.restoredBounds);
+      winState.clearDock();
+    };
 
     // 提醒弹窗「进入便签」：主窗口聚焦，选中对应条目并切到该分类；收纳态先展开
     if (isTauriRuntime()) {
@@ -214,12 +224,7 @@ export default function App() {
             entryState.setFilter(entry.kind);
             entryState.setSelectedId(entryId);
           }
-          const winState = useWindowStore.getState();
-          if (winState.docked) {
-            if (winState.restoredBounds)
-              void restoreBounds(winState.restoredBounds);
-            winState.clearDock();
-          }
+          expandIfDocked();
           void getCurrentWindow().setFocus();
         }
       );
@@ -228,23 +233,22 @@ export default function App() {
       });
     }
 
-    // 托盘菜单「新建便签」：主窗口已由 Rust 显示聚焦，前端新建一条并选中
+    // 托盘菜单「新建便签」：主窗口已由 Rust 显示聚焦，前端弹出类型选择弹窗
     if (isTauriRuntime()) {
-      const trayPromise = listen("tray:new-note", () => {
-        const entryState = useEntryStore.getState();
-        const kind =
-          entryState.filter === "all"
-            ? entryState.currentKind
-            : entryState.filter;
-        const input: NewEntryInput = { title: "", content: "" };
-        if (kind === "reminder")
-          input.remindAt = toMinuteStart(Date.now() + 3600_000);
-        void entryState.addEntry(input).then((entry) => {
-          if (entry) useEntryStore.getState().setSelectedId(entry.id);
-        });
+      const trayPromise = listen("tray:create-entry", () => {
+        expandIfDocked();
+        setCreateOpen(true);
       });
       trayPromise.then((detach) => {
-        detachTrayNew = detach;
+        detachTrayCreate = detach;
+      });
+      // 托盘菜单「AI 助手」：主窗口已由 Rust 显示聚焦，前端打开助手面板
+      const trayAssistantPromise = listen("tray:open-assistant", () => {
+        expandIfDocked();
+        useAssistantStore.getState().openPanel();
+      });
+      trayAssistantPromise.then((detach) => {
+        detachTrayAssistant = detach;
       });
       // 单实例二次启动：Rust 已聚焦主窗口，前端仅作兜底再聚焦一次
       const secondPromise = listen("app:second-instance", () => {
@@ -344,7 +348,8 @@ export default function App() {
       detachMoved();
       detachResized();
       detachOpenNote();
-      detachTrayNew();
+      detachTrayCreate();
+      detachTrayAssistant();
       detachSecondInstance();
       detachCloseRequested();
       detachQuickCapture();
