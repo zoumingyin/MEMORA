@@ -51,11 +51,93 @@ fn read_entries_json(path: String) -> Result<String, String> {
     std::fs::read_to_string(&path).map_err(|error| format!("读取失败：{error}"))
 }
 
+/// 递归复制目录：WebView2 的 localStorage 是 LevelDB 目录，须整目录搬运
+#[cfg(windows)]
+fn copy_dir_all(source: &std::path::Path, dest: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dest)?;
+    for entry in std::fs::read_dir(source)? {
+        let entry = entry?;
+        let target = dest.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir_all(&entry.path(), &target)?;
+        } else {
+            std::fs::copy(entry.path(), &target)?;
+        }
+    }
+    Ok(())
+}
+
+/// 旧数据目录迁移：0.1.0 之前标识符为 `com.bianqian.app`（Tauri 警告以 `.app` 结尾会
+/// 与 macOS 应用包扩展名冲突），更换标识符后 Windows 的数据目录（`%APPDATA%\<标识符>`）
+/// 随之改变。新版首次启动时把旧目录的数据库、AI 配置与 WebView2 localStorage（窗口设置、
+/// AI 对话记录）复制到新目录，避免用户数据“丢失”。
+#[cfg(windows)]
+fn migrate_legacy_data_dir(identifier: &str) {
+    const LEGACY_IDENTIFIER: &str = "com.bianqian.app";
+    // 数据库（含 WAL 附属文件）与 AI 接入配置、免费模型缓存
+    const FILES: [&str; 5] = [
+        "bianqian.db",
+        "bianqian.db-wal",
+        "bianqian.db-shm",
+        "ai-config.json",
+        "ai-free-models.json",
+    ];
+
+    let Some(roaming) = std::env::var_os("APPDATA") else {
+        return;
+    };
+    let roaming = std::path::PathBuf::from(roaming);
+    let old_dir = roaming.join(LEGACY_IDENTIFIER);
+    let new_dir = roaming.join(identifier);
+
+    // 新目录已有数据库时不覆盖（已迁移，或新版本已正常用过）
+    if !old_dir.is_dir() || new_dir.join("bianqian.db").exists() {
+        return;
+    }
+    if let Err(error) = std::fs::create_dir_all(&new_dir) {
+        eprintln!("创建数据目录失败：{error}");
+        return;
+    }
+    for name in FILES {
+        let source = old_dir.join(name);
+        if source.is_file() {
+            if let Err(error) = std::fs::copy(&source, new_dir.join(name)) {
+                eprintln!("迁移 {name} 失败：{error}");
+            }
+        }
+    }
+
+    // WebView2 用户数据目录（Tauri 在 Windows 下设为 app_local_data_dir）
+    if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+        let local = std::path::PathBuf::from(local);
+        let new_root = local.join(identifier);
+        let old_storage = local
+            .join(LEGACY_IDENTIFIER)
+            .join("EBWebView")
+            .join("Default")
+            .join("Local Storage");
+        if old_storage.is_dir() && !new_root.join("EBWebView").exists() {
+            let storage = new_root
+                .join("EBWebView")
+                .join("Default")
+                .join("Local Storage");
+            if let Err(error) = copy_dir_all(&old_storage, &storage) {
+                eprintln!("迁移浏览器存储失败：{error}");
+            }
+        }
+    }
+}
+
 /// 应用入口：注册插件（SQL / 通知 / 自启动 / 单实例）、执行数据库迁移、
 /// 构建系统托盘菜单（显示/隐藏、新建便签、开机自启动开关、退出）、启动主窗口。
 /// 透明度由前端 CSS 背景 alpha 控制（背景半透明、文字不透明），无需 Rust 自定义命令。
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let context = tauri::generate_context!();
+    // 必须在 SQL 插件初始化（preload 打开数据库）之前完成旧数据目录迁移
+    #[cfg(windows)]
+    migrate_legacy_data_dir(&context.config().identifier);
+
     let migrations = vec![
         Migration {
             version: 1,
@@ -206,7 +288,7 @@ CREATE INDEX IF NOT EXISTS idx_entries_deleted ON entries(deleted_at);
             ai::ai_chat,
             ai::ai_cancel
         ])
-        .run(tauri::generate_context!())
+        .run(context)
         .expect("启动便签应用失败");
 }
 

@@ -146,16 +146,17 @@ pnpm build    # tsc -b 类型检查 + vite 生产构建，产物在 dist/
 
 - **导出数据**：全部条目导出为 JSON 文件（含版本号与导出时间）；桌面版经保存对话框写文件，浏览器预览直接下载。
 - **导入数据**：从导出的 JSON 合并导入，**按 id 去重**（已存在跳过不覆盖，不破坏现有数据），完成后提示新增/跳过条数。
-- **备份数据库**：完整复制 SQLite 文件（`%APPDATA%\com.bianqian.app\bianqian.db`）到用户选择的位置（Rust `backup_db`，std::fs 复制）。
+- **备份数据库**：完整复制 SQLite 文件（`%APPDATA%\com.bianqian.desktop\bianqian.db`）到用户选择的位置（Rust `backup_db`，std::fs 复制）。
 - **恢复数据库**：用备份文件覆盖当前数据库，提示重启后生效（Rust `restore_db`；SQLite 连接仍指向旧句柄，需重启读取新库）。备份/恢复仅桌面版可用，预览环境使用导出/导入。
 
 
 
 ### 数据存储
 
-- 桌面端本地 SQLite，数据库文件：`%APPDATA%\com.bianqian.app\bianqian.db`。
+- 桌面端本地 SQLite，数据库文件：`%APPDATA%\com.bianqian.desktop\bianqian.db`。
+- 标识符变更说明：旧版标识符为 `com.bianqian.app`（以 `.app` 结尾会与 macOS 应用包扩展名冲突），首次启动新版本时会把旧目录 `%APPDATA%\com.bianqian.app` 下的数据库、AI 配置以及 `%LOCALAPPDATA%\com.bianqian.app` 下的 WebView2 localStorage（窗口设置、AI 对话记录）自动复制到新目录（新目录已有数据库时不覆盖）。
 - 窗口设置（置顶、背景透明度、吸附开关）存 localStorage，键 `bianqian.window.v1`。
-- AI 对话记录与上下文开关存 localStorage，键 `bianqian.assistant.v1`；桌面端多模型接入配置（含各配置密钥与当前选中项）由 Rust 存于 `%APPDATA%\com.bianqian.app\ai-config.json`，旧版单配置会自动迁移并写回（迁移条目的 id 固定为 `legacy`，保证前端拿到的 id 在保存时仍能命中）；浏览器预览的接入配置存 localStorage，键 `bianqian.assistant.ai.v2`（旧版 `bianqian.assistant.ai.v1` 读取时自动迁移）。免费模型列表本身来自各网关的 `GET /models`（缓存 6 小时，失败重试间隔 10 分钟），桌面端缓存在 `%APPDATA%\com.bianqian.app\ai-free-models.json`，浏览器预览缓存在 localStorage 键 `bianqian.assistant.ai.free.v1`；免费条目只追加到内存列表，不写入接入配置文件。
+- AI 对话记录与上下文开关存 localStorage，键 `bianqian.assistant.v1`；桌面端多模型接入配置（含各配置密钥与当前选中项）由 Rust 存于 `%APPDATA%\com.bianqian.desktop\ai-config.json`，旧版单配置会自动迁移并写回（迁移条目的 id 固定为 `legacy`，保证前端拿到的 id 在保存时仍能命中）；浏览器预览的接入配置存 localStorage，键 `bianqian.assistant.ai.v2`（旧版 `bianqian.assistant.ai.v1` 读取时自动迁移）。免费模型列表本身来自各网关的 `GET /models`（缓存 6 小时，失败重试间隔 10 分钟），桌面端缓存在 `%APPDATA%\com.bianqian.desktop\ai-free-models.json`，浏览器预览缓存在 localStorage 键 `bianqian.assistant.ai.free.v1`；免费条目只追加到内存列表，不写入接入配置文件。
 - 浏览器预览兜底数据存 localStorage，键 `bianqian.entries.v1`。
 
 
@@ -311,7 +312,7 @@ bianqian/
 - **流式与取消**：`reqwest` 读取 SSE，逐帧解析 `choices[0].delta.content`，通过 `tauri::ipc::Channel` 推送 `delta / done / error` 事件；`reasoning_content`（思考过程）只统计不展示。前端按 50ms 合并增量渲染，避免逐 token 重渲染。「停止生成」调用 `ai_cancel`，后端在下一个数据块到达时丢弃并正常收尾。为缩短首字延迟，后端复用全局 `reqwest` 客户端（连接池 + TLS 会话复用 + `tcp_nodelay`），前端每次请求只带最近 12 条历史、单条 2000 字、合计 8000 字上限，并剥掉历史回答里的 `<action>` 操作块。
 - **可执行操作（新建便签）**：系统提示词约定模型在需要新建时输出 `<action>{...}</action>` 块（`kind` 为 `note / todo / reminder`，`todo` 可带 `items` 子任务文本数组，`reminder` 必须给出唯一的未来时间 `remindAt`），回答正文里不会显示这些 JSON；`src/utils/assistantActions.ts` 负责解析、剔除操作块并在流式输出中途截断半截标签，校验失败的块直接丢弃，每条回答最多采纳 3 个。卡片上的「创建」调用 `useEntryStore.addEntry` 写入 SQLite（待办子任务按 `items` 生成带 id 的清单项，提醒会生成一个 `once` 闹钟），模型本身始终没有写权限。
 - **配置优先级**：每条配置自身的接口地址 / 模型 / 采样参数优先；环境变量 `BIANQIAN_AI_API_KEY` 若存在，会覆盖所有配置的密钥（适合部署时统一注入）；`BIANQIAN_AI_BASE_URL` + `BIANQIAN_AI_MODEL` 同时存在时，额外生成一条只读的「环境变量」配置供切换；`BIANQIAN_AI_TEMPERATURE` / `BIANQIAN_AI_MAX_TOKENS` 覆盖采样参数。未填写时使用内置默认（temperature 0.7 / max_tokens 1200）。
-  - 本地配置文件：`%APPDATA%\com.bianqian.app\ai-config.json`（Unix 下写入后 `chmod 600`；Windows 依赖应用数据目录的用户 ACL）。
+  - 本地配置文件：`%APPDATA%\com.bianqian.desktop\ai-config.json`（Unix 下写入后 `chmod 600`；Windows 依赖应用数据目录的用户 ACL）。
 - **内置免费模型（运行时发现；OpenCode 需密钥）**：列表顺序固定为「环境变量 → 用户配置 → 内置免费模型」，自己的模型始终排在前面。代码里只登记网关（来源、接口地址、是否需密钥、说明与兜底模型），**模型名称与清单不硬编码**：每次读取状态时向后端确认目录是否新鲜，过期就并发请求各网关的 `GET {baseUrl}/models` 并解析 `data[]`。条目在读取时追加到内存，**不写入 `ai-config.json`**，`readOnly` 标记使其不能编辑 / 删除，`ResolvedConfig.keyless` 让免密钥网关跳过「必须有 API Key」校验。未手动选择过时不会被自动选中，避免在用户不知情的情况下把内容发给第三方。调用方式均为 `POST {baseUrl}/chat/completions`。需要密钥的来源（OpenCode Zen）按以下优先级取密钥：环境变量 `BIANQIAN_OPENCODE_API_KEY` → `ai-config.json` 中既有的 `freeKeys.opencode`（需手动编辑，设置页已不提供入口）→ **编译期内置密钥**。三者都没有时该来源不展示模型、状态为「不可用」；设置页只展示各来源的模型与状态。
 
   **编译期内置密钥（打包后免配置）**：把 OpenCode 密钥写入本机 `src-tauri/keys/opencode.key`（该目录已 gitignore，只有一行密钥，不要带引号），`src-tauri/build.rs` 在构建时读取并注入编译常量，最终编进 exe。换电脑只需拷贝 exe，**不依赖环境变量、`ai-config.json`、安装路径或首次运行引导**；文件不存在时构建照常通过，只是产物不含内置密钥（构建日志会给出提示）。代价：更换密钥必须重新构建；密钥仍在可执行文件内，可被 `strings`/反汇编提取，因此不要公开分发带内置密钥的产物。浏览器预览（`pnpm dev`）不包含内置密钥且无法设置密钥，因此 OpenCode 来源在网页模式下不可用。**离线 / 全新环境**：程序可正常启动，内置密钥的读取不依赖网络与路径；但模型列表需要联网拉取，离线时会回退到内置兜底模型名，真正对话会报网络错误——这是上游不可达，与密钥读取无关；联网后仍受账号额度限制（免费模型超限 429、无余额 402）。
@@ -323,7 +324,7 @@ bianqian/
   | LLM7.io | `https://api.llm7.io/v1` | `GET /models` 实时拉取 | 匿名约 60 次/分钟、250 次/小时；可选填 Key 提升额度 |
   | Pollinations | `https://text.pollinations.ai/openai` | `GET /models` 实时拉取 | 匿名层，无 Authorization 头 |
 
-  **错误处理与降级**：每个来源独立处理——成功时取接口返回的模型（只保留 `type == "chat"`，若返回 `cost.text.output.price > 0` 则视为付费并跳过，单源最多 40 条）；失败时若有本地缓存则沿用（标记「缓存」），否则回退到每个来源内置的一条兜底模型（标记「兜底」）；没有兜底且无缓存时该来源不展示（标记「不可用」）。成功结果缓存 6 小时，失败后 10 分钟再重试；设置页可点「重新获取」强制刷新。桌面端缓存文件为 `%APPDATA%\com.bianqian.app\ai-free-models.json`，浏览器预览缓存在 localStorage 键 `bianqian.assistant.ai.free.v1`。前端在列表中找不到某个免费模型时，仍按 `free:{source}:{modelId}` 还原请求目标，用户先前选中的模型不会因上游下线而变成「配置不存在」；若该来源没有可用密钥（如未内置且未设置环境变量），则不再还原。失败的对话请求会按 `rate_limited / unauthorized / endpoint_not_found / server_error` 等错误码提示。OpenCode Zen 走标准 OpenAI 兼容接口与个人 API Key，不涉及伪造客户端指纹或预置会话 id。
+  **错误处理与降级**：每个来源独立处理——成功时取接口返回的模型（只保留 `type == "chat"`，若返回 `cost.text.output.price > 0` 则视为付费并跳过，单源最多 40 条）；失败时若有本地缓存则沿用（标记「缓存」），否则回退到每个来源内置的一条兜底模型（标记「兜底」）；没有兜底且无缓存时该来源不展示（标记「不可用」）。成功结果缓存 6 小时，失败后 10 分钟再重试；设置页可点「重新获取」强制刷新。桌面端缓存文件为 `%APPDATA%\com.bianqian.desktop\ai-free-models.json`，浏览器预览缓存在 localStorage 键 `bianqian.assistant.ai.free.v1`。前端在列表中找不到某个免费模型时，仍按 `free:{source}:{modelId}` 还原请求目标，用户先前选中的模型不会因上游下线而变成「配置不存在」；若该来源没有可用密钥（如未内置且未设置环境变量），则不再还原。失败的对话请求会按 `rate_limited / unauthorized / endpoint_not_found / server_error` 等错误码提示。OpenCode Zen 走标准 OpenAI 兼容接口与个人 API Key，不涉及伪造客户端指纹或预置会话 id。
 - **密钥管理建议**：
   1. 个人使用：设置 → AI 助手 → 接入配置逐条填写，密钥只保存在本机；编辑某条配置时可「清除已保存密钥」。使用本机 Ollama / LM Studio 等无需鉴权的服务时可留空密钥（仅限 `localhost / 127.0.0.1 / ::1` 地址）。
   2. 部署 / CI：只注入环境变量，密钥不落盘；对应配置会标注「环境变量」且不可编辑 / 删除。
