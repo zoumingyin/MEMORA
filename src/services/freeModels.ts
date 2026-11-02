@@ -355,23 +355,13 @@ export function freeSourceInfos(): FreeSourceInfo[] {
 }
 
 /**
- * 按 id 找免费模型。列表里没有时仍按 id 还原请求目标——
- * 模型可能因上游下线而从最新列表中消失，但用户先前选中过，不应变成「配置不存在」。
+ * 按 id 找免费模型。只认当前目录里的模型：付费 / 需登录的条目会被
+ * 筛选规则从目录移除，若仍按 id 复活，选中后匿名请求会得到
+ * 401「You need to sign in to use this model」——与桌面端行为一致，
+ * 不在目录中的免费 id 一律视为配置不存在。
  */
 export function findFreeModel(id: string): FreeModel | undefined {
-  const cached = allFreeModels().find((model) => model.id === id)
-  if (cached) return cached
-  const parsed = parseFreeModelId(id)
-  if (!parsed) return undefined
-  // 需要密钥的来源在密钥被清除后不再按 id 还原，与桌面端一致
-  if (parsed.provider.requiresKey && !freeSourceKey(parsed.provider.source)) {
-    return undefined
-  }
-  return toFreeModel(parsed.provider, {
-    id: parsed.model,
-    name: null,
-    modality: 'text',
-  })
+  return allFreeModels().find((model) => model.id === id)
 }
 
 function isCatalogFresh(): boolean {

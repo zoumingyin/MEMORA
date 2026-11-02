@@ -306,11 +306,9 @@ function targetStatus(target: ChatTarget): AiProfileStatus {
 
 function browserStatus(store: BrowserStore): AiStatus {
   const active = activeTarget(store)
+  // 只展示当前目录里的模型：付费 / 需登录条目被筛选规则移除后，
+  // 旧选中项自动失效（回落到用户配置），不再保留在选择器中
   const profiles = allTargets(store).map(targetStatus)
-  // 选中的免费模型可能已从最新列表消失（上游下线），仍保留在选择器中
-  if (active && active.free && !profiles.some((item) => item.id === active.id)) {
-    profiles.push(targetStatus(active))
-  }
   return {
     configured: active ? isTargetComplete(active) : false,
     activeId: active?.id ?? null,

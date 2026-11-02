@@ -656,13 +656,12 @@ function AssistantPanelBody() {
               aria-label={contextEnabled ? "关闭便签上下文" : "启用便签上下文"}
               title={
                 contextEnabled
-                  ? "已启用：提问会附带便签摘要，点击关闭"
-                  : "已关闭：只回答通用问题，点击启用"
+                  ? "已启用：提问会附带便签摘要，点击关闭上下文"
+                  : "已关闭：只回答通用问题，点击启用上下文"
               }
               onClick={() => setContextEnabled(!contextEnabled)}
             >
               {contextEnabled ? <ShieldCheck size={13} /> : <ShieldOff size={13} />}
-              <span>上下文</span>
             </button>
 
             {activeProfile && (
