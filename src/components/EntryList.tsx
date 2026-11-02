@@ -1,17 +1,26 @@
-import { Collapse, Empty } from "antd";
+import { Collapse, Empty, message } from "antd";
 import {
   BellOutlined,
   CheckSquareOutlined,
   ClockCircleOutlined,
   FileTextOutlined,
 } from "@ant-design/icons";
-import { useState, type CSSProperties, type ReactNode } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+} from "react";
 import { useEntryStore } from "../store/useEntryStore";
+import { useUiStore } from "../store/useUiStore";
 import type { AlarmMode, Entry, EntryKind } from "../types/entry";
 import { useNow } from "../hooks/useNow";
 import { formatRelative, formatShort } from "../utils/format";
 import { paperTintHex } from "../utils/paper";
 import { markdownToHtml } from "../utils/markdown";
+import { EntryTags, EntryTools, TodoPreview } from "./EntryCardParts";
 
 const KIND_ICON: Record<EntryKind, ReactNode> = {
   note: <FileTextOutlined />,
@@ -33,6 +42,8 @@ const ALARM_MODE_LABEL: Record<AlarmMode, string> = {
 
 /** 卡片内最多预览的条目数（子任务 / 闹钟），超出的折叠为 +N */
 const PREVIEW_LIMIT = 3;
+/** 贴纸墙待办卡片内最多预览的子任务数（卡片高度固定，超出裁切） */
+const WALL_TODO_LIMIT = 4;
 
 /** 待办完成判定：有子任务且全部勾选 */
 function todoAllDone(entry: Entry): boolean {
@@ -184,18 +195,80 @@ function toPlainText(md: string): string {
     .trim();
 }
 
-interface EntryListProps {
-  onSelect: (id: string) => void;
+/** 列表模式的一行摘要：待办取未完成子任务，提醒取最近闹钟，其余取正文纯文本 */
+function listSummary(entry: Entry): string {
+  if (entry.kind === "todo") {
+    const pending = entry.items.find((item) => !item.done) ?? entry.items[0];
+    return pending ? pending.text : toPlainText(entry.content || "");
+  }
+  if (entry.kind === "reminder") {
+    const pending =
+      entry.alarms.find((alarm) => !alarm.notified) ?? entry.alarms[0];
+    if (pending) {
+      return `${formatShort(pending.remindAt)} · ${ALARM_MODE_LABEL[pending.mode]}`;
+    }
+  }
+  return toPlainText(entry.content || "");
 }
 
-/** 左侧主从列表：全部条目按行展示，点击选中后在右侧详情编辑；待办分类下已完成条目自动归入下方「已完成」分组 */
-export function EntryList({ onSelect }: EntryListProps) {
+/** 月份/日期（贴纸墙页脚，参考图样式：10/29） */
+function formatMonthDay(ms: number): string {
+  const d = new Date(ms);
+  return `${d.getMonth() + 1}/${d.getDate()}`;
+}
+
+/** 贴纸墙卡片尺寸与间距（与 index.css 的 --wall-card-w/h 保持一致） */
+const WALL_CARD_W = 264;
+const WALL_CARD_H = 228;
+const WALL_GAP = 20;
+/** 画布底部预留空间：留出继续向下摆放的余地 */
+const WALL_BOTTOM_ROOM = 200;
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max);
+}
+
+/** 贴纸装饰：置顶卡片固定显示红色图钉，其余按 id 哈希分配左 / 右胶带，重排后不跳变 */
+function wallDecoration(id: string, pinned: boolean): string {
+  if (pinned) return "wall-deco-pin";
+  let hash = 0;
+  for (const char of id) hash = (hash * 31 + char.charCodeAt(0)) | 0;
+  return ["wall-deco-tape-left", "wall-deco-tape-right"][
+    Math.abs(hash) % 2
+  ];
+}
+
+/** 自由拖拽时临时覆盖的坐标 */
+interface DragState {
+  id: string;
+  x: number;
+  y: number;
+}
+
+/** 三种展示模式：贴纸墙（宽屏固定）/ 网格 / 列表（窄屏可切换） */
+export type EntryListView = "wall" | "grid" | "list";
+
+interface EntryListProps {
+  onSelect: (id: string) => void;
+  /** 当前展示模式，由外层按视口宽度决定 */
+  mode: EntryListView;
+}
+
+/** 左侧主从列表：按贴纸墙 / 网格 / 列表展示，点击选中后在右侧详情编辑；已完成条目自动归入下方「已完成」分组 */
+export function EntryList({ onSelect, mode }: EntryListProps) {
   const filter = useEntryStore((state) => state.filter);
   const entries = useEntryStore((state) => state.entries);
   const search = useEntryStore((state) => state.search);
   const tagFilter = useEntryStore((state) => state.tagFilter);
   const timeRange = useEntryStore((state) => state.timeRange);
   const sortBy = useEntryStore((state) => state.sortBy);
+  const selectedId = useEntryStore((state) => state.selectedId);
+  const moveToTrash = useEntryStore((state) => state.moveToTrash);
+  const wallPositions = useUiStore((state) => state.wallPositions);
+  const setWallPosition = useUiStore((state) => state.setWallPosition);
+  const clearWallPosition = useUiStore((state) => state.clearWallPosition);
+  const pinnedIds = useUiStore((state) => state.pinnedIds);
+  const togglePinned = useUiStore((state) => state.togglePinned);
   const now = useNow();
 
   const filtered = filterEntries(entries, search, tagFilter, timeRange);
@@ -205,10 +278,153 @@ export function EntryList({ onSelect }: EntryListProps) {
   // 待办勾选完成、提醒标记已处理后自动归入下方「已完成」区
   const activeRows = list.filter((entry) => !entryDone(entry));
   const doneRows = list.filter((entry) => entryDone(entry));
+  // 置顶标记：贴纸墙红图钉即置顶；卡片模式把置顶项排在最前（稳定排序，其余保持原顺序）
+  const pinnedSet = new Set(pinnedIds);
+  const cardRows =
+    mode === "list"
+      ? activeRows
+      : [...activeRows].sort(
+          (a, b) =>
+            Number(pinnedSet.has(b.id)) - Number(pinnedSet.has(a.id))
+        );
   // 已完成区默认折叠：点「已完成项 (n)」标题展开查看已完成的卡片
   const [doneExpanded, setDoneExpanded] = useState(false);
 
-  const renderRow = (entry: Entry) => {
+  // 自由摆放：测量画布宽度以计算默认网格列数与拖拽边界
+  const boardRef = useRef<HTMLDivElement>(null);
+  const [boardWidth, setBoardWidth] = useState(0);
+  const [dragPos, setDragPos] = useState<DragState | null>(null);
+  // 拖拽结束时浏览器仍会补发 click，用标记吞掉这一次，避免误打开详情
+  const suppressClickRef = useRef(false);
+  const hasBoard = mode === "wall" && cardRows.length > 0;
+
+  useEffect(() => {
+    if (!hasBoard) return;
+    const el = boardRef.current;
+    if (!el) return;
+    const measure = (): void => setBoardWidth(el.clientWidth);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [hasBoard]);
+
+  // 卡片坐标：有保存的自由坐标优先，否则按默认网格铺开；窗口变窄时把超出画布的卡片收回
+  const wallWidth = boardWidth || 900;
+  const wallCols = Math.max(
+    1,
+    Math.floor((wallWidth + WALL_GAP) / (WALL_CARD_W + WALL_GAP))
+  );
+  const wallLayout = new Map<string, { x: number; y: number }>();
+  cardRows.forEach((entry, index) => {
+    const fallbackX = (index % wallCols) * (WALL_CARD_W + WALL_GAP);
+    const fallbackY = Math.floor(index / wallCols) * (WALL_CARD_H + WALL_GAP);
+    const saved = wallPositions[entry.id];
+    wallLayout.set(
+      entry.id,
+      saved
+        ? {
+            x: clamp(saved.x, 0, Math.max(0, wallWidth - WALL_CARD_W)),
+            y: Math.max(saved.y, 0),
+          }
+        : { x: fallbackX, y: fallbackY }
+    );
+  });
+
+  let wallBottom = 0;
+  wallLayout.forEach((pos) => {
+    wallBottom = Math.max(wallBottom, pos.y + WALL_CARD_H);
+  });
+  const wallBoardHeight = Math.max(wallBottom + WALL_BOTTOM_ROOM, 320);
+
+  /** 按住卡片自由拖拽：超过 3px 才视为拖动，松手后保存坐标 */
+  const startWallDrag = (
+    event: ReactPointerEvent<HTMLDivElement>,
+    entry: Entry
+  ): void => {
+    if (event.button !== 0) return;
+    if ((event.target as HTMLElement).closest(".wall-note-tool")) return;
+    const board = boardRef.current;
+    if (!board) return;
+    suppressClickRef.current = false;
+    const boardRect = board.getBoundingClientRect();
+    const cardRect = event.currentTarget.getBoundingClientRect();
+    const origin = wallLayout.get(entry.id) ?? {
+      x: cardRect.left - boardRect.left,
+      y: cardRect.top - boardRect.top,
+    };
+    const startX = event.clientX;
+    const startY = event.clientY;
+    let moved = false;
+    let next = origin;
+    const onMove = (moveEvent: PointerEvent): void => {
+      const dx = moveEvent.clientX - startX;
+      const dy = moveEvent.clientY - startY;
+      if (!moved && Math.hypot(dx, dy) > 3) moved = true;
+      if (!moved) return;
+      next = {
+        x: clamp(origin.x + dx, 0, Math.max(0, board.clientWidth - WALL_CARD_W)),
+        y: clamp(origin.y + dy, 0, Math.max(0, board.clientHeight - WALL_CARD_H)),
+      };
+      setDragPos({ id: entry.id, ...next });
+    };
+    const finish = (): void => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", finish);
+      window.removeEventListener("pointercancel", finish);
+      setDragPos(null);
+      if (moved) {
+        suppressClickRef.current = true;
+        setWallPosition(entry.id, next);
+      }
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", finish);
+    window.addEventListener("pointercancel", finish);
+  };
+
+  const openEntry = (entry: Entry): void => {
+    if (suppressClickRef.current) {
+      suppressClickRef.current = false;
+      return;
+    }
+    onSelect(entry.id);
+  };
+
+  const copyEntry = (entry: Entry): void => {
+    const text = entry.title
+      ? `${entry.title}\n${toPlainText(entry.content || "")}`
+      : toPlainText(entry.content || "");
+    void navigator.clipboard
+      ?.writeText(text)
+      .then(() => message.success("已复制"))
+      .catch(() => message.error("复制失败"));
+  };
+
+  /** 置顶 / 取消置顶：新置顶的卡片清掉自由坐标，回到墙面前排默认铺位 */
+  const toggleWallPin = (entry: Entry): void => {
+    if (!pinnedSet.has(entry.id)) clearWallPosition(entry.id);
+    togglePinned(entry.id);
+  };
+
+  const removeEntry = (entry: Entry): void => {
+    void moveToTrash(entry.id).then(() => message.success("已移入废纸篓"));
+  };
+
+  /** 卡片工具条渲染入口：贴纸墙与网格卡片共用同一组件 */
+  const renderEntryTools = (entry: Entry) => (
+    <EntryTools
+      entry={entry}
+      pinned={pinnedSet.has(entry.id)}
+      onEdit={(target) => onSelect(target.id)}
+      onTogglePin={toggleWallPin}
+      onCopy={copyEntry}
+      onRemove={removeEntry}
+    />
+  );
+
+  /** 网格模式：固定高度卡片（窄屏两列） */
+  const renderCard = (entry: Entry) => {
     const icon = KIND_ICON[entry.kind];
     const meta = rowMeta(entry, now);
     const doneClass = entryDone(entry) ? "done" : "";
@@ -220,10 +436,11 @@ export function EntryList({ onSelect }: EntryListProps) {
     // 纸张外观：底色淡染（--card-tint）+ 纹理（data-paper），纹理规则见 index.css 的 note-row[data-paper]
     const tintHex = paperTintHex(entry.color);
     const paperActive = (entry.paper ?? "plain") !== "plain";
+    const previewLimit = PREVIEW_LIMIT;
     return (
-      <button
+      <div
         key={entry.id}
-        type="button"
+        data-entry-id={entry.id}
         className={`note-row kind-${entry.kind} note-card ${meta.overdue ? "overdue" : ""} ${doneClass}`}
         data-paper={paperActive ? entry.paper : undefined}
         style={
@@ -231,10 +448,13 @@ export function EntryList({ onSelect }: EntryListProps) {
         }
         onClick={() => onSelect(entry.id)}
       >
-        <span className="row-icon" aria-hidden="true">
-          {icon}
-        </span>
-        <span className="row-title ">{entry.title || "无标题"}</span>
+        <div className="flex w-full items-center justify-between gap-1">
+          <span className="row-icon" aria-hidden="true">
+            {icon}
+          </span>
+          {renderEntryTools(entry)}
+        </div>
+        <span className="row-title">{entry.title || "无标题"}</span>
         {thumb && (
           <span className="row-thumb flex-1 min-h-0">
             <img
@@ -256,31 +476,10 @@ export function EntryList({ onSelect }: EntryListProps) {
             />
           )
         ) : entry.kind === "todo" && entry.items.length > 0 ? (
-          <span className="flex w-full min-h-0 flex-col gap-1 overflow-hidden">
-            {entry.items.slice(0, PREVIEW_LIMIT).map((item) => (
-              <span
-                key={item.id}
-                className="flex items-center gap-1.5 text-[11.5px] text-[var(--text-muted)]"
-              >
-                <span
-                  className={`h-[9px] w-[9px] shrink-0 rounded-[3px] ${item.done ? "bg-[var(--todo)]" : "border border-solid border-[var(--control-border)]"}`}
-                />
-                <span
-                  className={`min-w-0 truncate ${item.done ? "opacity-60 line-through" : ""}`}
-                >
-                  {item.text}
-                </span>
-              </span>
-            ))}
-            {entry.items.length > PREVIEW_LIMIT && (
-              <span className="text-[10.5px] text-[var(--text-muted)] opacity-70">
-                +{entry.items.length - PREVIEW_LIMIT} 项
-              </span>
-            )}
-          </span>
+          <TodoPreview items={entry.items} limit={previewLimit} />
         ) : entry.kind === "reminder" && entry.alarms.length > 0 ? (
           <span className="flex w-full min-h-0 flex-col gap-1 overflow-hidden">
-            {entry.alarms.slice(0, PREVIEW_LIMIT).map((alarm) => (
+            {entry.alarms.slice(0, previewLimit).map((alarm) => (
               <span
                 key={alarm.id}
                 className={`flex items-center gap-1.5 text-[11.5px] text-[var(--text-muted)] ${alarm.notified ? "opacity-55" : ""}`}
@@ -294,28 +493,250 @@ export function EntryList({ onSelect }: EntryListProps) {
                 </span>
               </span>
             ))}
-            {entry.alarms.length > PREVIEW_LIMIT && (
+            {entry.alarms.length > previewLimit && (
               <span className="text-[10.5px] text-[var(--text-muted)] opacity-70">
-                +{entry.alarms.length - PREVIEW_LIMIT} 个
+                +{entry.alarms.length - previewLimit} 个
               </span>
             )}
           </span>
         ) : (
           excerpt && (
-            <span className={`row-desc ${thumb ? "line-clamp-2" : "line-clamp-5"}`}>
+            <span
+              className={`row-desc ${thumb ? "line-clamp-2" : "line-clamp-5"}`}
+            >
               {excerpt}
             </span>
           )
         )}
         <span className="mt-auto w-full flex flex-col gap-1.5">
+          {entry.tags.length > 0 && <EntryTags tags={entry.tags} />}
           <span className="card-divider" />
           <span className={`row-meta ${meta.overdue ? "overdue" : ""}`}>
             {meta.text}
           </span>
         </span>
+      </div>
+    );
+  };
+
+  /** 贴纸墙模式（宽屏）：统一尺寸纸张卡片 + 胶带/图钉 + 自由拖拽；点击打开右侧详情抽屉 */
+  const renderWallCard = (entry: Entry, positioned: boolean) => {
+    const isDone = entryDone(entry);
+    const meta = rowMeta(entry, now);
+    const isNote = entry.kind === "note";
+    const noteHtml = isNote ? markdownToHtml(entry.content || "") : "";
+    const tintHex = paperTintHex(entry.color);
+    const paperActive = (entry.paper ?? "plain") !== "plain";
+    const todoTotal = entry.kind === "todo" ? entry.items.length : 0;
+    const todoDoneCount =
+      entry.kind === "todo"
+        ? entry.items.filter((item) => item.done).length
+        : 0;
+    const todoPct = todoTotal
+      ? Math.round((todoDoneCount / todoTotal) * 100)
+      : 0;
+    const reminder = entry.kind === "reminder" ? reminderStatus(entry) : null;
+    const nextAlarm =
+      entry.kind === "reminder"
+        ? entry.alarms.find((alarm) => !alarm.notified) ?? entry.alarms[0]
+        : undefined;
+
+    const isDragging = dragPos?.id === entry.id;
+    const pos = positioned ? (isDragging ? dragPos : wallLayout.get(entry.id)) : undefined;
+    const isPinned = pinnedSet.has(entry.id);
+
+    return (
+      <div
+        key={entry.id}
+        data-entry-id={entry.id}
+        className={`note-row wall-note ${positioned ? "" : "wall-note-flow"} ${wallDecoration(entry.id, isPinned)} kind-${entry.kind} ${isDone ? "is-done" : ""} ${meta.overdue ? "overdue" : ""} ${selectedId === entry.id ? "is-selected" : ""} ${isDragging ? "is-dragging" : ""}`}
+        data-paper={paperActive ? entry.paper : undefined}
+        style={
+          {
+            ...(tintHex ? { "--card-tint": tintHex } : null),
+            ...(pos ? { left: pos.x, top: pos.y } : null),
+          } as CSSProperties
+        }
+        onPointerDown={
+          positioned && !isDone
+            ? (event) => startWallDrag(event, entry)
+            : undefined
+        }
+        onClick={() => openEntry(entry)}
+      >
+        <div className="wall-note-head">
+          <span className="wall-note-kind" aria-hidden="true">
+            {KIND_ICON[entry.kind]}
+          </span>
+          <span className="wall-note-title">{entry.title || "便签"}</span>
+          {renderEntryTools(entry)}
+        </div>
+
+        <div className="wall-note-body">
+          {isNote ? (
+            noteHtml ? (
+              <div
+                className="note-md wall-note-md"
+                dangerouslySetInnerHTML={{ __html: noteHtml }}
+              />
+            ) : (
+              <span className="wall-note-empty">（空白便签）</span>
+            )
+          ) : entry.kind === "todo" ? (
+            <div className="flex flex-col gap-2">
+              <div className="wall-progress">
+                <span className="wall-progress-track">
+                  <span
+                    className="wall-progress-fill"
+                    style={{ width: `${todoPct}%` }}
+                  />
+                </span>
+                <span className="wall-progress-count">
+                  {todoDoneCount}/{todoTotal}
+                </span>
+              </div>
+              {todoTotal === 0 ? (
+                <span className="wall-note-empty">暂无子任务</span>
+              ) : (
+                <TodoPreview items={entry.items} limit={WALL_TODO_LIMIT} />
+              )}
+            </div>
+          ) : (
+            <div className="flex flex-col gap-1.5">
+              <span
+                className={`wall-reminder-main ${meta.overdue ? "overdue" : ""}`}
+              >
+                <BellOutlined />
+                {reminder?.allNotified
+                  ? "全部已提醒"
+                  : meta.overdue
+                    ? "已到期"
+                    : formatRelative(reminder?.at ?? now)}
+              </span>
+              <span className="wall-reminder-sub">
+                {nextAlarm
+                  ? `${formatShort(nextAlarm.remindAt)} · ${ALARM_MODE_LABEL[nextAlarm.mode]}`
+                  : "暂无闹钟"}
+                {entry.alarms.length > 0 && `　共 ${entry.alarms.length} 个`}
+              </span>
+            </div>
+          )}
+        </div>
+
+        <div className="wall-note-foot">
+          <span className="wall-note-tags">
+            <EntryTags tags={entry.tags} />
+          </span>
+          <span className="wall-note-date">{formatMonthDay(entry.updatedAt)}</span>
+        </div>
+      </div>
+    );
+  };
+
+  /** 列表模式：单行紧凑条目（标题 + 摘要 + 时间） */
+  const renderListRow = (entry: Entry) => {
+    const icon = KIND_ICON[entry.kind];
+    const meta = rowMeta(entry, now);
+    const doneClass = entryDone(entry) ? "done" : "";
+    const summary = listSummary(entry);
+    const tintHex = paperTintHex(entry.color);
+    return (
+      <button
+        key={entry.id}
+        type="button"
+        className={`note-row note-list-row kind-${entry.kind} flex w-full items-center gap-2.5 rounded-xl border border-solid border-[var(--border)] bg-[var(--card-bg)] p-[9px_12px] text-left text-[var(--text)] transition hover:border-[var(--card-border-hover)] hover:shadow-[var(--card-hover-shadow)] ${meta.overdue ? "overdue" : ""} ${doneClass}`}
+        style={
+          tintHex ? ({ "--card-tint": tintHex } as CSSProperties) : undefined
+        }
+        onClick={() => onSelect(entry.id)}
+      >
+        <span
+          className={`row-icon row-list-icon flex h-8 w-8 shrink-0 items-center justify-center rounded-[9px] text-[13px] ${doneClass ? "opacity-60" : ""}`}
+          aria-hidden="true"
+          style={{
+            color: "var(--kind-accent)",
+            background:
+              "color-mix(in srgb, var(--kind-accent) 12%, transparent)",
+          }}
+        >
+          {icon}
+        </span>
+        <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+          <span className="row-title truncate text-[12.5px] font-medium">
+            {entry.title || "无标题"}
+          </span>
+          {summary && (
+            <span className="truncate text-[11.5px] text-[var(--text-muted)]">
+              {summary}
+            </span>
+          )}
+        </span>
+        <span className={`row-meta shrink-0 max-w-[45%] text-right ${meta.overdue ? "overdue" : ""}`}>
+          {meta.text}
+        </span>
       </button>
     );
   };
+
+  const renderDoneChildren = () => {
+    if (mode === "list") {
+      return (
+        <div className="flex flex-col gap-2 pt-1">
+          {doneRows.map(renderListRow)}
+        </div>
+      );
+    }
+    if (mode === "wall") {
+      return (
+        <div className="wall-done-grid pt-1">
+          {doneRows.map((entry) => renderWallCard(entry, false))}
+        </div>
+      );
+    }
+    return (
+      <div className="grid grid-cols-2 gap-3 pt-1">
+        {doneRows.map(renderCard)}
+      </div>
+    );
+  };
+
+  const renderDoneCollapse = () => (
+    <Collapse
+      ghost
+      key="done-collapse"
+      activeKey={doneExpanded ? ["done"] : []}
+      onChange={(keys) =>
+        setDoneExpanded(
+          Array.isArray(keys) ? keys.includes("done") : keys === "done"
+        )
+      }
+      items={[
+        {
+          key: "done",
+          label: (
+            <span className="text-[12px] font-medium tracking-[0.6px]">
+              已完成项 ({doneRows.length})
+            </span>
+          ),
+          children: renderDoneChildren(),
+        },
+      ]}
+      className={
+        mode === "wall"
+          ? "done-collapse wall-done-collapse"
+          : "done-collapse col-span-full break-inside-avoid"
+      }
+      styles={{
+        header: {
+          color: "var(--text)",
+          background: "rgb(var(--field-rgb))",
+          borderRadius: "8px",
+          padding: "12px 10px",
+        },
+        body: { padding: "0" },
+      }}
+    />
+  );
 
   if (list.length === 0) {
     return (
@@ -329,49 +750,42 @@ export function EntryList({ onSelect }: EntryListProps) {
     );
   }
 
+  if (mode === "wall") {
+    return (
+      <div
+        key={mode}
+        className="entry-list entry-view-enter wall-canvas"
+        data-tauri-drag-region="false"
+      >
+        {cardRows.length > 0 && (
+          <div
+            ref={boardRef}
+            className="wall-board"
+            style={{ height: wallBoardHeight }}
+          >
+            {cardRows.map((entry) => renderWallCard(entry, true))}
+          </div>
+        )}
+        {doneRows.length > 0 && renderDoneCollapse()}
+      </div>
+    );
+  }
+
+  const containerClass =
+    mode === "list"
+      ? "entry-view flex flex-col gap-2 p-[6px_10px_12px] flex-1 min-h-0 overflow-y-auto"
+      : "entry-view grid grid-cols-2 gap-3 p-[6px_10px_12px] flex-1 min-h-0 overflow-y-auto content-start";
+
   return (
     <div
-      className="entry-list grid grid-cols-1 gap-3 p-[6px_10px_12px] flex-1 min-h-0 overflow-y-auto content-start"
+      key={mode}
+      className={`entry-list entry-view-enter ${containerClass}`}
       data-tauri-drag-region="false"
     >
-      {activeRows.map(renderRow)}
-      {doneRows.length > 0 && (
-        <Collapse
-          ghost
-          key="done-collapse"
-          activeKey={doneExpanded ? ["done"] : []}
-          onChange={(keys) =>
-            setDoneExpanded(
-              Array.isArray(keys) ? keys.includes("done") : keys === "done"
-            )
-          }
-          items={[
-            {
-              key: "done",
-              label: (
-                <span className="text-[12px] font-medium tracking-[0.6px]">
-                  已完成项 ({doneRows.length})
-                </span>
-              ),
-              children: (
-                <div className="grid grid-cols-2 gap-3 pt-[4px]">
-                  {doneRows.map(renderRow)}
-                </div>
-              ),
-            },
-          ]}
-          className="col-span-full done-collapse"
-          styles={{
-            header: {
-              color: "var(--text)",
-              background: "rgb(var(--field-rgb))",
-              borderRadius: "8px",
-              padding: "12px 10px",
-            },
-            body: { padding: "0" },
-          }}
-        />
-      )}
+      {mode === "list"
+        ? activeRows.map(renderListRow)
+        : cardRows.map(renderCard)}
+      {doneRows.length > 0 && renderDoneCollapse()}
     </div>
   );
 }

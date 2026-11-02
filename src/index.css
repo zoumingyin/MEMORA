@@ -421,6 +421,7 @@ textarea {
 
 /* 双栏主从布局：左侧列表 + 右侧详情 */
 .app-body {
+  position: relative;
   display: flex;
   flex: 1;
   min-height: 0;
@@ -1020,29 +1021,692 @@ textarea {
 /* 列表卡片样式已迁移至 UnoCSS（note-card shortcut + 容器内联工具类），
    仅保留卡片纸张外观（颜色淡染 + 纹理）与按钮内部子元素样式、已完成态修饰。 */
 
+/* 网格卡片（div 根节点）：整卡可点击进入详情，右上工具条与贴纸墙卡片一致 */
+.note-card {
+  cursor: pointer;
+}
+
+.note-card .wall-note-tools {
+  opacity: 0.7;
+}
+
+.note-card:hover .wall-note-tools,
+.note-card:focus-within .wall-note-tools {
+  opacity: 1;
+}
+
 /* 列表卡片纸张底色：条目设置了颜色时，以 --card-tint（详情同款色板 hex）叠一层淡染；
    用 background-image 叠加而非改 background-color，避免影响 note-card 的底色逻辑；
    --card-tint 未设置（plain）时 transparent 无效果 */
 :root {
   --card-tint-alpha: 40%;
+  /* 贴纸墙画布点阵、卡片统一尺寸与投影 */
+  --wall-dot: rgba(16, 24, 40, 0.085);
+  --wall-card-w: 264px;
+  --wall-card-h: 228px;
+  --wall-card-shadow:
+    0 2px 6px rgba(16, 24, 40, 0.07),
+    0 14px 30px rgba(16, 24, 40, 0.07);
 }
 
 :root.dark-glass {
   --card-tint-alpha: 20%;
   /* 暗色投影加深才可感知（深底上淡灰影不可见） */
   --card-hover-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+  --wall-dot: rgba(236, 230, 220, 0.13);
+  --wall-card-shadow:
+    0 3px 8px rgba(0, 0, 0, 0.3),
+    0 16px 34px rgba(0, 0, 0, 0.28);
 }
 
-button.note-row.note-card {
+div.note-row.note-card,
+div.note-row.wall-note {
   background-image: linear-gradient(
     color-mix(in srgb, var(--card-tint, transparent) var(--card-tint-alpha), transparent),
     color-mix(in srgb, var(--card-tint, transparent) var(--card-tint-alpha), transparent)
   );
 }
 
+/* 列表模式条目：同样是卡片底色淡染，但为单行紧凑布局，不叠加纸张纹理 */
+button.note-list-row {
+  background-image: linear-gradient(
+    color-mix(in srgb, var(--card-tint, transparent) var(--card-tint-alpha), transparent),
+    color-mix(in srgb, var(--card-tint, transparent) var(--card-tint-alpha), transparent)
+  );
+}
+
+/* ===== 贴纸墙（宽屏固定）：全宽点阵画布 + 大号纸条卡片 + 胶带/图钉 ===== */
+.wall-pane {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  background-color: rgba(var(--panel-soft-rgb), var(--chrome-alpha));
+  background-image: radial-gradient(var(--wall-dot) 1.1px, transparent 1.3px);
+  background-size: 22px 22px;
+}
+
+/* 废纸篓抽屉：右侧玻璃面板，内容区交给 TrashPane 自行滚动 */
+.trash-drawer .ant-drawer-mask {
+  background: rgba(16, 24, 40, 0.18);
+}
+
+.trash-drawer .ant-drawer-section {
+  background: rgba(var(--panel-soft-rgb), calc(var(--chrome-alpha) + 0.25));
+  -webkit-backdrop-filter: blur(20px);
+  backdrop-filter: blur(20px);
+}
+
+.trash-drawer .ant-drawer-header {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.trash-drawer .ant-drawer-title {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.trash-drawer .ant-drawer-body {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 12px;
+  overflow: hidden;
+}
+
+.wall-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 12px 22px 2px;
+}
+
+/* 顶部提示胶囊：说明贴纸墙可拖拽 */
+.wall-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: rgba(var(--field-rgb), 0.66);
+  color: var(--text-muted);
+  font-size: 11.5px;
+  letter-spacing: 0.2px;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.wall-hint-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--kind-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--kind-accent) 18%, transparent);
+}
+
+.wall-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.wall-tool-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 28px;
+  padding: 0 11px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: rgba(var(--field-rgb), 0.55);
+  color: var(--text-muted);
+  font-size: 12px;
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease,
+    border-color 0.15s ease;
+}
+
+.wall-tool-btn:hover {
+  border-color: var(--control-border);
+  background: var(--hover-fill);
+  color: var(--text);
+}
+
+/* 贴新便签：参考图的深色主按钮 */
+.wall-new-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 14px;
+  border: none;
+  border-radius: 999px;
+  background: #1f2430;
+  color: #f8f6f1;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 4px 12px rgba(16, 24, 40, 0.22);
+  transition:
+    transform 0.12s ease,
+    box-shadow 0.15s ease;
+}
+
+.wall-new-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px rgba(16, 24, 40, 0.28);
+}
+
+.wall-new-btn:active {
+  transform: translateY(0);
+}
+
+:root.dark-glass .wall-new-btn {
+  background: #f4f0e8;
+  color: #1f2430;
+}
+
+.wall-filters {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 22px 4px;
+}
+
+.wall-filters .filter-chips {
+  flex-wrap: wrap;
+  padding: 0;
+}
+
+.wall-canvas {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px 22px 26px;
+}
+
+/* 自由摆放画布：卡片绝对定位，坐标由拖拽 / 默认网格决定 */
+.wall-board {
+  position: relative;
+  width: 100%;
+}
+
+@media (min-width: 1100px) {
+  .wall-canvas {
+    padding-right: 28px;
+    padding-left: 28px;
+  }
+
+  .wall-toolbar,
+  .wall-filters {
+    padding-right: 28px;
+    padding-left: 28px;
+  }
+}
+
+/* 单张纸条：统一固定尺寸 + 轻微旋转，hover 回正上浮 */
+.wall-note {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  width: var(--wall-card-w);
+  height: var(--wall-card-h);
+  padding: 18px 18px 11px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background-color: var(--card-bg);
+  box-shadow: var(--wall-card-shadow);
+  color: var(--text);
+  text-align: left;
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+  transform: rotate(var(--sticker-tilt, 0deg));
+  transition:
+    transform 0.18s ease,
+    box-shadow 0.18s ease,
+    border-color 0.15s ease;
+}
+
+/* 已完成分组内的卡片回到文档流，尺寸保持一致 */
+.wall-note-flow {
+  position: relative;
+  top: auto;
+  left: auto;
+  cursor: pointer;
+}
+
+.wall-done-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, var(--wall-card-w));
+  gap: 20px;
+  align-items: start;
+}
+
+.wall-note:nth-child(4n + 1) {
+  --sticker-tilt: -0.8deg;
+}
+
+.wall-note:nth-child(4n + 2) {
+  --sticker-tilt: 0.6deg;
+}
+
+.wall-note:nth-child(4n + 3) {
+  --sticker-tilt: -0.35deg;
+}
+
+.wall-note:nth-child(4n) {
+  --sticker-tilt: 0.9deg;
+}
+
+.wall-note:hover,
+.wall-note:focus-visible {
+  outline: none;
+  z-index: 2;
+  transform: translateY(-2px) rotate(0deg);
+  box-shadow: 0 10px 28px rgba(16, 24, 40, 0.17);
+}
+
+:root.dark-glass .wall-note:hover,
+:root.dark-glass .wall-note:focus-visible {
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+}
+
+.wall-note.is-selected {
+  z-index: 1;
+  border-color: color-mix(in srgb, var(--kind-accent) 55%, var(--border));
+  box-shadow:
+    0 0 0 2px color-mix(in srgb, var(--kind-accent) 22%, transparent),
+    var(--wall-card-shadow);
+}
+
+/* 自由拖拽中：跟手移动（关闭过渡）、浮到最上层 */
+.wall-note.is-dragging {
+  z-index: 10;
+  cursor: grabbing;
+  opacity: 0.92;
+  transform: rotate(0deg) scale(1.02);
+  box-shadow: 0 18px 40px rgba(16, 24, 40, 0.3);
+  transition: none;
+}
+
+:root.dark-glass .wall-note.is-dragging {
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.6);
+}
+
+.wall-note.is-done {
+  opacity: 0.78;
+}
+
+.wall-note.is-done .wall-note-title {
+  color: var(--text-muted);
+  text-decoration: line-through;
+}
+
+/* 胶带 / 图钉：按 id 哈希稳定分配，重排后不跳变 */
+.wall-note::before {
+  content: "";
+  position: absolute;
+  pointer-events: none;
+}
+
+.wall-note.wall-deco-tape-left::before,
+.wall-note.wall-deco-tape-right::before {
+  top: -10px;
+  left: 50%;
+  width: 78px;
+  height: 20px;
+  border-radius: 2px;
+  background: rgba(255, 252, 242, 0.55);
+  box-shadow: 0 1px 3px rgba(16, 24, 40, 0.12);
+  transform: translateX(-50%) rotate(-2.4deg);
+}
+
+:root.dark-glass .wall-note.wall-deco-tape-left::before,
+:root.dark-glass .wall-note.wall-deco-tape-right::before {
+  background: rgba(255, 255, 255, 0.22);
+}
+
+.wall-note.wall-deco-tape-left::before {
+  left: 24%;
+  transform: translateX(-50%) rotate(-3.2deg);
+}
+
+.wall-note.wall-deco-tape-right::before {
+  left: 76%;
+  transform: translateX(-50%) rotate(2.8deg);
+}
+
+.wall-note.wall-deco-pin::before {
+  top: -6px;
+  left: 50%;
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  background: radial-gradient(circle at 34% 30%, #f87171, #dc2626 58%, #991b1b);
+  box-shadow: 0 2px 4px rgba(120, 20, 20, 0.35);
+  transform: translateX(-50%);
+}
+
+.wall-note-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.wall-note-kind {
+  flex: none;
+  display: inline-flex;
+  color: var(--kind-accent);
+  font-size: 13px;
+  opacity: 0.9;
+}
+
+.wall-note-title {
+  flex: 1;
+  min-width: 0;
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.35;
+  word-break: break-word;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.wall-note-tools {
+  flex: none;
+  display: inline-flex;
+  gap: 1px;
+  opacity: 0.55;
+  transition: opacity 0.15s ease;
+}
+
+.wall-note:hover .wall-note-tools,
+.wall-note:focus-within .wall-note-tools {
+  opacity: 1;
+}
+
+.wall-note-tool {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11.5px;
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease;
+}
+
+.wall-note-tool:hover {
+  background: var(--hover-fill);
+  color: var(--text);
+}
+
+/* 置顶按钮激活态：红色图钉，工具条保持可见，与卡片红点装饰呼应 */
+.wall-note-tool.wall-note-pin.is-pinned {
+  color: #dc2626;
+}
+
+.wall-note-tool.wall-note-pin.is-pinned:hover {
+  background: color-mix(in srgb, #dc2626 14%, transparent);
+  color: #dc2626;
+}
+
+.wall-note-tool.wall-note-delete:hover {
+  background: color-mix(in srgb, #dc2626 12%, transparent);
+  color: #dc2626;
+}
+
+.wall-note-body {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  color: var(--text-muted);
+}
+
+/* 固定卡片高度：正文超出时裁切，保持所有卡片尺寸一致 */
+.wall-note-md {
+  max-height: 100%;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.wall-note-empty {
+  display: inline-block;
+  color: var(--text-muted);
+  font-size: 12.5px;
+  opacity: 0.6;
+}
+
+/* 待办进度条：参考图的细长轨道 + 完成数 */
+.wall-progress {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.wall-progress-track {
+  flex: 1;
+  height: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--hover-fill);
+}
+
+.wall-progress-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--todo);
+  transition: width 0.25s ease;
+}
+
+.wall-progress-count {
+  flex: none;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 待办子任务预览：贴纸墙与网格卡片共用，超出部分裁切 */
+.todo-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.todo-preview-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.todo-preview-check {
+  position: relative;
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border: 1px solid var(--control-border);
+  border-radius: 3px;
+}
+
+.todo-preview-item.is-done .todo-preview-check {
+  border-color: var(--todo);
+  background: var(--todo);
+}
+
+.todo-preview-item.is-done .todo-preview-check::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 2.5px;
+  width: 3px;
+  height: 6px;
+  border: solid #fff;
+  border-width: 0 1.5px 1.5px 0;
+  transform: rotate(45deg);
+}
+
+.todo-preview-text {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.todo-preview-item.is-done .todo-preview-text {
+  color: var(--text-muted);
+  text-decoration: line-through;
+  opacity: 0.7;
+}
+
+.todo-preview-more {
+  color: var(--text-muted);
+  font-size: 11px;
+  opacity: 0.7;
+}
+
+.wall-reminder-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.wall-reminder-main.overdue {
+  color: var(--danger);
+}
+
+.wall-reminder-sub {
+  display: block;
+  color: var(--text-muted);
+  font-size: 11.5px;
+}
+
+.wall-note-foot {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.wall-note-tags {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.wall-note-date {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.8;
+}
+
+/* 贴纸墙已完成分组：位于瀑布流之外整行展开 */
+.wall-done-collapse {
+  margin: 4px 0 18px;
+}
+
+/* 贴纸墙卡片详情弹窗：卡片点击后在居中弹窗内查看 / 编辑 */
+.wall-detail-modal .ant-modal-container {
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: rgba(var(--panel-soft-rgb), calc(var(--chrome-alpha) + 0.25));
+  box-shadow: 0 24px 64px rgba(16, 24, 40, 0.28);
+}
+
+.wall-detail-modal .ant-modal-body {
+  height: min(78vh, 660px);
+}
+
+/* 标题行给右上角关闭按钮留出位置 */
+.wall-detail-modal .detail-title.ant-input {
+  padding-right: 38px !important;
+}
+
+.wall-detail-dialog {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+}
+
+.wall-detail-dialog .detail-pane {
+  flex: 1;
+  min-height: 0;
+  margin-top: 0;
+  background: transparent;
+}
+
+/* 视图切换过渡：网格 ↔ 列表（以及响应式进入贴纸墙）时淡入上移 */
+@keyframes entry-view-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.entry-view-enter {
+  animation: entry-view-in 0.22s ease both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .entry-view-enter,
+  .wall-note,
+  .wall-detail-drawer {
+    animation: none;
+    transition: none;
+  }
+}
+
 /* 列表卡片纸张纹理：与详情纸面同款，但间距更紧凑适配 196px 小卡；
    第一层保持底色淡染，其后为纹理层；无颜色时淡染层为 transparent 不影响纹理 */
-button.note-row[data-paper="ruled"] {
+:is(div.note-row.note-card, div.note-row.wall-note)[data-paper="ruled"] {
   background-image:
     linear-gradient(
       color-mix(in srgb, var(--card-tint, transparent) var(--card-tint-alpha), transparent),
@@ -1057,7 +1721,7 @@ button.note-row[data-paper="ruled"] {
     );
 }
 
-button.note-row[data-paper="grid"] {
+:is(div.note-row.note-card, div.note-row.wall-note)[data-paper="grid"] {
   background-image:
     linear-gradient(
       color-mix(in srgb, var(--card-tint, transparent) var(--card-tint-alpha), transparent),
@@ -1068,7 +1732,7 @@ button.note-row[data-paper="grid"] {
   background-size: auto, 16px 16px, 16px 16px;
 }
 
-button.note-row[data-paper="dots"] {
+:is(div.note-row.note-card, div.note-row.wall-note)[data-paper="dots"] {
   background-image:
     linear-gradient(
       color-mix(in srgb, var(--card-tint, transparent) var(--card-tint-alpha), transparent),

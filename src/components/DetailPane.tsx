@@ -75,14 +75,18 @@ const SAVE_DEBOUNCE_MS = 400;
 interface DetailPaneProps {
   entry: Entry | null;
   onRemove: (id: string) => void;
-  /** 窄窗口单栏模式下的「返回列表」回调；宽窗口两栏时不传 */
+  /** 窄屏单栏模式下的返回回调；宽屏两栏时不传 */
   onBack?: () => void;
 }
 
 /** 右侧详情面板：未选中时显示提示，选中后进入可自动保存的编辑表单 */
-export function DetailPane({ entry, onRemove, onBack }: DetailPaneProps) {
+export function DetailPane({
+  entry,
+  onRemove,
+  onBack,
+}: DetailPaneProps) {
   return (
-    <div className="detail-pane">
+    <div className="detail-pane" data-tauri-drag-region="false">
       {onBack && (
         <button type="button" className="detail-back" onClick={onBack}>
           <ArrowLeftOutlined />

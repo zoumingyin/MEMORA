@@ -4,14 +4,25 @@ import {
   ConfigProvider,
   Button,
   Badge,
+  Modal,
+  Drawer,
+  Popconfirm,
+  message,
   theme as antdTheme,
 } from "antd";
-import { PlusOutlined, RestOutlined } from "@ant-design/icons";
+import {
+  AppstoreOutlined,
+  PlusOutlined,
+  RestOutlined,
+  UnorderedListOutlined,
+} from "@ant-design/icons";
+import { Sparkles } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useEntryStore } from "./store/useEntryStore";
 import { useWindowStore } from "./store/useWindowStore";
 import { useAssistantStore } from "./store/useAssistantStore";
+import { useUiStore } from "./store/useUiStore";
 import { useViewport } from "./hooks/useViewport";
 import {
   applyAlwaysOnTop,
@@ -55,6 +66,24 @@ const KIND_COLOR: Record<EntryKind, string> = {
   reminder: "#d9686b",
   todo: "#57a878",
 };
+
+/** 窄屏视图切换选项：网格 / 列表 */
+const ENTRY_VIEW_OPTIONS = [
+  { value: "grid", label: "网格视图", icon: <AppstoreOutlined /> },
+  { value: "list", label: "列表视图", icon: <UnorderedListOutlined /> },
+] as const;
+
+/** 废纸篓计数徽标：固定正圆，两位数起缩小字号避免被数字撑成椭圆 */
+const trashBadgeStyles = (count: number) => ({
+  indicator: {
+    width: 16,
+    height: 16,
+    lineHeight: "16px",
+    paddingInline: 0,
+    borderRadius: "50%",
+    fontSize: count > 9 ? 9 : 10,
+  },
+});
 
 /** 暗色玻璃变体 CSS 变量（暗色主题时注入 :root；切回亮色时全部移除恢复默认） */
 const DARK_TOKENS: Record<string, string> = {
@@ -100,6 +129,11 @@ export default function App() {
   const setSelectedId = useEntryStore((state) => state.setSelectedId);
   const opacity = useWindowStore((state) => state.opacity);
   const theme = useWindowStore((state) => state.theme);
+  // 窄屏展示偏好（网格 / 列表）；宽屏固定贴纸墙，不读取该偏好
+  const entryView = useUiStore((state) => state.entryView);
+  const setEntryView = useUiStore((state) => state.setEntryView);
+  // 贴纸墙「智能归整」：清空自由摆放坐标，回到默认的最近编辑网格
+  const clearWallPositions = useUiStore((state) => state.clearWallPositions);
   // 响应式视口：窄窗口（<620px）切换单栏（列表 ↔ 详情）
   const { isNarrow } = useViewport();
   // 窄窗口单栏模式：是否正在查看详情（true 时列表页被详情替换）
@@ -498,6 +532,13 @@ export default function App() {
     setTrashOpen(false);
   };
 
+  const handleEmptyTrash = (): void => {
+    void useEntryStore
+      .getState()
+      .emptyTrash()
+      .then(() => message.success("废纸篓已清空"));
+  };
+
   // 窄窗口：点条目进入详情（宽窗口忽略 detailView，两栏同显）
   const handleSelect = (id: string): void => {
     setSelectedId(id);
@@ -506,6 +547,12 @@ export default function App() {
 
   const handleBackToList = (): void => {
     setDetailView(false);
+  };
+
+  // 智能归整：撤销自由摆放，按当前排序（默认最近编辑）重新铺成整齐网格
+  const handleTidyWall = (): void => {
+    clearWallPositions();
+    message.success("已按最近编辑重新归整");
   };
 
   return (
@@ -525,64 +572,217 @@ export default function App() {
       >
         <TitleBar quickOpen={quickOpen} setQuickOpen={setQuickOpen} />
         <div className={`app-body${isNarrow ? " app-body-narrow" : ""}`}>
-          {(!isNarrow || !detailView) && (
-            <aside
-              className={`note-list-pane p-x-2${view === "calendar" ? " calendar-mode" : ""}`}
-            >
-              {view === "calendar" ? (
-                <>
-                  <CategoryTabs />
-                  <CalendarPane onSelect={handleSelect} />
-                </>
-              ) : trashOpen ? (
-                <TrashPane onBack={handleCloseTrash} />
-              ) : (
-                <>
-                  <div className="flex items-center">
+          {isNarrow ? (
+            detailView ? (
+              <DetailPane
+                entry={selectedEntry}
+                onRemove={handleRemove}
+                onBack={handleBackToList}
+              />
+            ) : (
+              <aside
+                className={`note-list-pane p-x-2${view === "calendar" ? " calendar-mode" : ""}`}
+              >
+                {view === "calendar" ? (
+                  <>
                     <CategoryTabs />
-                    <SearchBar />
-                  </div>
-                  <div className="list-header w-full">
-                    <span className="list-title">
-                      {filter === "all" ? "全部笔记" : KIND_LABEL[filter]}
-                    </span>
-                    <div className="flex items-center gap-1.5">
-                      <Badge
-                        count={trash.length}
-                        size="small"
-                        offset={[-3, 3]}
-                        title={`废纸篓（${trash.length} 条）`}
+                    <CalendarPane onSelect={handleSelect} />
+                  </>
+                ) : trashOpen ? (
+                  <TrashPane onBack={handleCloseTrash} />
+                ) : (
+                  <>
+                    <div className="flex items-center">
+                      <CategoryTabs />
+                      <SearchBar />
+                    </div>
+                    <div className="list-header w-full">
+                      <span className="list-title">
+                        {filter === "all" ? "全部笔记" : KIND_LABEL[filter]}
+                      </span>
+                      <div
+                        className="flex shrink-0 items-center gap-0.5 rounded-[9px] bg-[var(--hover-fill)] p-0.5"
+                        role="group"
+                        aria-label="切换列表展示模式"
+                        data-tauri-drag-region="false"
                       >
+                        {ENTRY_VIEW_OPTIONS.map((option) => {
+                          const active = entryView === option.value;
+                          return (
+                            <button
+                              key={option.value}
+                              type="button"
+                              title={option.label}
+                              aria-label={option.label}
+                              aria-pressed={active}
+                              className={`flex h-6 w-6 items-center justify-center rounded-[7px] border-0 text-[12px] transition-colors duration-150 ${
+                                active
+                                  ? "bg-[var(--card-bg)] text-[var(--text)] shadow-[0_1px_2px_rgba(16,24,40,0.12)]"
+                                  : "bg-transparent text-[var(--text-muted)] hover:text-[var(--text)]"
+                              }`}
+                              onClick={() => setEntryView(option.value)}
+                            >
+                              {option.icon}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <Badge
+                          count={trash.length}
+                          size="small"
+                          offset={[-3, 3]}
+                          title={`废纸篓（${trash.length} 条）`}
+                          styles={trashBadgeStyles(trash.length)}
+                        >
+                          <Button
+                            type="text"
+                            shape="circle"
+                            size="small"
+                            icon={<RestOutlined />}
+                            title="废纸篓"
+                            onClick={handleOpenTrash}
+                          />
+                        </Badge>
                         <Button
-                          type="text"
+                          type="primary"
                           shape="circle"
                           size="small"
-                          icon={<RestOutlined />}
-                          title="废纸篓"
-                          onClick={handleOpenTrash}
+                          icon={<PlusOutlined />}
+                          title="新建一条"
+                          onClick={handleCreate}
                         />
-                      </Badge>
-                      <Button
-                        type="primary"
-                        shape="circle"
-                        size="small"
-                        icon={<PlusOutlined />}
-                        title="新建一条"
-                        onClick={handleCreate}
-                      />
+                      </div>
                     </div>
+                    <EntryList onSelect={handleSelect} mode={entryView} />
+                  </>
+                )}
+              </aside>
+            )
+          ) : view === "calendar" ? (
+            <>
+              <aside className="note-list-pane p-x-2 calendar-mode">
+                <CategoryTabs />
+                <CalendarPane onSelect={handleSelect} />
+              </aside>
+              <DetailPane entry={selectedEntry} onRemove={handleRemove} />
+            </>
+          ) : (
+            <>
+              <section
+                className="wall-pane"
+                data-tauri-drag-region="false"
+                aria-label="便签贴纸墙"
+              >
+                <header className="wall-toolbar">
+                  <span className="wall-hint">
+                    <span className="wall-hint-dot" aria-hidden="true" />
+                    便签贴纸墙 · 按住卡片拖到任意位置
+                  </span>
+                  <div className="wall-toolbar-actions">
+                    <Badge
+                      count={trash.length}
+                      size="small"
+                      offset={[-2, 5]}
+                      title={`废纸篓（${trash.length} 条）`}
+                      styles={trashBadgeStyles(trash.length)}
+                    >
+                      <button
+                        type="button"
+                        className="wall-tool-btn"
+                        title="废纸篓"
+                        aria-label="废纸篓"
+                        onClick={handleOpenTrash}
+                      >
+                        <RestOutlined />
+                      </button>
+                    </Badge>
+                    <button
+                      type="button"
+                      className="wall-tool-btn"
+                      title="按最近编辑重新归整"
+                      onClick={handleTidyWall}
+                    >
+                      <Sparkles size={13} />
+                      <span>智能归整</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="wall-new-btn"
+                      title="贴新便签"
+                      onClick={handleCreate}
+                    >
+                      <PlusOutlined />
+                      <span>贴新便签</span>
+                    </button>
                   </div>
-                  <EntryList onSelect={handleSelect} />
-                </>
+                </header>
+                <div className="wall-filters">
+                  <CategoryTabs />
+                  <SearchBar />
+                </div>
+                <EntryList onSelect={handleSelect} mode="wall" />
+              </section>
+              {detailView && selectedEntry && (
+                <Modal
+                  open
+                  onCancel={handleBackToList}
+                  footer={null}
+                  centered
+                  width={680}
+                  destroyOnHidden
+                  className="wall-detail-modal"
+                >
+                  <div
+                    className="wall-detail-dialog"
+                    data-tauri-drag-region="false"
+                  >
+                    <DetailPane
+                      entry={selectedEntry}
+                      onRemove={handleRemove}
+                    />
+                  </div>
+                </Modal>
               )}
-            </aside>
-          )}
-          {(!isNarrow || detailView) && (
-            <DetailPane
-              entry={selectedEntry}
-              onRemove={handleRemove}
-              onBack={isNarrow ? handleBackToList : undefined}
-            />
+              <Drawer
+                open={trashOpen}
+                onClose={handleCloseTrash}
+                placement="right"
+                width={420}
+                destroyOnHidden
+                rootClassName="trash-drawer"
+                title={
+                  <span className="flex items-center gap-2">
+                    废纸篓
+                    <span className="text-[11px] font-normal text-[var(--text-muted)]">
+                      {trash.length} 条
+                    </span>
+                  </span>
+                }
+                extra={
+                  <Popconfirm
+                    title="清空废纸篓"
+                    description="将彻底删除全部条目，不可恢复"
+                    okText="清空"
+                    cancelText="取消"
+                    okButtonProps={{ danger: true }}
+                    onConfirm={handleEmptyTrash}
+                    disabled={trash.length === 0}
+                  >
+                    <Button
+                      type="text"
+                      danger
+                      size="small"
+                      disabled={trash.length === 0}
+                    >
+                      清空
+                    </Button>
+                  </Popconfirm>
+                }
+              >
+                <TrashPane onBack={handleCloseTrash} embedded />
+              </Drawer>
+            </>
           )}
         </div>
         <AssistantPanel />
