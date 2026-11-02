@@ -172,6 +172,8 @@ pub struct AiProfileStatus {
     source_label: Option<String>,
     /// 来源说明：限速、隐私提示等
     note: Option<String>,
+    /// 输出模态（仅免费模型）：text / image / audio / video；普通配置为 None
+    modality: Option<&'static str>,
     temperature: f32,
     max_tokens: u32,
     /// 推理强度：none / low / medium / high；None 表示不干预
@@ -404,7 +406,7 @@ const FREE_PROVIDERS: &[FreeProviderSpec] = &[
         key_env: None,
         builtin_key: None,
         note: "无需 Key；匿名约 60 次/分钟、250 次/小时。",
-        fallback: &[("gpt-oss-20b", "GPT-OSS 20B")],
+        fallback: &[("gpt-oss:20b", "GPT-OSS 20B")],
     },
     // ===== Pollinations（官方匿名层） =====
     FreeProviderSpec {
@@ -419,12 +421,37 @@ const FREE_PROVIDERS: &[FreeProviderSpec] = &[
     },
 ];
 
+/// 免费模型的输出模态（来自网关元数据）；决定界面标签与能否用于文本对话
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FreeModality {
+    #[default]
+    Text,
+    Image,
+    Audio,
+    Video,
+}
+
+impl FreeModality {
+    fn as_str(self) -> &'static str {
+        match self {
+            FreeModality::Text => "text",
+            FreeModality::Image => "image",
+            FreeModality::Audio => "audio",
+            FreeModality::Video => "video",
+        }
+    }
+}
+
 /// 从 `/models` 解析出的单个模型条目；name 缺失时由 id 推导展示名
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct FreeModelEntry {
     id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     name: Option<String>,
+    /// 输出模态：免费目录里混有语音 / 视频 / 图像生成模型，界面据此打标签
+    #[serde(default)]
+    modality: FreeModality,
 }
 
 /// ok = 本次拉取成功；cached = 本次失败但沿用了历史缓存；
@@ -465,13 +492,15 @@ static FREE_CACHE_LOADED: AtomicBool = AtomicBool::new(false);
 /// 拉取成功后的缓存有效期；失败且已有模型时刻重试间隔
 const FREE_CACHE_TTL_SECS: u64 = 6 * 60 * 60;
 const FREE_CACHE_RETRY_SECS: u64 = 10 * 60;
+/// 缓存结构版本：免费筛选规则变化时递增，旧缓存里不符合新规则的条目直接作废重拉
+const FREE_CACHE_VERSION: u32 = 3;
 /// 单个网关最多展示的模型数，避免选择器过长
 const FREE_MODEL_LIMIT: usize = 40;
 
 fn free_cache() -> &'static Mutex<FreeCatalogCache> {
     FREE_CACHE.get_or_init(|| {
         Mutex::new(FreeCatalogCache {
-            version: 1,
+            version: FREE_CACHE_VERSION,
             ..Default::default()
         })
     })
@@ -504,11 +533,13 @@ fn ensure_free_cache_loaded(app: &AppHandle) {
         return;
     };
     match serde_json::from_str::<FreeCatalogCache>(&raw) {
-        Ok(cache) => {
+        Ok(cache) if cache.version >= FREE_CACHE_VERSION => {
             if let Ok(mut guard) = free_cache().lock() {
                 *guard = cache;
             }
         }
+        // 旧版本缓存：模型清单来自旧筛选规则（可能含大量付费 / 不可用条目），丢弃后重新拉取
+        Ok(_) => {}
         Err(error) => eprintln!("免费模型缓存解析失败，将重新获取：{error}"),
     }
 }
@@ -547,6 +578,20 @@ fn parse_free_profile(id: &str) -> Option<(&'static FreeProviderSpec, &str)> {
 
 fn is_free_profile(id: &str) -> bool {
     parse_free_profile(id).is_some()
+}
+
+/// 免费模型的输出模态：按 id 在缓存 / 兜底清单里查；
+/// 查不到（用户选过的模型已从列表消失）按文本处理，避免把可用的模型判成不可用。
+fn free_profile_modality(id: &str) -> Option<FreeModality> {
+    let (provider, model) = parse_free_profile(id)?;
+    let (models, _) = source_snapshot(provider);
+    Some(
+        models
+            .iter()
+            .find(|entry| entry.id == model)
+            .map(|entry| entry.modality)
+            .unwrap_or_default(),
+    )
 }
 
 fn free_profile_id(provider: &FreeProviderSpec, model: &str) -> String {
@@ -594,6 +639,7 @@ fn source_snapshot(provider: &FreeProviderSpec) -> (Vec<FreeModelEntry>, FreeSou
             .map(|(id, name)| FreeModelEntry {
                 id: (*id).to_string(),
                 name: Some((*name).to_string()),
+                modality: FreeModality::Text,
             })
             .collect();
         (models, FreeSourceState::Fallback)
@@ -670,7 +716,53 @@ fn free_catalog_is_fresh() -> bool {
     now_secs().saturating_sub(cache.fetched_at) < ttl
 }
 
-/// 运行时拉取单个网关的模型列表：只保留 chat 且免费（若接口给出价格）的条目
+/// 价格字段可能是数字或字符串（"0" / "-1"），>0 视为付费；字段缺失按免费处理
+fn price_is_positive(value: Option<&serde_json::Value>) -> bool {
+    value
+        .and_then(|value| {
+            value
+                .as_f64()
+                .or_else(|| value.as_str().and_then(|raw| raw.trim().parse::<f64>().ok()))
+        })
+        .map(|price| price > 0.0)
+        .unwrap_or(false)
+}
+
+/// 从网关条目推断输出模态：Kilo / OpenRouter 给 `architecture.output_modalities`，
+/// LLM7 给 `model_type`；都缺失时按文本处理。混合输出（如 `["text","audio"]`）
+/// 取非文本的那一种——本应用只走 chat/completions，用不了这类模型。
+fn item_modality(item: &serde_json::Value) -> FreeModality {
+    let mut outputs: Vec<&str> = Vec::new();
+    if let Some(list) = item
+        .pointer("/architecture/output_modalities")
+        .or_else(|| item.pointer("/modalities/output"))
+        .and_then(|value| value.as_array())
+    {
+        outputs.extend(list.iter().filter_map(|value| value.as_str()));
+    }
+    let model_type = item
+        .get("model_type")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default();
+    let has = |needle: &str| {
+        outputs.contains(&needle) || model_type.contains(needle)
+    };
+    if has("video") {
+        FreeModality::Video
+    } else if has("audio") || model_type.contains("speech") {
+        FreeModality::Audio
+    } else if has("image") {
+        FreeModality::Image
+    } else {
+        FreeModality::Text
+    }
+}
+
+/// 运行时拉取单个网关的模型列表：只保留「可用于对话且确实免费」的条目。
+/// 各网关免费标记不一致，逐项判断：
+/// - `type` / `model_type` 不是 chat（语音转写、图像生成等）不能对话；
+/// - Kilo 用 `isFree`、LLM7 用 `usage_based_only` 标记付费模型（后者匿名请求会 401）；
+/// - 价格字段（OpenRouter 风格 `cost.text.output.price` 与 `pricing.prompt/completion`）>0。
 async fn fetch_provider_models(
     provider: &'static FreeProviderSpec,
     key: Option<&str>,
@@ -710,19 +802,28 @@ async fn fetch_provider_models(
             if id.is_empty() {
                 return None;
             }
-            if let Some(kind) = item.get("type").and_then(|kind| kind.as_str()) {
-                if kind != "chat" {
-                    return None;
-                }
+            let kind = item
+                .get("type")
+                .or_else(|| item.get("model_type"))
+                .and_then(|kind| kind.as_str());
+            if kind.is_some_and(|kind| kind != "chat") {
+                return None;
             }
-            // 部分网关在同一列表里混有付费模型，价格大于 0 的直接跳过
-            if let Some(price) = item
-                .pointer("/cost/text/output/price")
-                .and_then(|price| price.as_f64())
+            if item.get("isFree").and_then(|free| free.as_bool()) == Some(false) {
+                return None;
+            }
+            if item
+                .get("usage_based_only")
+                .and_then(|usage| usage.as_bool())
+                == Some(true)
             {
-                if price > 0.0 {
-                    return None;
-                }
+                return None;
+            }
+            if price_is_positive(item.pointer("/cost/text/output/price"))
+                || price_is_positive(item.pointer("/pricing/prompt"))
+                || price_is_positive(item.pointer("/pricing/completion"))
+            {
+                return None;
             }
             let name = item
                 .get("name")
@@ -733,6 +834,7 @@ async fn fetch_provider_models(
             Some(FreeModelEntry {
                 id: id.to_string(),
                 name,
+                modality: item_modality(item),
             })
         })
         .collect();
@@ -799,7 +901,7 @@ async fn refresh_free_catalog(app: &AppHandle) {
             };
             cache.sources.insert(provider.source.to_string(), entry);
         }
-        cache.version = 1;
+        cache.version = FREE_CACHE_VERSION;
         cache.fetched_at = fetched_at;
     }
     persist_free_cache(app);
@@ -926,6 +1028,7 @@ fn restore_active_free_profile(file: &FileConfig, all: &mut Vec<AiProfile>) {
     let entry = FreeModelEntry {
         id: model.to_string(),
         name: None,
+        modality: FreeModality::Text,
     };
     all.push(AiProfile {
         id: id.to_string(),
@@ -995,6 +1098,7 @@ fn profile_status(profile: &AiProfile) -> AiProfileStatus {
         source: free.map(|provider| provider.source.to_string()),
         source_label: free.map(|provider| provider.label.to_string()),
         note: free.map(|provider| provider.note.to_string()),
+        modality: free.and_then(|_| free_profile_modality(&profile.id)).map(FreeModality::as_str),
         temperature: resolved.temperature,
         max_tokens: resolved.max_tokens,
         reasoning: resolved.reasoning,

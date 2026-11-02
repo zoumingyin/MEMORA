@@ -3,6 +3,15 @@
 /** 推理强度：none 关闭思考；low / medium / high 为思考强度分档 */
 export type ReasoningEffort = 'none' | 'low' | 'medium' | 'high'
 
+/** 模型输出模态：本应用只走文本对话，非 text 的免费模型只展示不可选 */
+export type AiModality = 'text' | 'image' | 'audio' | 'video'
+
+/** 非文本模型走不了 chat/completions：选择器与设置列表据此禁用 */
+export function isNonTextModality(modality: AiModality | null): boolean {
+  // 兼容尚未返回该字段的旧后端：undefined 按文本处理
+  return modality != null && modality !== 'text'
+}
+
 /** 单条模型配置的展示状态（后端永不返回明文密钥） */
 export interface AiProfileStatus {
   id: string
@@ -25,6 +34,8 @@ export interface AiProfileStatus {
   sourceLabel: string | null
   /** 来源说明：限速、隐私提示等 */
   note: string | null
+  /** 输出模态：仅免费模型有值；普通配置为 null（按文本处理） */
+  modality: AiModality | null
   temperature: number
   maxTokens: number
   /** 推理强度；null 表示不干预，由服务商决定 */

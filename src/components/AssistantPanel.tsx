@@ -24,12 +24,17 @@ import { markdownToHtml } from '../utils/markdown'
 import { parseAssistantActions, type AssistantAction } from '../utils/assistantActions'
 import { saveAiProfile } from '../services/aiClient'
 import { FreeBadge } from './FreeBadge'
+import { ModalityBadge } from './ModalityBadge'
 import { ProviderMark } from './ProviderMark'
 import { useAssistantStore } from '../store/useAssistantStore'
 import { useAiProfileStore } from '../store/useAiProfileStore'
 import { useEntryStore } from '../store/useEntryStore'
 import { useUiStore } from '../store/useUiStore'
-import type { AssistantMessage, ReasoningEffort } from '../types/ai'
+import {
+  isNonTextModality,
+  type AssistantMessage,
+  type ReasoningEffort,
+} from '../types/ai'
 import type { EntryKind } from '../types/entry'
 
 /** 空态引导问题：覆盖检索、统计、日程与整理四类常见诉求 */
@@ -437,9 +442,11 @@ function AssistantPanelBody() {
         <span className="flex min-w-0 items-center gap-1">
           <span className="truncate">{profile.name}</span>
           {profile.free && <FreeBadge />}
+          {profile.free && <ModalityBadge modality={profile.modality} />}
         </span>
       ),
-      disabled: !profile.configured,
+      // 语音 / 视频 / 图片模型走不了 chat/completions，只展示不可选
+      disabled: !profile.configured || isNonTextModality(profile.modality),
     })
     const custom = aiProfiles.filter((profile) => !profile.free)
     const free = aiProfiles.filter((profile) => profile.free)
@@ -734,6 +741,9 @@ function AssistantPanelBody() {
                             {profile.name}
                           </span>
                           {profile.free && <FreeBadge />}
+                          {profile.free && (
+                            <ModalityBadge modality={profile.modality} />
+                          )}
                           {!profile.configured && (
                             <span className="shrink-0 rounded-full border border-[var(--danger)] px-1.5 text-[9px] leading-[14px] text-[var(--danger)]">
                               缺少密钥

@@ -136,7 +136,7 @@ pnpm build    # tsc -b 类型检查 + vite 生产构建，产物在 dist/
 - **基于应用内上下文**：每次提问自动附带当前便签的统计、最近 15 条标题 / 正文摘要与正在查看的条目（剔除图片与废纸篓，最多约 6000 字）；可在设置 → AI 助手 → 上下文与隐私中关闭。
 - **AI 提议新建便签**：让 AI「半小时后提醒我打开 epic」时，回答下方会出现提醒 / 待办 / 备忘的确认卡片（含标题、正文、待办子任务与提醒时间），点「创建」才真正写入本机便签并参与闹钟调度，点「忽略」丢弃；创建成功后卡片标记「已创建」并不再显示创建按钮，该状态随对话记录持久化，重开面板、重启应用或开发热更新后都不会重复提供创建入口；模型无法直接改数据，修改、删除、勾选等操作仍需手动完成。
 - **多模型配置与切换**：设置 → AI 助手 → 接入配置可添加多条模型配置，新增与编辑均通过弹窗完成（服务商下拉选择，自动填入接口地址与默认模型，「显示名称」默认取所选模型名且可改）；已配置项以卡片列出，可点卡片切换当前使用、编辑或删除。对话输入卡片右侧有模型选择器，收起时显示模型显示名，下拉按「显示名称 + 服务商 · 模型」两行列出全部配置，切换后立即用于后续提问。
-- **内置免费模型**：模型列表内置一组免费网关（OpenCode Zen / Kilo AI / LLM7.io / Pollinations）。Kilo、LLM7、Pollinations 为公开匿名网关，无需账号；OpenCode Zen 需要 OpenCode API Key，只用账号下的零费用模型（密钥由环境变量 `BIANQIAN_OPENCODE_API_KEY` 或在打包时把本机 `keys/opencode.key` 编进 exe 提供，设置页不提供填写入口；界面只显示掩码与来源）。模型名称与清单**不硬编码**，运行时向各网关的 OpenAI 兼容 `GET /models` 拉取，名称后带「免费」标识，在设置页按来源分组展示接口地址、限速说明与来源状态（实时 / 缓存 / 兜底 / 不可用），并提供「重新获取」。自己的配置始终排在免费模型前面；免费条目只在内存中追加，不写入配置文件，也不能编辑 / 删除；首次使用不会自动选中，需要在对话面板或设置页主动切换——提问内容会直接发送给对应第三方网关，提示词可能被记录，请勿发送敏感内容。
+- **内置免费模型**：模型列表内置一组免费网关（OpenCode Zen / Kilo AI / LLM7.io / Pollinations）。Kilo、LLM7、Pollinations 为公开匿名网关，无需账号；OpenCode Zen 需要 OpenCode API Key，只用账号下的零费用模型（密钥由环境变量 `BIANQIAN_OPENCODE_API_KEY` 或在打包时把本机 `keys/opencode.key` 编进 exe 提供，设置页不提供填写入口；界面只显示掩码与来源）。模型名称与清单**不硬编码**，运行时向各网关的 OpenAI 兼容 `GET /models` 拉取，名称后带「免费」标识，在设置页按来源分组展示接口地址、限速说明与来源状态（实时 / 缓存 / 兜底 / 不可用），并提供「重新获取」。列表按网关元数据给每条模型打**类型标签**（文本 / 图片 / 语音 / 视频）：本应用只走文本对话，语音、视频、图片模型在设置页与对话面板的选择器里都会**置灰不可选**（设置页仍展示，便于看清免费池里都有什么）。自己的配置始终排在免费模型前面；免费条目只在内存中追加，不写入配置文件，也不能编辑 / 删除；首次使用不会自动选中，需要在对话面板或设置页主动切换——提问内容会直接发送给对应第三方网关，提示词可能被记录，请勿发送敏感内容。
 - **兜底提示**：未配置、密钥失效、网络失败、限流、模型空回复等均有稳定错误码与中文提示；未配置时直接给出「去设置」入口；信息不足时模型被约束为明确说明「现有便签里没有相关信息」，而不是编造。
 - **两种运行环境都能对话**：桌面版由 Rust 后端代理请求并保管密钥；浏览器预览没有 Rust 后端，改为前端直连 OpenAI 兼容接口，配置与密钥保存在浏览器 localStorage（仅供本地调试，设置页会标注「保存在本浏览器」）。个别服务未开放跨域（CORS）时浏览器直连会被拦截，界面会给出提示，改用桌面版即可。
 
@@ -156,7 +156,7 @@ pnpm build    # tsc -b 类型检查 + vite 生产构建，产物在 dist/
 - 桌面端本地 SQLite，数据库文件：`%APPDATA%\com.bianqian.desktop\bianqian.db`。
 - 标识符变更说明：旧版标识符为 `com.bianqian.app`（以 `.app` 结尾会与 macOS 应用包扩展名冲突），首次启动新版本时会把旧目录 `%APPDATA%\com.bianqian.app` 下的数据库、AI 配置以及 `%LOCALAPPDATA%\com.bianqian.app` 下的 WebView2 localStorage（窗口设置、AI 对话记录）自动复制到新目录（新目录已有数据库时不覆盖）。
 - 窗口设置（置顶、背景透明度、吸附开关）存 localStorage，键 `bianqian.window.v1`。
-- AI 对话记录与上下文开关存 localStorage，键 `bianqian.assistant.v1`；桌面端多模型接入配置（含各配置密钥与当前选中项）由 Rust 存于 `%APPDATA%\com.bianqian.desktop\ai-config.json`，旧版单配置会自动迁移并写回（迁移条目的 id 固定为 `legacy`，保证前端拿到的 id 在保存时仍能命中）；浏览器预览的接入配置存 localStorage，键 `bianqian.assistant.ai.v2`（旧版 `bianqian.assistant.ai.v1` 读取时自动迁移）。免费模型列表本身来自各网关的 `GET /models`（缓存 6 小时，失败重试间隔 10 分钟），桌面端缓存在 `%APPDATA%\com.bianqian.desktop\ai-free-models.json`，浏览器预览缓存在 localStorage 键 `bianqian.assistant.ai.free.v1`；免费条目只追加到内存列表，不写入接入配置文件。
+- AI 对话记录与上下文开关存 localStorage，键 `bianqian.assistant.v1`；桌面端多模型接入配置（含各配置密钥与当前选中项）由 Rust 存于 `%APPDATA%\com.bianqian.desktop\ai-config.json`，旧版单配置会自动迁移并写回（迁移条目的 id 固定为 `legacy`，保证前端拿到的 id 在保存时仍能命中）；浏览器预览的接入配置存 localStorage，键 `bianqian.assistant.ai.v2`（旧版 `bianqian.assistant.ai.v1` 读取时自动迁移）。免费模型列表本身来自各网关的 `GET /models`（缓存 6 小时，失败重试间隔 10 分钟），桌面端缓存在 `%APPDATA%\com.bianqian.desktop\ai-free-models.json`，浏览器预览缓存在 localStorage 键 `bianqian.assistant.ai.free.v3`；免费条目只追加到内存列表，不写入接入配置文件。
 - 浏览器预览兜底数据存 localStorage，键 `bianqian.entries.v1`。
 
 
@@ -207,6 +207,7 @@ bianqian/
 │       ├── AssistantPanel.tsx     # AI 助手对话面板：历史、流式、输入框、错误兜底
 │       ├── ProviderMark.tsx       # 模型选择器前的服务商标识（品牌 SVG / 通用兜底）
 │       ├── FreeBadge.tsx          # 「免费」标识，附在内置免费模型名称后
+│       ├── ModalityBadge.tsx      # 模型类型标签：文本 / 图片 / 语音 / 视频
 │       ├── CategoryTabs.tsx         # 左侧竖排分类条：备忘 / 提醒 / 待办与计数
 │       ├── EntryList.tsx           # 左侧主从列表：筛选、排序、行展示、选中
 │       ├── DetailPane.tsx          # 右侧详情：标题 / 待办子任务清单 / 提醒闹钟清单（时间+模式+方式）/ 备注，防抖自动保存
@@ -324,7 +325,7 @@ bianqian/
   | LLM7.io | `https://api.llm7.io/v1` | `GET /models` 实时拉取 | 匿名约 60 次/分钟、250 次/小时；可选填 Key 提升额度 |
   | Pollinations | `https://text.pollinations.ai/openai` | `GET /models` 实时拉取 | 匿名层，无 Authorization 头 |
 
-  **错误处理与降级**：每个来源独立处理——成功时取接口返回的模型（只保留 `type == "chat"`，若返回 `cost.text.output.price > 0` 则视为付费并跳过，单源最多 40 条）；失败时若有本地缓存则沿用（标记「缓存」），否则回退到每个来源内置的一条兜底模型（标记「兜底」）；没有兜底且无缓存时该来源不展示（标记「不可用」）。成功结果缓存 6 小时，失败后 10 分钟再重试；设置页可点「重新获取」强制刷新。桌面端缓存文件为 `%APPDATA%\com.bianqian.desktop\ai-free-models.json`，浏览器预览缓存在 localStorage 键 `bianqian.assistant.ai.free.v1`。前端在列表中找不到某个免费模型时，仍按 `free:{source}:{modelId}` 还原请求目标，用户先前选中的模型不会因上游下线而变成「配置不存在」；若该来源没有可用密钥（如未内置且未设置环境变量），则不再还原。失败的对话请求会按 `rate_limited / unauthorized / endpoint_not_found / server_error` 等错误码提示。OpenCode Zen 走标准 OpenAI 兼容接口与个人 API Key，不涉及伪造客户端指纹或预置会话 id。
+  **错误处理与降级**：每个来源独立处理——成功时取接口返回的模型，并逐项只保留「可用于对话且确实免费」的条目：`type` / `model_type` 必须是 `chat`（剔除语音转写、图像生成等）、`isFree === false`（Kilo 付费模型）与 `usage_based_only === true`（LLM7 付费档，匿名请求会 401）直接跳过、价格字段（`cost.text.output.price` 或 `pricing.prompt/completion`，数字与 `"0"` 字符串两种写法）>0 视为付费跳过；单源最多 40 条。**类型标签**由同一份元数据推断：`architecture.output_modalities`（Kilo / OpenRouter 风格）或 `modalities.output`（LLM7 风格）里出现 `audio` / `video` / `image` 即标为语音 / 视频 / 图片，缺失时再看 `model_type`，都没有按文本处理；混合输出（如 `["text","audio"]`）取非文本的那一种，因为这些条目走不了 `chat/completions`，界面置灰不可选。失败时若有本地缓存则沿用（标记「缓存」），否则回退到每个来源内置的一条兜底模型（标记「兜底」）；没有兜底且无缓存时该来源不展示（标记「不可用」）。成功结果缓存 6 小时，失败后 10 分钟再重试；设置页可点「重新获取」强制刷新。桌面端缓存文件为 `%APPDATA%\com.bianqian.desktop\ai-free-models.json`（筛选规则或条目结构变化会递增缓存版本，旧缓存自动作废重拉），浏览器预览缓存在 localStorage 键 `bianqian.assistant.ai.free.v3`。前端在列表中找不到某个免费模型时，仍按 `free:{source}:{modelId}` 还原请求目标，用户先前选中的模型不会因上游下线而变成「配置不存在」；若该来源没有可用密钥（如未内置且未设置环境变量），则不再还原。失败的对话请求会按 `rate_limited / unauthorized / endpoint_not_found / server_error` 等错误码提示。OpenCode Zen 走标准 OpenAI 兼容接口与个人 API Key，不涉及伪造客户端指纹或预置会话 id。
 - **密钥管理建议**：
   1. 个人使用：设置 → AI 助手 → 接入配置逐条填写，密钥只保存在本机；编辑某条配置时可「清除已保存密钥」。使用本机 Ollama / LM Studio 等无需鉴权的服务时可留空密钥（仅限 `localhost / 127.0.0.1 / ::1` 地址）。
   2. 部署 / CI：只注入环境变量，密钥不落盘；对应配置会标注「环境变量」且不可编辑 / 删除。

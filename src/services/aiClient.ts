@@ -12,6 +12,7 @@ import {
 import type {
   AiChatMessage,
   AiErrorInfo,
+  AiModality,
   AiProfileInput,
   AiProfileStatus,
   AiStatus,
@@ -186,6 +187,8 @@ interface ChatTarget {
   source: string | null
   sourceLabel: string | null
   note: string | null
+  /** 输出模态：免费模型才有；用户配置按文本处理 */
+  modality: AiModality | null
   /** 公共网关不校验密钥 */
   keyless: boolean
   reasoning: ReasoningEffort | null
@@ -198,6 +201,7 @@ function targetFromProfile(profile: BrowserProfile): ChatTarget {
     source: null,
     sourceLabel: null,
     note: null,
+    modality: null,
     keyless: false,
   }
 }
@@ -217,6 +221,7 @@ function targetFromFree(model: FreeModel): ChatTarget {
     source: model.source,
     sourceLabel: model.sourceLabel,
     note: model.note,
+    modality: model.modality,
     keyless: !model.requiresKey,
     reasoning: null,
   }
@@ -292,6 +297,7 @@ function targetStatus(target: ChatTarget): AiProfileStatus {
     source: target.source,
     sourceLabel: target.sourceLabel,
     note: target.note,
+    modality: target.modality,
     temperature: target.temperature,
     maxTokens: target.maxTokens,
     reasoning: target.reasoning,

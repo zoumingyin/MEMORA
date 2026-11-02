@@ -7,6 +7,8 @@
  * 桌面端由 src-tauri/src/ai.rs 提供同样的能力，两端行为保持一致。
  */
 
+import type { AiModality } from '../types/ai'
+
 export type FreeSourceStatus = 'ok' | 'cached' | 'fallback' | 'unavailable'
 
 export interface FreeProviderSpec {
@@ -46,7 +48,7 @@ const PROVIDERS: FreeProviderSpec[] = [
     baseUrl: 'https://api.llm7.io/v1',
     requiresKey: false,
     note: '无需 Key；匿名约 60 次/分钟、250 次/小时。',
-    fallback: [{ id: 'gpt-oss-20b', name: 'GPT-OSS 20B' }],
+    fallback: [{ id: 'gpt-oss:20b', name: 'GPT-OSS 20B' }],
   },
   {
     source: 'pollinations',
@@ -71,6 +73,8 @@ export interface FreeModel {
   requiresKey: boolean
   /** 来源说明：限速、隐私提示等 */
   note: string
+  /** 输出模态：非 text 的模型不能用于本应用的文本对话 */
+  modality: AiModality
 }
 
 export interface FreeSourceInfo {
@@ -89,6 +93,8 @@ export interface FreeSourceInfo {
 interface FreeModelEntry {
   id: string
   name: string | null
+  /** 输出模态；旧缓存缺这个字段时按文本处理 */
+  modality: AiModality
 }
 
 interface FreeSourceCache {
@@ -98,12 +104,16 @@ interface FreeSourceCache {
 }
 
 interface FreeCatalogCache {
-  version: 1
+  version: 3
   fetchedAt: number
   sources: Record<string, FreeSourceCache>
 }
 
-const CACHE_KEY = 'bianqian.assistant.ai.free.v1'
+/**
+ * 缓存键带版本号：免费筛选规则 / 条目结构变化时递增，
+ * 旧缓存里的付费、不可用或缺模态信息的条目直接作废
+ */
+const CACHE_KEY = 'bianqian.assistant.ai.free.v3'
 /** 来源密钥（source → key）：浏览器预览只存 localStorage，桌面端存 ai-config.json */
 const KEYS_KEY = 'bianqian.assistant.ai.free.keys.v1'
 /**
@@ -125,7 +135,11 @@ let cache: FreeCatalogCache | null = null
 let inflight: Promise<void> | null = null
 
 function emptyCache(): FreeCatalogCache {
-  return { version: 1, fetchedAt: 0, sources: {} }
+  return { version: 3, fetchedAt: 0, sources: {} }
+}
+
+function normalizeModality(raw: unknown): AiModality {
+  return raw === 'image' || raw === 'audio' || raw === 'video' ? raw : 'text'
 }
 
 /** 只做浅校验：缓存文件损坏时丢弃，重新拉取 */
@@ -152,6 +166,7 @@ function normalizeCache(raw: unknown): FreeCatalogCache {
             typeof modelEntry.name === 'string' && modelEntry.name.trim()
               ? modelEntry.name.trim()
               : null,
+          modality: normalizeModality(modelEntry.modality),
         },
       ]
     })
@@ -167,7 +182,7 @@ function normalizeCache(raw: unknown): FreeCatalogCache {
     }
   }
   return {
-    version: 1,
+    version: 3,
     fetchedAt: typeof item.fetchedAt === 'number' ? item.fetchedAt : 0,
     sources,
   }
@@ -273,6 +288,7 @@ function toFreeModel(provider: FreeProviderSpec, entry: FreeModelEntry): FreeMod
     baseUrl: provider.baseUrl,
     requiresKey: provider.requiresKey,
     note: provider.note,
+    modality: entry.modality,
   }
 }
 
@@ -295,7 +311,11 @@ function sourceSnapshot(provider: FreeProviderSpec): {
     return { models: [], status: 'unavailable' }
   }
   return {
-    models: provider.fallback.map((item) => ({ id: item.id, name: item.name })),
+    models: provider.fallback.map((item) => ({
+      id: item.id,
+      name: item.name,
+      modality: 'text' as const,
+    })),
     status: 'fallback',
   }
 }
@@ -347,7 +367,11 @@ export function findFreeModel(id: string): FreeModel | undefined {
   if (parsed.provider.requiresKey && !freeSourceKey(parsed.provider.source)) {
     return undefined
   }
-  return toFreeModel(parsed.provider, { id: parsed.model, name: null })
+  return toFreeModel(parsed.provider, {
+    id: parsed.model,
+    name: null,
+    modality: 'text',
+  })
 }
 
 function isCatalogFresh(): boolean {
@@ -368,14 +392,64 @@ interface ModelsResponseItem {
   id?: unknown
   name?: unknown
   type?: unknown
+  model_type?: unknown
+  isFree?: unknown
+  usage_based_only?: unknown
+  pricing?: { prompt?: unknown; completion?: unknown }
   cost?: { text?: { output?: { price?: unknown } } }
+  /** Kilo / OpenRouter 风格：声明输入与输出模态 */
+  architecture?: { output_modalities?: unknown }
+  /** LLM7 风格 */
+  modalities?: { output?: unknown }
 }
 
 interface ModelsResponse {
   data?: unknown
 }
 
-/** 运行时拉取单个网关的模型列表：只保留 chat 且免费（若接口给出价格）的条目 */
+/** 价格字段可能是数字或字符串（"0" / "-1"），>0 视为付费；字段缺失按免费处理 */
+function pricePositive(value: unknown): boolean {
+  const price =
+    typeof value === 'number'
+      ? value
+      : typeof value === 'string'
+        ? Number.parseFloat(value)
+        : Number.NaN
+  return Number.isFinite(price) && price > 0
+}
+
+function stringList(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === 'string')
+    : []
+}
+
+/**
+ * 从网关条目推断输出模态，与 Rust 端 item_modality 保持一致：
+ * 优先看 `architecture.output_modalities` / `modalities.output`，再看 `model_type`。
+ * 混合输出（如 ["text","audio"]）取非文本的那一种——chat/completions 用不了它。
+ */
+function itemModality(item: ModelsResponseItem): AiModality {
+  const outputs = [
+    ...stringList(item.architecture?.output_modalities),
+    ...stringList(item.modalities?.output),
+  ]
+  const kind = typeof item.model_type === 'string' ? item.model_type : ''
+  const has = (needle: string) =>
+    outputs.includes(needle) || kind.includes(needle)
+  if (has('video')) return 'video'
+  if (has('audio') || kind.includes('speech')) return 'audio'
+  if (has('image')) return 'image'
+  return 'text'
+}
+
+/**
+ * 运行时拉取单个网关的模型列表：只保留「可用于对话且确实免费」的条目。
+ * 各网关免费标记不一致，逐项判断：
+ * - `type` / `model_type` 不是 chat（语音转写、图像生成等）不能对话；
+ * - Kilo 用 `isFree`、LLM7 用 `usage_based_only` 标记付费模型（后者匿名请求会 401）；
+ * - 价格字段（OpenRouter 风格 `cost.text.output.price` 与 `pricing.prompt/completion`）>0。
+ */
 async function fetchProviderModels(
   provider: FreeProviderSpec,
 ): Promise<FreeModelEntry[]> {
@@ -410,12 +484,25 @@ async function fetchProviderModels(
   for (const item of parsed.data as ModelsResponseItem[]) {
     const id = typeof item?.id === 'string' ? item.id.trim() : ''
     if (!id) continue
-    if (typeof item.type === 'string' && item.type !== 'chat') continue
-    const price = item.cost?.text?.output?.price
-    if (typeof price === 'number' && price > 0) continue
+    const kind =
+      typeof item.type === 'string'
+        ? item.type
+        : typeof item.model_type === 'string'
+          ? item.model_type
+          : null
+    if (kind && kind !== 'chat') continue
+    if (item.isFree === false) continue
+    if (item.usage_based_only === true) continue
+    if (
+      pricePositive(item.cost?.text?.output?.price) ||
+      pricePositive(item.pricing?.prompt) ||
+      pricePositive(item.pricing?.completion)
+    ) {
+      continue
+    }
     const name =
       typeof item.name === 'string' && item.name.trim() ? item.name.trim() : null
-    models.push({ id, name })
+    models.push({ id, name, modality: itemModality(item) })
   }
   models.sort((a, b) => a.id.localeCompare(b.id))
   const unique = models.filter(
@@ -455,7 +542,7 @@ async function refreshCatalog(): Promise<void> {
       models: previous.models,
     }
   })
-  persistCache({ version: 1, fetchedAt, sources })
+  persistCache({ version: 3, fetchedAt, sources })
 }
 
 /**

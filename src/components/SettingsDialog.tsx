@@ -21,11 +21,13 @@ import { useEntryStore } from "../store/useEntryStore";
 import { useAssistantStore } from "../store/useAssistantStore";
 import { useAiProfileStore } from "../store/useAiProfileStore";
 import { FreeBadge } from "./FreeBadge";
-import type {
-  AiFreeSource,
-  AiProfileInput,
-  AiProfileStatus,
-  ReasoningEffort,
+import { ModalityBadge } from "./ModalityBadge";
+import {
+  isNonTextModality,
+  type AiFreeSource,
+  type AiProfileInput,
+  type AiProfileStatus,
+  type ReasoningEffort,
 } from "../types/ai";
 import {
   clearAiKey,
@@ -1168,7 +1170,8 @@ export function SettingsDialog({
               <div className="rounded-[8px] border border-[var(--border)] bg-[var(--hover-fill)] px-2.5 py-2 text-[10.5px] leading-relaxed text-[var(--text-muted)]">
                 模型清单在运行时从各网关的 /models
                 接口获取；接口不可用时回退到本地缓存或内置默认模型。OpenCode
-                Zen 使用应用内置的账号密钥，只保留零费用模型；其余为公开第三方网关，选中后提问会直接发送给对应服务商，提示词可能被记录，请勿发送敏感内容。
+                Zen 使用应用内置的账号密钥，只保留零费用模型；其余为公开第三方网关，选中后提问会直接发送给对应服务商，提示词可能被记录，请勿发送敏感内容。标有「语音 / 视频 /
+                图片」的模型不能用于文本对话，已置灰。
               </div>
               {freeGroups.map((group) => (
                 <div
@@ -1208,6 +1211,7 @@ export function SettingsDialog({
                   <div className="flex flex-col">
                     {group.items.map((profile) => {
                       const active = profile.id === aiStatus?.activeId;
+                      const nonText = isNonTextModality(profile.modality);
                       return (
                         <button
                           key={profile.id}
@@ -1215,12 +1219,17 @@ export function SettingsDialog({
                           title={
                             active
                               ? "当前使用中的模型"
-                              : `切换为 ${profile.name}`
+                              : nonText
+                                ? "该模型输出语音 / 视频 / 图片，不能用于文本对话"
+                                : `切换为 ${profile.name}`
                           }
-                          className={`flex cursor-pointer items-center gap-2 rounded-[6px] border-0 px-1.5 py-1 text-left transition-colors ${
-                            active
-                              ? "bg-[var(--card-active-bg)]"
-                              : "bg-transparent hover:bg-[var(--hover-fill)]"
+                          disabled={nonText}
+                          className={`flex items-center gap-2 rounded-[6px] border-0 px-1.5 py-1 text-left transition-colors ${
+                            nonText
+                              ? "cursor-not-allowed opacity-50"
+                              : active
+                                ? "cursor-pointer bg-[var(--card-active-bg)]"
+                                : "cursor-pointer bg-transparent hover:bg-[var(--hover-fill)]"
                           }`}
                           onClick={() => void handleActivateProfile(profile)}
                         >
@@ -1234,6 +1243,7 @@ export function SettingsDialog({
                                   当前
                                 </span>
                               )}
+                              <ModalityBadge modality={profile.modality} />
                             </span>
                             <span className="truncate font-mono text-[10px] text-[var(--text-muted)]">
                               {profile.model}
