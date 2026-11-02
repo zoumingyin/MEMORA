@@ -22,10 +22,12 @@ function loadPersistedUI(): PersistedUI | null {
       (parsed.filter !== 'all' &&
         parsed.filter !== 'note' &&
         parsed.filter !== 'reminder' &&
-        parsed.filter !== 'todo') ||
+        parsed.filter !== 'todo' &&
+        parsed.filter !== 'draw') ||
       (parsed.currentKind !== 'note' &&
         parsed.currentKind !== 'reminder' &&
-        parsed.currentKind !== 'todo')
+        parsed.currentKind !== 'todo' &&
+        parsed.currentKind !== 'draw')
     ) {
       return null
     }
@@ -45,7 +47,7 @@ function persistUI(ui: PersistedUI): void {
 interface EntryState {
   /** 新建条目时的默认分类（点「+」新建时使用；filter 为 all 时生效） */
   currentKind: EntryKind
-  /** 左侧列表筛选：全部 / 备忘 / 提醒 / 待办 */
+  /** 左侧列表筛选：全部 / 备忘 / 提醒 / 待办 / 涂鸦 */
   filter: 'all' | EntryKind
   /** 右侧详情当前选中的条目 id（可由提醒弹窗「进入便签」跳转设置） */
   selectedId: string | null

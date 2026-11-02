@@ -58,13 +58,15 @@ const KIND_LABEL: Record<EntryKind, string> = {
   note: "备忘",
   reminder: "提醒",
   todo: "待办",
+  draw: "涂鸦",
 };
 
-/** antd 主题主色跟随分类主题色（备忘蓝 / 提醒珊瑚红 / 待办绿） */
+/** antd 主题主色跟随分类主题色（备忘蓝 / 提醒珊瑚红 / 待办绿 / 涂鸦紫） */
 const KIND_COLOR: Record<EntryKind, string> = {
   note: "#2563eb",
   reminder: "#d9686b",
   todo: "#57a878",
+  draw: "#8b5cf6",
 };
 
 /** 窄屏视图切换选项：网格 / 列表 */

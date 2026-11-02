@@ -11,15 +11,17 @@ const DOT_COLOR: Record<EntryKind, string> = {
   note: "#2563eb",
   reminder: "#d9686b",
   todo: "#57a878",
+  draw: "#8b5cf6",
 };
 
 const KIND_LABEL: Record<EntryKind, string> = {
   note: "备忘",
   reminder: "提醒",
   todo: "待办",
+  draw: "涂鸦",
 };
 
-/** 某条目的「发生日期」：提醒按最近闹钟时间，备忘/待办按最近更新时间 */
+/** 某条目的「发生日期」：提醒按最近闹钟时间，备忘/待办/涂鸦按最近更新时间 */
 function entryDates(entry: Entry): number[] {
   if (entry.kind === "reminder") {
     return entry.alarms.map((alarm) => alarm.remindAt);

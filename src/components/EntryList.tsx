@@ -3,6 +3,7 @@ import {
   BellOutlined,
   CheckSquareOutlined,
   ClockCircleOutlined,
+  EditOutlined,
   FileTextOutlined,
 } from "@ant-design/icons";
 import {
@@ -26,6 +27,7 @@ const KIND_ICON: Record<EntryKind, ReactNode> = {
   note: <FileTextOutlined />,
   reminder: <BellOutlined />,
   todo: <CheckSquareOutlined />,
+  draw: <EditOutlined />,
 };
 
 /** 闹钟模式简称（卡片内紧凑展示） */
@@ -94,7 +96,7 @@ function sortEntries(
     return [...entries].sort(byTime);
   }
   const list = entries.filter((entry) => entry.kind === filter);
-  if (filter === "note") {
+  if (filter === "note" || filter === "draw") {
     return list.sort(byTime);
   }
   if (filter === "todo") {
@@ -142,7 +144,9 @@ function filterEntries(
     if (tagFilter && !entry.tags.includes(tagFilter)) return false;
     if (start && entry.updatedAt < start) return false;
     if (query) {
-      const haystack = `${entry.title}\n${entry.content}`.toLowerCase();
+      // 涂鸦正文是 base64 图片，不参与关键词匹配，避免随机字符命中数据串
+      const body = entry.kind === "draw" ? "" : entry.content;
+      const haystack = `${entry.title}\n${body}`.toLowerCase();
       if (!haystack.includes(query)) return false;
     }
     return true;
@@ -153,7 +157,7 @@ function rowMeta(
   entry: Entry,
   now: number
 ): { text: string; overdue?: boolean } {
-  if (entry.kind === "note") {
+  if (entry.kind === "note" || entry.kind === "draw") {
     return { text: `更新于 ${formatShort(entry.updatedAt)}` };
   }
   if (entry.kind === "todo") {
@@ -197,6 +201,9 @@ function toPlainText(md: string): string {
 
 /** 列表模式的一行摘要：待办取未完成子任务，提醒取最近闹钟，其余取正文纯文本 */
 function listSummary(entry: Entry): string {
+  if (entry.kind === "draw") {
+    return entry.content ? "手写涂鸦" : "（空白涂鸦）";
+  }
   if (entry.kind === "todo") {
     const pending = entry.items.find((item) => !item.done) ?? entry.items[0];
     return pending ? pending.text : toPlainText(entry.content || "");
@@ -392,9 +399,13 @@ export function EntryList({ onSelect, mode }: EntryListProps) {
   };
 
   const copyEntry = (entry: Entry): void => {
-    const text = entry.title
-      ? `${entry.title}\n${toPlainText(entry.content || "")}`
-      : toPlainText(entry.content || "");
+    // 涂鸦正文是图片数据，复制时只带标题，避免把 base64 串写进剪贴板
+    const text =
+      entry.kind === "draw"
+        ? entry.title || "手写涂鸦"
+        : entry.title
+          ? `${entry.title}\n${toPlainText(entry.content || "")}`
+          : toPlainText(entry.content || "");
     void navigator.clipboard
       ?.writeText(text)
       .then(() => message.success("已复制"))
@@ -430,8 +441,14 @@ export function EntryList({ onSelect, mode }: EntryListProps) {
     const doneClass = entryDone(entry) ? "done" : "";
     // 备忘类：正文按 Markdown 富文本渲染（含图片内联），不再单独抽缩略图以免与正文图片重复
     const isNote = entry.kind === "note";
-    const thumb = isNote ? null : firstImageSrc(entry.content || "");
-    const excerpt = toPlainText(entry.content || "");
+    const isDraw = entry.kind === "draw";
+    // 涂鸦正文本身就是 PNG data URL，直接作为缩略图
+    const thumb = isNote
+      ? null
+      : isDraw
+        ? entry.content || null
+        : firstImageSrc(entry.content || "");
+    const excerpt = isDraw ? "" : toPlainText(entry.content || "");
     const noteHtml = isNote ? markdownToHtml(entry.content || "") : "";
     // 纸张外观：底色淡染（--card-tint）+ 纹理（data-paper），纹理规则见 index.css 的 note-row[data-paper]
     const tintHex = paperTintHex(entry.color);
@@ -462,7 +479,7 @@ export function EntryList({ onSelect, mode }: EntryListProps) {
               alt=""
               loading="lazy"
               draggable={false}
-              className="h-full! w-full object-cover"
+              className={`h-full! w-full ${isDraw ? "object-contain" : "object-cover"}`}
             />
           </span>
         )}
@@ -475,6 +492,8 @@ export function EntryList({ onSelect, mode }: EntryListProps) {
               dangerouslySetInnerHTML={{ __html: noteHtml }}
             />
           )
+        ) : entry.kind === "draw" ? (
+          !thumb && <span className="row-desc line-clamp-5">（空白涂鸦）</span>
         ) : entry.kind === "todo" && entry.items.length > 0 ? (
           <TodoPreview items={entry.items} limit={previewLimit} />
         ) : entry.kind === "reminder" && entry.alarms.length > 0 ? (
@@ -581,6 +600,17 @@ export function EntryList({ onSelect, mode }: EntryListProps) {
               />
             ) : (
               <span className="wall-note-empty">（空白便签）</span>
+            )
+          ) : entry.kind === "draw" ? (
+            entry.content ? (
+              <img
+                src={entry.content}
+                alt=""
+                draggable={false}
+                className="wall-draw-img"
+              />
+            ) : (
+              <span className="wall-note-empty">（空白涂鸦）</span>
             )
           ) : entry.kind === "todo" ? (
             <div className="flex flex-col gap-2">

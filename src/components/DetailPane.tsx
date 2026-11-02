@@ -24,12 +24,14 @@ import { formatRelative, formatShort } from "../utils/format";
 import { alarmLoopIntervalMs } from "../reminder/scheduler";
 import { paperTintHex, PAPER_COLORS, PAPER_STYLES } from "../utils/paper";
 import { AlarmEditorDialog } from "./AlarmEditorDialog";
+import { DoodleBoard } from "./DoodleBoard";
 import { MarkdownEditor } from "./MarkdownEditor";
 
 const TITLE_PLACEHOLDER: Record<Entry["kind"], string> = {
   note: "备忘标题",
   reminder: "提醒什么事？",
   todo: "要做什么？",
+  draw: "涂鸦标题（可选）",
 };
 
 /** 闹钟模式短标签（列表行摘要） */
@@ -174,8 +176,11 @@ function DetailForm({ entry, onRemove }: DetailFormProps) {
       if (!current) return;
       const patch: Record<string, unknown> = {};
       if (current.title !== title) patch.title = title;
-      // 待办与提醒的正文分别是子任务清单 / 闹钟清单，不再有备注文本框；仅备忘保留备注
-      if (current.kind === "note" && current.content !== content)
+      // 待办与提醒的正文分别是子任务清单 / 闹钟清单，不再有备注文本框；备忘与涂鸦保留正文
+      if (
+        (current.kind === "note" || current.kind === "draw") &&
+        current.content !== content
+      )
         patch.content = content;
       if (current.tags?.join("\u0000") !== tags.join("\u0000"))
         patch.tags = tags;
@@ -584,6 +589,9 @@ function DetailForm({ entry, onRemove }: DetailFormProps) {
           onChange={setContent}
         />
       )}
+      {entry.kind === "draw" && (
+        <DoodleBoard value={content} onChange={setContent} />
+      )}
 
       {/* 颜色 / 纸张：便签纸张外观设置（底色圆点选中加圈；纹理选中加框） */}
       <div className="flex flex-col gap-1.5 px-1 pb-1.5">
@@ -633,7 +641,8 @@ function DetailForm({ entry, onRemove }: DetailFormProps) {
 
       <div className="detail-actions">
         <span className="detail-meta bg-[var(--field)]! rounded-[8px] px-2 py-1">
-          {entry.kind === "note" && `更新于 ${formatShort(entry.updatedAt)}`}
+          {(entry.kind === "note" || entry.kind === "draw") &&
+            `更新于 ${formatShort(entry.updatedAt)}`}
           {entry.kind === "todo" &&
             (allDone
               ? `完成于 ${entry.completedAt ? formatShort(entry.completedAt) : formatShort(entry.updatedAt)}`

@@ -206,6 +206,43 @@ ALTER TABLE entries ADD COLUMN deleted_at INTEGER;
 CREATE INDEX IF NOT EXISTS idx_entries_deleted ON entries(deleted_at);
 "#,
         },
+        Migration {
+            version: 7,
+            description: "allow draw kind: rebuild entries table with updated kind CHECK constraint",
+            kind: MigrationKind::Up,
+            sql: r#"
+CREATE TABLE entries_new (
+  id            TEXT PRIMARY KEY,
+  kind          TEXT NOT NULL CHECK (kind IN ('note','reminder','todo','draw')),
+  title         TEXT NOT NULL,
+  content       TEXT NOT NULL DEFAULT '',
+  remind_at     INTEGER,
+  done          INTEGER NOT NULL DEFAULT 0,
+  completed_at  INTEGER,
+  notified      INTEGER NOT NULL DEFAULT 0,
+  created_at    INTEGER NOT NULL,
+  updated_at    INTEGER NOT NULL,
+  sync_status  TEXT NOT NULL DEFAULT 'pending',
+  items         TEXT NOT NULL DEFAULT '[]',
+  alarms        TEXT NOT NULL DEFAULT '[]',
+  tags          TEXT NOT NULL DEFAULT '[]',
+  color         TEXT,
+  paper         TEXT,
+  deleted_at    INTEGER
+);
+INSERT INTO entries_new
+  (id, kind, title, content, remind_at, done, completed_at, notified, created_at, updated_at, sync_status, items, alarms, tags, color, paper, deleted_at)
+SELECT
+  id, kind, title, content, remind_at, done, completed_at, notified, created_at, updated_at, sync_status, items, alarms, tags, color, paper, deleted_at
+FROM entries;
+DROP TABLE entries;
+ALTER TABLE entries_new RENAME TO entries;
+CREATE INDEX IF NOT EXISTS idx_entries_kind ON entries(kind);
+CREATE INDEX IF NOT EXISTS idx_entries_updated ON entries(updated_at);
+CREATE INDEX IF NOT EXISTS idx_entries_created ON entries(created_at);
+CREATE INDEX IF NOT EXISTS idx_entries_deleted ON entries(deleted_at);
+"#,
+        },
     ];
 
     tauri::Builder::default()

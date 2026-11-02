@@ -73,6 +73,8 @@ export class MemoryEntryRepository implements EntryRepository {
     let entry: Entry
     if (kind === 'note') {
       entry = { kind: 'note', ...base }
+    } else if (kind === 'draw') {
+      entry = { kind: 'draw', ...base }
     } else if (kind === 'todo') {
       entry = { kind: 'todo', ...base, done: false, completedAt: null, items: todoItemsFromTexts(input.items) }
     } else {
@@ -108,7 +110,7 @@ export class MemoryEntryRepository implements EntryRepository {
     const updatedAt = Date.now()
     let next: Entry
 
-    if (current.kind === 'note') {
+    if (current.kind === 'note' || current.kind === 'draw') {
       next = {
         ...current,
         title: patch.title ?? current.title,

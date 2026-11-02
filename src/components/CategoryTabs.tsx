@@ -7,6 +7,7 @@ const FILTERS: Array<{ value: FilterValue; label: string }> = [
   { value: "note", label: "备忘" },
   { value: "reminder", label: "提醒" },
   { value: "todo", label: "待办" },
+  { value: "draw", label: "涂鸦" },
 ];
 
 /** 左侧列表顶部的分类筛选胶囊：全部 / 备忘 / 提醒 / 待办，选中态蓝色实心 + 计数（与参考图一致：仅选中项显示计数，保持一行紧凑） */

@@ -4,6 +4,7 @@ import {
   BellOutlined,
   CheckSquareOutlined,
   DeleteOutlined,
+  EditOutlined,
   FileTextOutlined,
   UndoOutlined,
 } from "@ant-design/icons";
@@ -18,16 +19,19 @@ const KIND_LABEL: Record<Entry["kind"], string> = {
   note: "备忘",
   reminder: "提醒",
   todo: "待办",
+  draw: "涂鸦",
 };
 
 const KIND_ICON: Record<Entry["kind"], ReactNode> = {
   note: <FileTextOutlined />,
   reminder: <BellOutlined />,
   todo: <CheckSquareOutlined />,
+  draw: <EditOutlined />,
 };
 
-/** 卡片内正文摘要：剔除图片标记 / HTML / Markdown 符号 */
+/** 卡片内正文摘要：剔除图片标记 / HTML / Markdown 符号；涂鸦不展示 base64 正文 */
 function previewText(entry: Entry): string {
+  if (entry.kind === "draw") return entry.content ? "手写涂鸦" : "";
   return entry.content
     .replace(/!\[[^\]]*\]\([^)]*\)/g, " ")
     .replace(/<[^>]+>/g, " ")

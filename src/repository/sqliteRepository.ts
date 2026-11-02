@@ -38,10 +38,10 @@ export class SqliteEntryRepository implements EntryRepository {
     const tags = input.tags ?? []
 
     let entry: Entry
-    if (kind === 'note') {
+    if (kind === 'note' || kind === 'draw') {
       entry = {
         id,
-        kind: 'note',
+        kind,
         title,
         content,
         createdAt: now,
@@ -88,7 +88,7 @@ export class SqliteEntryRepository implements EntryRepository {
     }
 
     const database = await getDb()
-    if (entry.kind === 'note') {
+    if (entry.kind === 'note' || entry.kind === 'draw') {
       await database.execute(
         `INSERT INTO entries
           (id, kind, title, content, remind_at, done, completed_at, notified, created_at, updated_at, sync_status, tags)

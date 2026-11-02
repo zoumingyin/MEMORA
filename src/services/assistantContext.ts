@@ -42,7 +42,7 @@ function truncate(text: string, limit: number): string {
   return `${text.slice(0, limit)}…`
 }
 
-const KIND_LABEL = { note: '备忘', todo: '待办', reminder: '提醒' } as const
+const KIND_LABEL = { note: '备忘', todo: '待办', reminder: '提醒', draw: '涂鸦' } as const
 
 function describeEntry(entry: Entry, contentLimit: number): string {
   const lines: string[] = []
@@ -71,6 +71,12 @@ function describeEntry(entry: Entry, contentLimit: number): string {
     lines.push(`  状态：${entry.done ? '已处理' : '待处理'}；下次提醒：${next}`)
   }
 
+  if (entry.kind === 'draw') {
+    lines.push('  内容：手写涂鸦（笔迹图片不展开）')
+    if (entry.tags.length) lines.push(`  标签：${entry.tags.join('、')}`)
+    return lines.join('\n')
+  }
+
   const cleaned = cleanContent(entry.content)
   if (cleaned) lines.push(`  内容：${truncate(cleaned, contentLimit)}`)
   if (entry.tags.length) lines.push(`  标签：${entry.tags.join('、')}`)
@@ -86,6 +92,7 @@ function buildNoteContext(
   }
 
   const notes = entries.filter((entry) => entry.kind === 'note').length
+  const drawings = entries.filter((entry) => entry.kind === 'draw').length
   const todos = entries.filter((entry) => entry.kind === 'todo')
   const reminders = entries.filter((entry) => entry.kind === 'reminder')
   const pendingTodos = todos.filter((entry) => !entry.done).length
@@ -107,7 +114,7 @@ function buildNoteContext(
   ]
 
   const parts: string[] = [
-    `统计：共 ${entries.length} 条（备忘 ${notes}、待办 ${todos.length} 条其中未完成 ${pendingTodos}、提醒 ${reminders.length} 条其中待处理 ${pendingReminders}）。`,
+    `统计：共 ${entries.length} 条（备忘 ${notes}、涂鸦 ${drawings}、待办 ${todos.length} 条其中未完成 ${pendingTodos}、提醒 ${reminders.length} 条其中待处理 ${pendingReminders}）。`,
   ]
   if (tags.length) parts.push(`标签：${tags.join('、')}`)
   parts.push('条目明细（可能因长度限制被截断）：')

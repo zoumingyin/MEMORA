@@ -19,6 +19,7 @@ const KIND_LABEL: Record<EntryKind, string> = {
   note: "备忘",
   reminder: "提醒",
   todo: "待办",
+  draw: "涂鸦",
 };
 
 /** 读取剪贴板文本：Tauri 环境用插件，网页预览兜底 navigator.clipboard */
@@ -43,8 +44,9 @@ async function readClipboardText(): Promise<string> {
  */
 export function QuickCapture({ open, onClose }: QuickCaptureProps) {
   const currentKind = useEntryStore((state) => state.currentKind);
+  // 快速记录只支持文字类条目：当前分类为涂鸦时回落到备忘
   const [kind, setKind] = useState<EntryKind>(() =>
-    currentKind === "reminder" ? "note" : currentKind,
+    currentKind === "reminder" || currentKind === "draw" ? "note" : currentKind,
   );
   const [text, setText] = useState("");
   const [pasting, setPasting] = useState(false);

@@ -11,6 +11,7 @@ import {
   FileText,
   Globe,
   ListChecks,
+  Pencil,
   Plus,
   RotateCcw,
   Settings2,
@@ -210,6 +211,7 @@ const ACTION_META: Record<EntryKind, { label: string; icon: ReactNode }> = {
   note: { label: '备忘', icon: <FileText size={12} /> },
   todo: { label: '待办', icon: <ListChecks size={12} /> },
   reminder: { label: '提醒', icon: <Bell size={12} /> },
+  draw: { label: '涂鸦', icon: <Pencil size={12} /> },
 }
 
 /** AI 提议新建的便签：卡片确认后才写入仓储，避免模型直接改数据 */

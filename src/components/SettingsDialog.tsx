@@ -244,7 +244,8 @@ function isValidEntry(value: unknown): value is Entry {
     typeof entry.id === "string" &&
     (entry.kind === "note" ||
       entry.kind === "reminder" ||
-      entry.kind === "todo") &&
+      entry.kind === "todo" ||
+      entry.kind === "draw") &&
     typeof entry.title === "string" &&
     typeof entry.content === "string" &&
     typeof entry.createdAt === "number" &&

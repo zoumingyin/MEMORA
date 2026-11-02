@@ -157,6 +157,9 @@ export function rowToEntry(row: EntryRow): Entry {
   if (row.kind === 'note') {
     return { kind: 'note', ...base }
   }
+  if (row.kind === 'draw') {
+    return { kind: 'draw', ...base }
+  }
   if (row.kind === 'todo') {
     return {
       kind: 'todo',

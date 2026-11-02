@@ -2,6 +2,7 @@ import { Modal } from "antd";
 import {
   BellOutlined,
   CheckSquareOutlined,
+  EditOutlined,
   FileTextOutlined,
 } from "@ant-design/icons";
 import type { ReactNode } from "react";
@@ -40,11 +41,17 @@ const KIND_OPTIONS: KindOption[] = [
     desc: "子任务清单，完成后自动归档",
     icon: <CheckSquareOutlined />,
   },
+  {
+    kind: "draw",
+    label: "涂鸦",
+    desc: "手写画板，随手涂画 / 记草图",
+    icon: <EditOutlined />,
+  },
 ];
 
 /**
  * 新建便签类型选择：点「+」新建时弹出，
- * 用户显式选择 备忘 / 提醒 / 待办 后创建对应类型条目并进入详情。
+ * 用户显式选择 备忘 / 提醒 / 待办 / 涂鸦 后创建对应类型条目并进入详情。
  */
 export function CreateKindDialog({ open, onClose, onCreate }: CreateKindDialogProps) {
   return (

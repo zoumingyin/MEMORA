@@ -1,5 +1,5 @@
-/** 条目分类：备忘 / 提醒 / 待办 */
-export type EntryKind = 'note' | 'reminder' | 'todo'
+/** 条目分类：备忘 / 提醒 / 待办 / 涂鸦 */
+export type EntryKind = 'note' | 'reminder' | 'todo' | 'draw'
 
 /** 同步状态：预留多设备同步，V1 仅本地写入 */
 export type SyncStatus = 'pending' | 'synced' | 'conflict'
@@ -40,6 +40,11 @@ export type PaperStyle = 'plain' | 'ruled' | 'grid' | 'dots'
 /** 备忘：纯文本记录 */
 export interface NoteEntry extends BaseEntry {
   kind: 'note'
+}
+
+/** 涂鸦：手写画板，content 存 PNG data URL（空字符串为空白画布） */
+export interface DrawEntry extends BaseEntry {
+  kind: 'draw'
 }
 
 /** 待办清单中的单个子任务 */
@@ -100,7 +105,7 @@ export interface ReminderEntry extends BaseEntry {
   alarms: AlarmItem[]
 }
 
-export type Entry = NoteEntry | TodoEntry | ReminderEntry
+export type Entry = NoteEntry | DrawEntry | TodoEntry | ReminderEntry
 
 /** SQLite 行结构（snake_case，与迁移表一一对应） */
 export interface EntryRow {
