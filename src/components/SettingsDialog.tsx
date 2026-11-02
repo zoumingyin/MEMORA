@@ -1,5 +1,6 @@
 import {
   AutoComplete,
+  Button,
   Input,
   Modal,
   Popconfirm,
@@ -8,6 +9,7 @@ import {
   Tree,
 } from "antd";
 import type { InputRef, TreeDataNode } from "antd";
+import { ExportOutlined } from "@ant-design/icons";
 import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
 import {
   open as dialogOpen,
@@ -46,6 +48,7 @@ import {
 } from "../window/closeBehavior";
 import { currentWorkArea, getBounds } from "../window/tauriWindow";
 import { collapseToStrip, detectDockEdge } from "../window/edgeDock";
+import { openExternal } from "../utils/openExternal";
 
 interface SettingsDialogProps {
   open: boolean;
@@ -213,7 +216,24 @@ const SETTING_TREE: SettingGroup[] = [
       },
     ],
   },
+  {
+    key: "about",
+    label: "关于",
+    children: [
+      {
+        key: "about-info",
+        label: "关于与友链",
+        hint: "应用说明与友情链接",
+      },
+    ],
+  },
 ];
+
+/** 友情链接：NexHubStudio（作者主页） */
+const FRIEND_LINK = {
+  name: "NexHubStudio",
+  url: "https://gitee.com/zoumingyin/NexHubStudio",
+};
 
 /** 可折叠设置树的节点数据；仅叶子可被选中切换内容 */
 const SETTING_TREE_DATA: TreeDataNode[] = SETTING_TREE.map((group) => ({
@@ -1296,6 +1316,34 @@ export function SettingsDialog({
               <p className="m-0 mt-1">
                 关闭上下文后，之前已发送的内容无法撤回；如涉及敏感笔记，请保持关闭。
               </p>
+            </div>
+          </div>
+        );
+      case "about-info":
+        return (
+          <div className="flex flex-col gap-2.5">
+            <div className="settings-item">
+              <div className="settings-item-main">
+                <span className="settings-item-label">便签</span>
+                <span className="settings-item-hint">
+                  本地优先的桌面便签，数据仅保存在本机
+                </span>
+              </div>
+            </div>
+            <div className="settings-item">
+              <div className="settings-item-main">
+                <span className="settings-item-label">友情链接</span>
+                <span className="settings-item-hint break-all">
+                  {FRIEND_LINK.name} · {FRIEND_LINK.url}
+                </span>
+              </div>
+              <Button
+                size="small"
+                icon={<ExportOutlined />}
+                onClick={() => void openExternal(FRIEND_LINK.url)}
+              >
+                访问
+              </Button>
             </div>
           </div>
         );

@@ -20,6 +20,7 @@ tauri-plugin-single-instance = "2"
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-clipboard-manager = "2"
 tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # AI 助手代理：默认 TLS 走 rustls + aws-lc（需 cmake/NASM），改用 native-tls 在 Windows 上走 schannel，

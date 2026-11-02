@@ -271,6 +271,8 @@ CREATE INDEX IF NOT EXISTS idx_entries_deleted ON entries(deleted_at);
         .plugin(tauri_plugin_clipboard_manager::init())
         // 文件对话框：数据导出 / 导入、数据库备份 / 恢复的文件选择
         .plugin(tauri_plugin_dialog::init())
+        // 系统浏览器打开外链（设置页友情链接）
+        .plugin(tauri_plugin_opener::init())
         // 全局快捷键：Ctrl+Shift+N 在任何应用唤起快速记录输入框（选中文字后直接记录）
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
