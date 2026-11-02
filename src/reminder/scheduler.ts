@@ -165,6 +165,8 @@ async function openReminderDialog(entry: ReminderEntry, alarm: AlarmItem): Promi
       center: true,
       decorations: false,
       transparent: true,
+      // 透明窗口不要再叠加系统投影：会在卡片周围透出一圈灰色轮廓
+      shadow: false,
       alwaysOnTop: true,
       resizable: false,
       skipTaskbar: true,
