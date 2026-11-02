@@ -9,6 +9,7 @@ import {
   Check,
   Copy,
   FileText,
+  Globe,
   ListChecks,
   Plus,
   RotateCcw,
@@ -91,9 +92,15 @@ function TypingDots() {
 
 /**
  * 首字前的等待反馈：推理模型（如豆包 Seed）会先思考十几秒，
- * 这里按秒计时，避免用户以为卡住
+ * 这里按秒计时，避免用户以为卡住；联网搜索时显示对应文案
  */
-function ThinkingIndicator({ startedAt }: { startedAt: number }) {
+function ThinkingIndicator({
+  startedAt,
+  label = '思考中',
+}: {
+  startedAt: number
+  label?: string
+}) {
   const [elapsed, setElapsed] = useState(0)
   useEffect(() => {
     const tick = () =>
@@ -106,7 +113,8 @@ function ThinkingIndicator({ startedAt }: { startedAt: number }) {
     <Flex align="center" gap={4}>
       <TypingDots />
       <span className="text-[12px] text-[var(--text-muted)]">
-        思考中{elapsed >= 2 ? ` ${elapsed}s` : ''}
+        {label}
+        {elapsed >= 2 ? ` ${elapsed}s` : ''}
       </span>
     </Flex>
   )
@@ -344,6 +352,17 @@ function MessageBubble({
   const showBubble =
     message.status === 'streaming' || message.stopped || Boolean(parsed.text)
 
+  // 联网搜索状态提示：搜索中 / 已注入 N 条结果 / 搜索失败（降级为普通回答）
+  const webSearch = message.webSearch
+  const searchHint =
+    message.status === 'streaming' && !parsed.text && webSearch?.status === 'searching'
+      ? '正在联网搜索…'
+      : webSearch?.status === 'done' && (webSearch.count ?? 0) > 0
+        ? `已联网搜索 ${webSearch.count} 条结果`
+        : webSearch?.status === 'failed'
+          ? `联网搜索失败：${webSearch.error ?? '未知原因'}`
+          : null
+
   return (
     <div className="group flex items-start gap-2">
       <div className="flex-center h-6 w-6 shrink-0 rounded-full bg-[var(--card-active-bg)] text-[var(--kind-accent)]">
@@ -353,7 +372,18 @@ function MessageBubble({
         {showBubble && (
           <div className="rounded-[12px] border border-[var(--border)] bg-[var(--field)] px-3 py-2 text-[13px] leading-relaxed text-[var(--text)]">
             {message.status === 'streaming' && !parsed.text && (
-              <ThinkingIndicator startedAt={message.createdAt} />
+              <ThinkingIndicator
+                startedAt={message.createdAt}
+                label={
+                  webSearch?.status === 'searching' ? '正在联网搜索…' : '思考中'
+                }
+              />
+            )}
+            {searchHint && searchHint !== '正在联网搜索…' && (
+              <div className="mb-1 flex items-center gap-1 text-[10.5px] leading-snug text-[var(--text-muted)]">
+                <Globe size={10} />
+                <span>{searchHint}</span>
+              </div>
             )}
             {parsed.text && (
               <div
@@ -399,6 +429,7 @@ function AssistantPanelBody() {
   const input = useAssistantStore((state) => state.input)
   const sending = useAssistantStore((state) => state.sending)
   const contextEnabled = useAssistantStore((state) => state.contextEnabled)
+  const webSearchEnabled = useAssistantStore((state) => state.webSearch)
   const entryCount = useEntryStore((state) => state.entries.length)
   const setInput = useAssistantStore((state) => state.setInput)
   const send = useAssistantStore((state) => state.send)
@@ -408,6 +439,7 @@ function AssistantPanelBody() {
   const closePanel = useAssistantStore((state) => state.closePanel)
   const togglePanel = useAssistantStore((state) => state.togglePanel)
   const setContextEnabled = useAssistantStore((state) => state.setContextEnabled)
+  const setWebSearch = useAssistantStore((state) => state.setWebSearch)
   const aiStatus = useAiProfileStore((state) => state.status)
   const aiLoad = useAiProfileStore((state) => state.load)
   const aiActivate = useAiProfileStore((state) => state.activate)
@@ -648,7 +680,7 @@ function AssistantPanelBody() {
             </Popconfirm>
             <button
               type="button"
-              className={`flex h-7 shrink-0 cursor-pointer items-center gap-1.5 rounded-full border-0 bg-transparent px-2 text-[10.5px] transition-colors hover:bg-[var(--hover-fill)] ${
+              className={`flex h-7 shrink-0 cursor-pointer items-center gap-1.5 rounded-full border-0 bg-transparent px-1 text-[10.5px] transition-colors hover:bg-[var(--hover-fill)] ${
                 contextEnabled
                   ? "text-[var(--kind-accent)]"
                   : "text-[var(--text-muted)]"
@@ -662,6 +694,25 @@ function AssistantPanelBody() {
               onClick={() => setContextEnabled(!contextEnabled)}
             >
               {contextEnabled ? <ShieldCheck size={13} /> : <ShieldOff size={13} />}
+            </button>
+
+            <button
+              type="button"
+              className={`flex h-7 shrink-0 cursor-pointer items-center gap-1.5 rounded-full border-0 bg-transparent px-1 text-[10.5px] transition-colors hover:bg-[var(--hover-fill)] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent ${
+                webSearchEnabled
+                  ? "text-[var(--kind-accent)]"
+                  : "text-[var(--text-muted)]"
+              }`}
+              aria-label={webSearchEnabled ? "关闭联网搜索" : "开启联网搜索"}
+              title={
+                webSearchEnabled
+                  ? "已开启：提问会先搜索必应并把结果注入上下文，点击关闭"
+                  : "已关闭：点击开启联网搜索（提问会先把问题发送到必应）"
+              }
+              disabled={sending}
+              onClick={() => setWebSearch(!webSearchEnabled)}
+            >
+              <Globe size={13} />
             </button>
 
             {activeProfile && (

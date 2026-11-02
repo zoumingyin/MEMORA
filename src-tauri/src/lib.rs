@@ -6,6 +6,8 @@ use tauri_plugin_global_shortcut::{Code, Modifiers, ShortcutState};
 use tauri_plugin_sql::{Migration, MigrationKind};
 
 mod ai;
+// pub 仅为让 examples/search_probe.rs 直接调用 ai_web_search 做端到端验证
+pub mod web_search;
 
 /// 托盘菜单中的「开机自启动」勾选项：事件回调里通过 state 同步勾选状态
 /// （TrayIcon 没有读取菜单的 API，只能保存引用后 set_checked）
@@ -286,7 +288,8 @@ CREATE INDEX IF NOT EXISTS idx_entries_deleted ON entries(deleted_at);
             ai::ai_test,
             ai::ai_list_models,
             ai::ai_chat,
-            ai::ai_cancel
+            ai::ai_cancel,
+            web_search::ai_web_search
         ])
         .run(context)
         .expect("启动便签应用失败");

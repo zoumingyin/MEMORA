@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { buildAssistantContext } from '../services/assistantContext'
 import { cancelChat, streamChat } from '../services/aiClient'
+import { formatWebResults, searchWeb } from '../services/webSearch'
 import { parseAssistantActions } from '../utils/assistantActions'
 import { useAiProfileStore } from './useAiProfileStore'
 import { useEntryStore } from './useEntryStore'
@@ -19,6 +20,7 @@ const FLUSH_INTERVAL_MS = 50
 interface PersistedAssistant {
   messages: AssistantMessage[]
   contextEnabled: boolean
+  webSearch: boolean
 }
 
 function isMessage(value: unknown): value is AssistantMessage {
@@ -38,7 +40,7 @@ function isMessage(value: unknown): value is AssistantMessage {
 function loadPersisted(): PersistedAssistant {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
-    if (!raw) return { messages: [], contextEnabled: true }
+    if (!raw) return { messages: [], contextEnabled: true, webSearch: false }
     const parsed = JSON.parse(raw) as Partial<PersistedAssistant>
     const messages = Array.isArray(parsed.messages)
       ? parsed.messages
@@ -62,15 +64,18 @@ function loadPersisted(): PersistedAssistant {
       messages,
       contextEnabled:
         typeof parsed.contextEnabled === 'boolean' ? parsed.contextEnabled : true,
+      webSearch: parsed.webSearch === true,
     }
   } catch {
-    return { messages: [], contextEnabled: true }
+    return { messages: [], contextEnabled: true, webSearch: false }
   }
 }
 
+/** 持久化当前快照：消息 + 两个会话开关 */
 function persistSnapshot(
   messages: AssistantMessage[],
   contextEnabled: boolean,
+  webSearch: boolean,
 ): void {
   try {
     const stored = messages
@@ -83,7 +88,7 @@ function persistSnapshot(
       )
     localStorage.setItem(
       STORAGE_KEY,
-      JSON.stringify({ messages: stored, contextEnabled }),
+      JSON.stringify({ messages: stored, contextEnabled, webSearch }),
     )
   } catch {
     // 存储不可用（隐私模式 / 配额满）时静默跳过，不影响对话
@@ -93,6 +98,11 @@ function persistSnapshot(
 /** 当前进行中的请求：用于停止生成与丢弃取消后的迟到事件 */
 let active: { requestId: string; assistantId: string } | null = null
 
+function errorText(error: unknown): string {
+  if (error instanceof Error) return error.message
+  return String(error)
+}
+
 interface AssistantState {
   open: boolean
   messages: AssistantMessage[]
@@ -100,11 +110,14 @@ interface AssistantState {
   sending: boolean
   /** 是否允许把便签内容作为上下文发送给 AI（隐私开关，默认开启） */
   contextEnabled: boolean
+  /** 是否开启联网搜索：提问前先搜必应并把结果注入上下文（默认关闭） */
+  webSearch: boolean
   openPanel: () => void
   closePanel: () => void
   togglePanel: () => void
   setInput: (value: string) => void
   setContextEnabled: (enabled: boolean) => void
+  setWebSearch: (enabled: boolean) => void
   send: (text?: string) => Promise<void>
   stop: () => void
   retry: () => Promise<void>
@@ -121,6 +134,7 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
   input: '',
   sending: false,
   contextEnabled: initial.contextEnabled,
+  webSearch: initial.webSearch,
 
   openPanel: () => set({ open: true }),
   closePanel: () => set({ open: false }),
@@ -129,7 +143,12 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
 
   setContextEnabled: (enabled) => {
     set({ contextEnabled: enabled })
-    persistSnapshot(get().messages, enabled)
+    persistSnapshot(get().messages, enabled, get().webSearch)
+  },
+
+  setWebSearch: (enabled) => {
+    set({ webSearch: enabled })
+    persistSnapshot(get().messages, get().contextEnabled, enabled)
   },
 
   send: async (text) => {
@@ -184,7 +203,7 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
       sending: true,
       open: true,
     })
-    persistSnapshot(get().messages, state.contextEnabled)
+    persistSnapshot(get().messages, state.contextEnabled, state.webSearch)
 
     const requestId = crypto.randomUUID()
     active = { requestId, assistantId }
@@ -217,10 +236,6 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
       state.contextEnabled,
     )
     const contextMs = performance.now() - contextStartedAt
-    const apiMessages: AiChatMessage[] = [
-      { role: 'system', content: context.systemPrompt },
-      ...history,
-    ]
 
     // 使用对话界面当前选中的模型配置；未加载时由后端回落到当前配置
     const profileId = useAiProfileStore.getState().status?.activeId ?? null
@@ -261,11 +276,49 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
       flush()
       set(mutator)
       active = null
-      persistSnapshot(get().messages, get().contextEnabled)
+      persistSnapshot(get().messages, get().contextEnabled, get().webSearch)
     }
     const isStale = () => active?.requestId !== requestId
 
+    /** 更新当前回答消息上的联网搜索状态（随消息持久化） */
+    const updateWebSearch = (
+      info: NonNullable<AssistantMessage['webSearch']>,
+    ) => {
+      set((current) => ({
+        messages: current.messages.map((message) =>
+          message.id === assistantId ? { ...message, webSearch: info } : message,
+        ),
+      }))
+    }
+
     try {
+      // 联网搜索：开启时先搜必应，结果并入 system 提示词；失败降级为普通回答
+      let webBlock: string | null = null
+      if (state.webSearch) {
+        updateWebSearch({ status: 'searching' })
+        try {
+          const results = await searchWeb(content)
+          webBlock = formatWebResults(results, content)
+          updateWebSearch({ status: 'done', count: results.length })
+        } catch (error) {
+          updateWebSearch({
+            status: 'failed',
+            error: errorText(error),
+          })
+        }
+        // 搜索期间用户可能已点停止：丢弃结果，不再发起对话
+        if (isStale()) return
+      }
+      const apiMessages: AiChatMessage[] = [
+        {
+          role: 'system',
+          content: webBlock
+            ? `${context.systemPrompt}\n\n${webBlock}`
+            : context.systemPrompt,
+        },
+        ...history,
+      ]
+
       await streamChat(requestId, profileId, apiMessages, {
         onDelta: (delta) => {
           if (isStale()) return
@@ -328,7 +381,7 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
           ),
         }))
         active = null
-        persistSnapshot(get().messages, get().contextEnabled)
+        persistSnapshot(get().messages, get().contextEnabled, get().webSearch)
       }
       // 用户停止或异常退出时收尾，确保每个请求都有且仅有一条计时日志
       reportTiming('中断')
@@ -348,7 +401,7 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
           : message,
       ),
     }))
-    persistSnapshot(get().messages, get().contextEnabled)
+    persistSnapshot(get().messages, get().contextEnabled, get().webSearch)
   },
 
   retry: async () => {
@@ -359,7 +412,7 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
     if (index < 0) return
     const content = messages[index].content
     set({ messages: messages.slice(0, index) })
-    persistSnapshot(get().messages, get().contextEnabled)
+    persistSnapshot(get().messages, get().contextEnabled, get().webSearch)
     await get().send(content)
   },
 
@@ -369,7 +422,7 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
       active = null
     }
     set({ messages: [], input: '', sending: false })
-    persistSnapshot([], get().contextEnabled)
+    persistSnapshot([], get().contextEnabled, get().webSearch)
   },
 
   markActionCreated: (messageId, index) => {
@@ -385,6 +438,6 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
           : message,
       ),
     }))
-    persistSnapshot(get().messages, get().contextEnabled)
+    persistSnapshot(get().messages, get().contextEnabled, get().webSearch)
   },
 }))

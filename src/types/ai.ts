@@ -119,6 +119,15 @@ export type AiStreamEvent =
   /** 仅开发环境：后端诊断信息，前端只打印到控制台 */
   | { type: 'debug'; message: string }
 
+/** 联网搜索返回的单条结果（与 src-tauri/src/web_search.rs 对应） */
+export interface WebSearchResult {
+  title: string
+  url: string
+  snippet: string
+  /** 结果页正文摘录（仅前几条结果有值；SPA 空壳或反爬页为空） */
+  content?: string | null
+}
+
 /** 对话界面中的一条消息 */
 export interface AssistantMessage {
   id: string
@@ -132,4 +141,13 @@ export interface AssistantMessage {
   stopped?: boolean
   /** 已确认创建的操作下标：随消息持久化，避免重开面板或重启后重复创建 */
   createdActions?: number[]
+  /**
+   * 联网搜索状态（仅 assistant 消息）：开启联网后随消息持久化，
+   * 展示「正在搜索 / 已搜索 N 条 / 搜索失败」提示
+   */
+  webSearch?: {
+    status: 'searching' | 'done' | 'failed'
+    count?: number
+    error?: string
+  }
 }
