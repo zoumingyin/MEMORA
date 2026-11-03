@@ -14,7 +14,7 @@ import {
   SearchOutlined,
 } from "@ant-design/icons";
 import { ColorPicker, Input } from "antd";
-import { FONT_COLORS, FONT_SIZES, STANDARD_COLORS } from "../utils/editorColors";
+import { FONT_COLORS, FONT_SIZES, STANDARD_COLORS, DEFAULT_PICKER_COLOR } from "../utils/editorColors";
 import {
   EMOJI_CATEGORIES,
   MAX_RECENT,
@@ -345,7 +345,8 @@ export function ContextMenuPanel({
             <div style={{ padding: "4px" }}>
               <ColorPicker
                 rootClassName="md-ctx-color-picker"
-                defaultValue={colorValue}
+                // 无显式颜色时用不透明兜底色：cleared 颜色（alpha=0）会触发 disabledAlpha 警告
+                defaultValue={colorValue ?? DEFAULT_PICKER_COLOR}
                 format="hex"
                 disabledAlpha
                 allowClear

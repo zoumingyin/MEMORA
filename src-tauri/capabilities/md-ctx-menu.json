@@ -1,14 +1,16 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "md-ctx-menu",
-  "description": "Markdown 右键菜单窗口能力：显示/聚焦/关闭自身窗口，事件通信（emit 命令回传主窗口）",
+  "description": "Markdown 右键菜单常驻窗口能力：显示/隐藏/聚焦/定位自身窗口，读写剪贴板，事件通信（接收打开指令、回报就绪、回传命令）",
   "windows": ["md-ctx-*"],
   "permissions": [
     "core:default",
     "core:window:allow-show",
+    "core:window:allow-hide",
     "core:window:allow-set-focus",
-    "core:window:allow-close",
     "core:window:allow-set-position",
-    "core:window:allow-set-size"
+    "core:window:allow-set-size",
+    "clipboard-manager:allow-read-text",
+    "clipboard-manager:allow-write-text"
   ]
 }

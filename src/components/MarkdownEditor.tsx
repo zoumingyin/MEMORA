@@ -16,7 +16,17 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { cursorPosition, getCurrentWindow } from "@tauri-apps/api/window";
 import { isTauriRuntime } from "../repository";
 import { markdownToHtml } from "../utils/markdown";
+import { readClipboardText, writeClipboardText } from "../utils/clipboard";
 import { currentWorkArea, type WorkArea } from "../window/tauriWindow";
+import {
+  CTX_MENU_COMMAND_EVENT,
+  CTX_MENU_WIN_H,
+  CTX_MENU_WIN_W,
+  hideCtxMenuWindow,
+  openCtxMenu,
+  type CtxCommand,
+  type CtxMenuState,
+} from "../window/ctxMenuWindow";
 import {
   BoldOutlined,
   CodeOutlined,
@@ -29,15 +39,16 @@ import {
   UndoOutlined,
   UnorderedListOutlined,
   SmileOutlined,
+  EditOutlined,
 } from "@ant-design/icons";
-import { ColorPicker } from "antd";
+import { ColorPicker, Modal } from "antd";
 import EmojiPicker, { type EmojiAnchor } from "./EmojiPicker";
-import { FONT_COLORS, STANDARD_COLORS } from "../utils/editorColors";
+import { DoodleBoard } from "./DoodleBoard";
+import { FONT_COLORS, STANDARD_COLORS, DEFAULT_PICKER_COLOR } from "../utils/editorColors";
 import {
   ContextMenuPanel,
   type CtxMenuAction,
 } from "./ContextMenuPanel";
-import type { CtxCommand } from "./CtxMenuDialog";
 import { countMarkdownWords } from "../utils/markdown";
 
 interface MarkdownEditorProps {
@@ -189,8 +200,11 @@ export function MarkdownEditor({
   placeholder,
 }: MarkdownEditorProps) {
   const [colorOpen, setColorOpen] = useState(false);
-  /** 工具栏 antd 拾色器当前颜色（打开时读取选区颜色，拖动时跟随） */
-  const [colorValue, setColorValue] = useState<string | undefined>(undefined);
+  /** 工具栏 antd 拾色器当前颜色（打开时读取选区颜色，拖动时跟随）；初值用不透明色，避免 cleared 颜色触发警告 */
+  const [colorValue, setColorValue] = useState<string>(DEFAULT_PICKER_COLOR);
+  /** 手写涂鸦弹窗开关与画布产出的 PNG dataURL */
+  const [doodleOpen, setDoodleOpen] = useState(false);
+  const [doodleData, setDoodleData] = useState("");
   /** 表情选择面板锚点（工具栏按钮 / 右键菜单项触发），null 表示面板关闭 */
   const [emojiAnchor, setEmojiAnchor] = useState<EmojiAnchor | null>(null);
   // 右键上下文菜单（浏览器环境页面内回退；Tauri 环境为独立窗口）
@@ -202,8 +216,6 @@ export function MarkdownEditor({
   const lastHtmlRef = useRef<string>("");
   /** 标记「刚刚是用户输入触发的 onChange」，同步 effect 据此跳过 setContent，避免光标跳走 */
   const isInternalUpdate = useRef(false);
-  /** 独立右键菜单窗口实例（Tauri 环境），卸载时兜底关闭 */
-  const ctxWinRef = useRef<WebviewWindow | null>(null);
   const turndown = useMemo(() => createTurndown(), []);
   const htmlToMarkdown = (html: string): string =>
     turndown.turndown(html || "");
@@ -275,29 +287,22 @@ export function MarkdownEditor({
   };
 
   /**
-   * 独立菜单窗口尺寸（CSS px）：
-   * 宽 780 = 面板（约 165）+ 面板内移 240（左侧给子菜单留空间）+ 右侧子菜单横向展开余量，
-   * 使子菜单贴屏幕边缘时既能向左也能向右完整展开；高 520 容纳完整字号子菜单（360）。
-   * 面板内移量见 CtxMenuDialog 的 CTX_PANEL_OFFSET（240），两者须满足：
-   * 面板左缘 + 触发项偏移 - 最宽子菜单(244) ≥ 0，且 面板左缘 + 触发项右缘 + 最宽子菜单 ≤ 780。
+   * 打开右键菜单窗口（应用启动后预热的常驻窗口，见 window/ctxMenuWindow）：
+   * 同步快照选区与格式状态 → 并行读取光标/窗口几何 → 事件通知菜单窗口定位显示。
+   * 窗口创建失败或未就绪时回退为页面内菜单。
    */
-  const CTX_MENU_WIN_W = 780;
-  const CTX_MENU_WIN_H = 520;
-
-  /** 打开独立右键菜单窗口（Tauri 环境，参考图片预览窗口实现）：
-      快照当前选区与格式状态 → localStorage 传递 → 创建 md-ctx-* 透明窗口并定位到鼠标附近 */
   const openCtxMenuWindow = async (
     clientX: number,
     clientY: number
   ): Promise<void> => {
-    // 上一个菜单窗口尚未自关时兜底关闭，避免叠加
-    if (ctxWinRef.current) {
-      try {
-        await ctxWinRef.current.close();
-      } catch {
-        // 已自关 / 权限受限时忽略
-      }
-    }
+    // 快照必须在任何 await 之前完成：等待 IPC 期间选区/焦点可能变化
+    const selectedText = getSelectedText();
+    const bold = toolActive("bold");
+    const strike = toolActive("strike");
+    const italic = toolActive("italic");
+    const underline = toolActive("underline");
+    const color = currentTextColor();
+    const isDark = document.documentElement.classList.contains("dark-glass");
     // 快照主窗口当前主题 CSS 变量，供菜单窗口注入，保持菜单视觉与主窗口一致
     const cssVars: Record<string, string> = {};
     for (const key of [
@@ -312,105 +317,64 @@ export function MarkdownEditor({
         .getPropertyValue(key)
         .trim();
     }
-    // 系统级光标位置（物理像素）：右键瞬间读取，随快照传给菜单窗口做精确定位。
-    // 不依赖 innerPosition/scaleFactor 换算，任何 DPI/缩放下都与鼠标点击处严格一致。
-    let cursorX = 0;
-    let cursorY = 0;
-    let cursorCaptured = false;
-    try {
-      const pos = await cursorPosition();
-      cursorX = pos.x;
-      cursorY = pos.y;
-      cursorCaptured = true;
-    } catch {
-      // 读取失败时退化为视口换算定位
-    }
-    // 兜底定位（cursorPosition 失败时）：主窗口内容区位置（innerPosition，物理像素）+ 视口内偏移 × 缩放比，
+
+    // 系统级光标位置（物理像素，首选）与主窗口几何（兜底定位/边界）并行读取，
+    // 减少右键到菜单出现的等待
+    const [cursor, geom] = await Promise.all([
+      cursorPosition().catch(() => null),
+      (async () => {
+        try {
+          const current = getCurrentWindow();
+          const [scale, area, inner] = await Promise.all([
+            current.scaleFactor(),
+            currentWorkArea(),
+            current.innerPosition(),
+          ]);
+          return { scale, area, inner };
+        } catch {
+          return { scale: 1, area: null as WorkArea | null, inner: null };
+        }
+      })(),
+    ]);
+
+    // 兜底定位（cursorPosition 失败时）：主窗口内容区位置（物理像素）+ 视口内偏移 × 缩放比，
     // 换算后钳制在当前显示器工作区内。
-    const winW = CTX_MENU_WIN_W;
-    const winH = CTX_MENU_WIN_H;
-    let scale = 1;
-    let area: WorkArea | null = null;
-    let baseX = 0;
-    let baseY = 0;
-    try {
-      const current = getCurrentWindow();
-      scale = await current.scaleFactor();
-      area = await currentWorkArea();
-      const pos = await current.innerPosition();
-      baseX = pos.x;
-      baseY = pos.y;
-    } catch {
-      // 缩放 / 工作区 / 位置查询失败时按 1:1、主窗口位于 (0,0) 处理
+    let posX = cursor?.x ?? 0;
+    let posY = cursor?.y ?? 0;
+    if (!cursor) {
+      const { scale, area, inner } = geom;
+      posX = (inner?.x ?? 0) + Math.round(clientX * scale);
+      posY = (inner?.y ?? 0) + Math.round(clientY * scale);
+      if (area) {
+        posX = Math.min(
+          Math.max(posX, area.x),
+          area.x + Math.max(0, area.width - Math.round(CTX_MENU_WIN_W * scale))
+        );
+        posY = Math.min(
+          Math.max(posY, area.y),
+          area.y + Math.max(0, area.height - Math.round(CTX_MENU_WIN_H * scale))
+        );
+      }
     }
-    const winWP = Math.round(winW * scale);
-    const winHP = Math.round(winH * scale);
-    let cx = baseX + Math.round(clientX * scale);
-    let cy = baseY + Math.round(clientY * scale);
-    if (area) {
-      cx = Math.min(Math.max(cx, area.x), area.x + area.width - winWP);
-      cy = Math.min(Math.max(cy, area.y), area.y + area.height - winHP);
-    }
-    const snapshot = {
-      selectedText: getSelectedText(),
-      bold: toolActive("bold"),
-      strike: toolActive("strike"),
-      italic: toolActive("italic"),
-      underline: toolActive("underline"),
-      color: editor?.getAttributes("textStyle").color as string | undefined,
-      isDark: document.documentElement.classList.contains("dark-glass"),
+
+    const snapshot: CtxMenuState = {
+      selectedText,
+      bold,
+      strike,
+      italic,
+      underline,
+      color,
+      isDark,
       cssVars,
-      // 定位信息：系统光标物理坐标 + 菜单窗口期望的 CSS 尺寸
-      cursorX,
-      cursorY,
-      cursorCaptured,
-      winW,
-      winH,
-      // 点击所在显示器工作区（物理像素）：主窗口就在该显示器上，作为菜单翻转/钳制的权威边界
-      workArea: area,
+      // 定位信息：鼠标物理坐标 + 点击所在显示器工作区（主窗口就在该显示器上）
+      cursorX: posX,
+      cursorY: posY,
+      workArea: geom.area,
     };
-    const storageKey = `md-ctx-menu-${Date.now()}`;
-    try {
-      localStorage.setItem(storageKey, JSON.stringify(snapshot));
-    } catch {
-      console.error("保存右键菜单状态失败");
-      return;
-    }
-    // 创建选项按物理像素传入（实测运行时按物理像素解释），菜单窗口创建后还会用
-    // setPosition/setSize 按物理像素精确定位与校正尺寸，双保险保证落在鼠标处。
-    const optX = cursorCaptured ? cursorX : cx;
-    const optY = cursorCaptured ? cursorY : cy;
-    const params = new URLSearchParams({ key: storageKey });
-    try {
-      const win = new WebviewWindow(`md-ctx-${Date.now()}`, {
-        url: `ctxmenu.html?${params.toString()}`,
-        width: winW,
-        height: winH,
-        x: optX,
-        y: optY,
-        center: false,
-        decorations: false,
-        transparent: true,
-        alwaysOnTop: true,
-        resizable: false,
-        maximizable: false,
-        minimizable: false,
-        skipTaskbar: true,
-        focus: true,
-        visible: false,
-        shadow: false,
-        title: "右键菜单",
-      });
-      ctxWinRef.current = win;
-      // 窗口加载失败（如能力文件尚未随重编译生效）→ 回退为页面内菜单，保证右键可用
-      win.once("tauri://error", () => {
-        ctxWinRef.current = null;
-        showInPageCtxMenu(clientX, clientY);
-      });
-    } catch (error) {
-      console.error("打开右键菜单窗口失败，回退为页面内菜单", error);
-      showInPageCtxMenu(clientX, clientY);
-    }
+
+    if (await openCtxMenu(snapshot)) return;
+    console.error("打开右键菜单窗口失败，回退为页面内菜单");
+    showInPageCtxMenu(clientX, clientY);
   };
 
   /** 页面内右键菜单（浏览器环境回退 / 独立窗口创建失败时兜底） */
@@ -455,10 +419,11 @@ export function MarkdownEditor({
   const executeWindowCommand = (command: CtxCommand): void => {
     switch (command.cmd) {
       case "copy":
-        void copySelection();
+        // 菜单窗口已写入剪贴板，主窗口无需重复写（期间可能已失焦）
         break;
       case "cut":
-        void cutSelection();
+        // 菜单窗口已写好剪贴板；主窗口只删除选区，避免失焦窗口重复写剪贴板失败导致剪切无效
+        editor?.chain().focus().deleteSelection().run();
         break;
       case "paste":
         if (command.value)
@@ -571,10 +536,10 @@ export function MarkdownEditor({
     closeCtxMenu();
   };
 
-  // 卸载（切换条目 / 关闭）时兜底关闭仍开着的独立菜单窗口
+  // 卸载（切换条目 / 关闭）时兜底隐藏仍开着的常驻菜单窗口（不销毁，下次复用）
   useEffect(() => {
     return () => {
-      ctxWinRef.current?.close().catch(() => undefined);
+      void hideCtxMenuWindow();
     };
   }, []);
 
@@ -601,6 +566,10 @@ export function MarkdownEditor({
     extensions: [
       StarterKit.configure({
         heading: { levels: [1, 2, 3] },
+        // StarterKit v3 已内置 link / underline，这里关掉，改用下方显式配置的实例
+        // （Link.openOnClick=false），避免重复注册产生 duplicate extension 警告
+        link: false,
+        underline: false,
       }),
       Underline,
       TextStyle,
@@ -636,7 +605,7 @@ export function MarkdownEditor({
     if (!isTauriRuntime() || !editor) return;
     let unlisten: UnlistenFn | undefined;
     let disposed = false;
-    void listen<CtxCommand>("md-ctx-command", (event) => {
+    void listen<CtxCommand>(CTX_MENU_COMMAND_EVENT, (event) => {
       executeWindowCommand(event.payload);
     }).then((un) => {
       if (disposed) un();
@@ -705,43 +674,26 @@ export function MarkdownEditor({
     return editor.state.doc.textBetween(from, to, "\n");
   };
 
-  /** 复制：优先用 Clipboard API 写入选中文本（替代已弃用的 document.execCommand("copy")） */
+  /** 复制：写入选中文本（Tauri 走剪贴板插件，网页预览兜底 Clipboard API） */
   const copySelection = async (): Promise<void> => {
-    const write = navigator.clipboard?.writeText?.bind(navigator.clipboard);
-    if (!write) return;
     const text = getSelectedText();
     if (!text) return;
-    try {
-      await write(text);
-    } catch {
-      // 环境不支持或权限被拒：与原 execCommand 静默失败行为一致
-    }
+    await writeClipboardText(text);
   };
 
-  /** 剪切：复制选中文本后删除编辑器内选区（替代已弃用的 document.execCommand("cut")） */
+  /** 剪切：复制选中文本后删除编辑器内选区，写入失败则不删除 */
   const cutSelection = async (): Promise<void> => {
-    const write = navigator.clipboard?.writeText?.bind(navigator.clipboard);
-    if (!write) return;
     const text = getSelectedText();
     if (!text) return;
-    try {
-      await write(text);
+    if (await writeClipboardText(text)) {
       editor?.chain().focus().deleteSelection().run();
-    } catch {
-      // 环境不支持或权限被拒：静默忽略
     }
   };
 
-  /** 粘贴：读取剪贴板文本并插入光标处（替代已弃用的 document.execCommand("paste")） */
+  /** 粘贴：读取剪贴板文本并插入光标处（Tauri 走剪贴板插件，网页预览兜底 Clipboard API） */
   const pasteFromClipboard = async (): Promise<void> => {
-    const read = navigator.clipboard?.readText?.bind(navigator.clipboard);
-    if (!read) return;
-    try {
-      const text = await read();
-      if (text) editor?.chain().focus().insertContent(text).run();
-    } catch {
-      // 权限被拒或环境不支持：静默忽略
-    }
+    const text = await readClipboardText();
+    if (text) editor?.chain().focus().insertContent(text).run();
   };
 
   const onImageFile = (event: React.ChangeEvent<HTMLInputElement>): void => {
@@ -763,9 +715,30 @@ export function MarkdownEditor({
   const headingActive = (level: number): boolean =>
     editor?.isActive("heading", { level }) ?? false;
 
+  /**
+   * 当前文字颜色（拾色器初始值）：优先取显式设置的 textStyle 颜色，否则取渲染后的
+   * 继承文字色（随主题变化）。返回值始终是不透明颜色——「无颜色」若以 undefined
+   * 传给 disabledAlpha 的拾色器，antd 会按 alpha=0 处理并打 dev 警告。
+   */
+  const currentTextColor = (): string => {
+    const explicit = editor?.getAttributes("textStyle").color as
+      | string
+      | undefined;
+    if (explicit) return explicit;
+    const root = editorRef.current;
+    const inherited = root ? getComputedStyle(root).color : "";
+    return inherited || DEFAULT_PICKER_COLOR;
+  };
+
   /** 顶部工具条按钮（含特殊渲染项：type=color 渲染 antd 拾色器，type=clear 渲染清除按钮） */
   const triggerFileInput = (): void => {
     fileInputRef.current?.click();
+  };
+  /** 把涂鸦画布导出的 PNG 插入光标处（与插入图片共用 Image 扩展） */
+  const insertDoodle = (): void => {
+    if (!doodleData) return;
+    editor?.chain().focus().setImage({ src: doodleData }).run();
+    setDoodleOpen(false);
   };
   const tools: Array<{
     key: string;
@@ -891,6 +864,15 @@ export function MarkdownEditor({
       label: <PictureOutlined />,
       onClick: triggerFileInput,
     },
+    {
+      key: "doodle",
+      title: "插入手写涂鸦",
+      label: <EditOutlined />,
+      onClick: () => {
+        setDoodleData("");
+        setDoodleOpen(true);
+      },
+    },
     { key: "color", type: "color", title: "文字颜色（antd 拾色器）" },
     { key: "clearColor", type: "clear", title: "清除文字颜色" },
   ];
@@ -910,11 +892,7 @@ export function MarkdownEditor({
                   onOpenChange={(open) => {
                     setColorOpen(open);
                     if (open) {
-                      setColorValue(
-                        editor?.getAttributes("textStyle").color as
-                          | string
-                          | undefined
-                      );
+                      setColorValue(currentTextColor());
                     }
                   }}
                   value={colorValue}
@@ -1036,9 +1014,7 @@ export function MarkdownEditor({
                 italic: toolActive("italic"),
                 underline: toolActive("underline"),
               }}
-              colorValue={
-                editor?.getAttributes("textStyle").color as string | undefined
-              }
+              colorValue={currentTextColor()}
               style={{ top: ctxMenu.top, left: ctxMenu.left }}
               onAction={handleInPageAction}
             />
@@ -1052,6 +1028,27 @@ export function MarkdownEditor({
         onClose={() => setEmojiAnchor(null)}
         onPick={insertEmoji}
       />
+
+      {/* 手写涂鸦：复用详情的画板，画好后以 PNG 图片插入正文 */}
+      <Modal
+        open={doodleOpen}
+        onCancel={() => setDoodleOpen(false)}
+        title="手写涂鸦"
+        centered
+        width="min(560px, calc(100vw - 24px))"
+        okText="插入"
+        cancelText="取消"
+        okButtonProps={{ disabled: !doodleData }}
+        onOk={insertDoodle}
+        destroyOnHidden
+      >
+        <div className="flex flex-col" style={{ height: "min(400px, 55vh)" }}>
+          <DoodleBoard value="" onChange={setDoodleData} />
+        </div>
+        <div className="mt-1 text-[11px] leading-snug text-[var(--text-muted)]">
+          画好后点「插入」，涂鸦会以图片形式加入正文。
+        </div>
+      </Modal>
     </div>
   );
 }
