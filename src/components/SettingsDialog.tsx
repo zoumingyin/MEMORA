@@ -24,6 +24,8 @@ import { useAssistantStore } from "../store/useAssistantStore";
 import { useAiProfileStore } from "../store/useAiProfileStore";
 import { FreeBadge } from "./FreeBadge";
 import { ModalityBadge } from "./ModalityBadge";
+import { TagManager } from "./TagManager";
+import { AutoBackupSetting } from "./AutoBackupSetting";
 import {
   isNonTextModality,
   type AiFreeSource,
@@ -165,6 +167,7 @@ const SETTING_TREE: SettingGroup[] = [
       { key: "edge", label: "边缘吸附", hint: "拖拽贴近屏幕边缘自动停靠" },
       { key: "collapse", label: "收纳到屏幕", hint: "收起为屏幕边缘窄条" },
       { key: "close", label: "关闭窗口时", hint: "点 X 或 Alt+F4 后的行为" },
+      { key: "shortcut", label: "全局快捷键", hint: "任意应用下生效" },
     ],
   },
   {
@@ -213,6 +216,16 @@ const SETTING_TREE: SettingGroup[] = [
         key: "restore",
         label: "恢复数据库",
         hint: "用备份覆盖当前数据库，重启后生效",
+      },
+      {
+        key: "tags",
+        label: "标签管理",
+        hint: "重命名 / 合并 / 删除全部标签",
+      },
+      {
+        key: "auto-backup",
+        label: "自动备份",
+        hint: "每日备份数据库并保留最近 7 份",
       },
     ],
   },
@@ -938,6 +951,33 @@ export function SettingsDialog({
             </div>
           </div>
         );
+      case "shortcut":
+        return (
+          <div className="flex flex-col">
+            <div className="settings-item grid">
+              <div className="settings-item-main">
+                <span className="settings-item-label">显示 / 隐藏主窗口</span>
+                <span className="settings-item-hint">
+                  窗口隐藏时按下可恢复；收纳窄条态下按下会展开
+                </span>
+              </div>
+              <span className="shrink-0 whitespace-nowrap rounded-md border border-[var(--border)]  font-mono text-[11px] text-[var(--text-muted)]">
+                Ctrl + Shift + Space
+              </span>
+            </div>
+            <div className="settings-item grid">
+              <div className="settings-item-main">
+                <span className="settings-item-label">快速记录</span>
+                <span className="settings-item-hint">
+                  唤起快速记录窗口并读取剪贴板
+                </span>
+              </div>
+              <span className="shrink-0 whitespace-nowrap rounded-md border border-[var(--border)] px-2 py-1 font-mono text-[11px] text-[var(--text-muted)]">
+                Ctrl + Shift + N
+              </span>
+            </div>
+          </div>
+        );
       case "autostart":
         return (
           <div className="settings-item">
@@ -1030,6 +1070,10 @@ export function SettingsDialog({
             </button>
           </div>
         );
+      case "tags":
+        return <TagManager />;
+      case "auto-backup":
+        return <AutoBackupSetting />;
       case "ai-config": {
         return (
           <div className="flex flex-col gap-3 py-1">
