@@ -21,6 +21,7 @@ import type {
 } from "../types/entry";
 import { useNow } from "../hooks/useNow";
 import { formatRelative, formatShort } from "../utils/format";
+import { ENTRY_KIND_LABEL } from "../utils/entryLabels";
 import { alarmLoopIntervalMs } from "../reminder/scheduler";
 import { paperTintHex, PAPER_COLORS, PAPER_STYLES } from "../utils/paper";
 import { AlarmEditorDialog } from "./AlarmEditorDialog";
@@ -175,7 +176,9 @@ function DetailForm({ entry, onRemove }: DetailFormProps) {
         .entries.find((e) => e.id === entry.id);
       if (!current) return;
       const patch: Record<string, unknown> = {};
-      if (current.title !== title) patch.title = title;
+      // 未填标题时用分类名兜底：新建后直接离开也显示「待办 / 备忘 / 提醒 / 涂鸦」
+      const nextTitle = title.trim() || ENTRY_KIND_LABEL[entry.kind];
+      if (current.title !== nextTitle) patch.title = nextTitle;
       // 待办与提醒的正文分别是子任务清单 / 闹钟清单，不再有备注文本框；备忘与涂鸦保留正文
       if (
         (current.kind === "note" || current.kind === "draw") &&
@@ -371,6 +374,9 @@ function DetailForm({ entry, onRemove }: DetailFormProps) {
         value={title}
         placeholder={TITLE_PLACEHOLDER[entry.kind]}
         onChange={(event) => setTitle(event.target.value)}
+        onBlur={() => {
+          if (!title.trim()) setTitle(ENTRY_KIND_LABEL[entry.kind]);
+        }}
       />
       {/* 标签选择：展示全部已知标签，点击选中/取消（选中即挂到当前条目，多选）；
           「+ 自定义」展开行内输入新建标签。chips 随条目标签数据变化自动刷新 */}

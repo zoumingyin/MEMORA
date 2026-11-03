@@ -1,5 +1,5 @@
 import { createRoot } from 'react-dom/client'
-import { ConfigProvider } from 'antd'
+import { App as AntdApp, ConfigProvider } from 'antd'
 import zhCN from 'antd/locale/zh_CN'
 import dayjs from 'dayjs'
 import 'dayjs/locale/zh-cn'
@@ -37,6 +37,10 @@ const isImagePreviewDialog = new URLSearchParams(location.search).has('imagePrev
 
 createRoot(document.getElementById('root')!).render(
   <ConfigProvider locale={zhCN} theme={{ token: BASE_TOKEN }}>
-    {isAlarmDialog ? <AlarmDialog /> : isImagePreviewDialog ? <ImagePreviewDialog /> : <App />}
+    {/* component={false} 不额外包一层 div，避免破坏 #root 的 100% 高度布局；
+        提供 message/modal/notification 的 Context 版本，使提示能跟随动态主题 */}
+    <AntdApp component={false}>
+      {isAlarmDialog ? <AlarmDialog /> : isImagePreviewDialog ? <ImagePreviewDialog /> : <App />}
+    </AntdApp>
   </ConfigProvider>,
 )

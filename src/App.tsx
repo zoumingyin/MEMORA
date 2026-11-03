@@ -1,13 +1,13 @@
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
+  App as AntdApp,
   ConfigProvider,
   Button,
   Badge,
   Modal,
   Drawer,
   Popconfirm,
-  message,
   theme as antdTheme,
 } from "antd";
 import {
@@ -27,6 +27,7 @@ import { useViewport } from "./hooks/useViewport";
 import {
   applyAlwaysOnTop,
   isMaximized,
+  isStorableBounds,
   loadBoundsFromStorage,
   onWindowMoved,
   onWindowResized,
@@ -34,7 +35,9 @@ import {
   saveBoundsToStorage,
 } from "./window/tauriWindow";
 import { autoSnapIfNearEdge } from "./window/edgeDock";
+import { prewarmCtxMenuWindow } from "./window/ctxMenuWindow";
 import { toMinuteStart } from "./utils/format";
+import { ENTRY_KIND_LABEL } from "./utils/entryLabels";
 import { startReminderScheduler } from "./reminder/scheduler";
 import { isTauriRuntime } from "./repository";
 import { loadCloseBehavior } from "./window/closeBehavior";
@@ -53,13 +56,6 @@ import { AssistantPanel } from "./components/AssistantPanel";
 
 /** 移动事件停止多久后再判定吸附，避免读到拖拽中的旧坐标 */
 const SNAP_DEBOUNCE_MS = 160;
-
-const KIND_LABEL: Record<EntryKind, string> = {
-  note: "备忘",
-  reminder: "提醒",
-  todo: "待办",
-  draw: "涂鸦",
-};
 
 /** antd 主题主色跟随分类主题色（备忘蓝 / 提醒珊瑚红 / 待办绿 / 涂鸦紫） */
 const KIND_COLOR: Record<EntryKind, string> = {
@@ -120,6 +116,8 @@ const LIGHT_TOKENS: Record<string, string> = {
 };
 
 export default function App() {
+  // 使用 Context 版 message，提示可继承动态主题（静态 message 拿不到 ConfigProvider）
+  const { message } = AntdApp.useApp();
   const docked = useWindowStore((state) => state.docked);
   const currentKind = useEntryStore((state) => state.currentKind);
   const filter = useEntryStore((state) => state.filter);
@@ -206,6 +204,14 @@ export default function App() {
     );
   }, [selectedId, currentKind, entries]);
 
+  // 预热 Markdown 右键菜单窗口：启动稳定后隐藏创建一次，首次右键也无需等待窗口加载。
+  // Rust 数据加载不依赖页面，故延时创建，避免与首屏渲染争抢资源。
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    const timer = window.setTimeout(prewarmCtxMenuWindow, 1200);
+    return () => window.clearTimeout(timer);
+  }, []);
+
   useEffect(() => {
     // 启动时加载本机条目 + 废纸篓计数（角标展示）
     void useEntryStore.getState().loadAll();
@@ -238,6 +244,8 @@ export default function App() {
     let detachSecondInstance: () => void = () => undefined;
     let detachCloseRequested: () => void = () => undefined;
     let detachQuickCapture: () => void = () => undefined;
+    let detachToggleWindow: () => void = () => undefined;
+    let detachWindowShown: () => void = () => undefined;
     let detachFocusShown: () => void = () => undefined;
 
     // 收纳窄条态不渲染列表与弹窗：托盘 / 提醒唤起前先展开回普通窗口
@@ -333,6 +341,26 @@ export default function App() {
       quickPromise.then((detach) => {
         detachQuickCapture = detach;
       });
+      // 全局快捷键 Ctrl+Shift+Space：窗口可见且聚焦时隐藏；收纳窄条态改为展开
+      const togglePromise = listen("global:toggle-window", () => {
+        const winState = useWindowStore.getState();
+        if (winState.docked) {
+          expandIfDocked();
+          void getCurrentWindow().setFocus();
+          return;
+        }
+        void getCurrentWindow().hide();
+      });
+      togglePromise.then((detach) => {
+        detachToggleWindow = detach;
+      });
+      // 窗口隐藏时按下快捷键：Rust 已显示并聚焦，前端负责把收纳窄条展开
+      const shownPromise = listen("global:window-shown", () => {
+        expandIfDocked();
+      });
+      shownPromise.then((detach) => {
+        detachWindowShown = detach;
+      });
     }
     // 网页/预览环境兜底：Ctrl+Shift+N 同样唤起（bu 预览与 Web 兜底仓储可用）
     const onKeyDown = (event: KeyboardEvent) => {
@@ -359,8 +387,10 @@ export default function App() {
       }, SNAP_DEBOUNCE_MS);
     };
 
-    // 移动：吸附判定 + 保存边界（供下次启动恢复）；收纳窄条态不覆盖保存的位置
+    // 移动：吸附判定 + 保存边界（供下次启动恢复）；收纳窄条态不覆盖保存的位置。
+    // 最小化时 Windows 会把窗口矩形挪到屏幕外（-25600）并缩成窄条，这类脏边界既不落盘也不吸附。
     void onWindowMoved((bounds) => {
+      if (!isStorableBounds(bounds)) return;
       if (!useWindowStore.getState().docked) saveBoundsToStorage(bounds);
       scheduleSnap();
     }).then((detach) => {
@@ -369,6 +399,7 @@ export default function App() {
     // 尺寸变化：保存边界（供下次启动恢复）。最大化状态落盘会让下次启动恢复成
     // 异常大窗口（透明窗口渲染异常），故最大化时不落盘。
     void onWindowResized(async (bounds) => {
+      if (!isStorableBounds(bounds)) return;
       if (useWindowStore.getState().docked) return;
       const maximized = await isMaximized();
       if (!maximized) saveBoundsToStorage(bounds);
@@ -389,6 +420,8 @@ export default function App() {
       detachSecondInstance();
       detachCloseRequested();
       detachQuickCapture();
+      detachToggleWindow();
+      detachWindowShown();
       detachFocusShown();
     };
   }, []);
@@ -559,245 +592,249 @@ export default function App() {
 
   return (
     <ConfigProvider theme={antdThemeConfig}>
-      <main
-        className={`app-shell kind-${kindClass} relative`}
-        data-tauri-drag-region="deep"
-        style={
-          {
-            "--panel-alpha": panelAlpha,
-            "--chrome-alpha": chromeAlpha,
-            "--surface-alpha": surfaceAlpha,
-            "--assistant-alpha": assistantAlpha,
-            ...glassTokens,
-          } as CSSProperties
-        }
-      >
-        <TitleBar quickOpen={quickOpen} setQuickOpen={setQuickOpen} />
-        <div className={`app-body${isNarrow ? " app-body-narrow" : ""}`}>
-          {isNarrow ? (
-            detailView ? (
-              <DetailPane
-                entry={selectedEntry}
-                onRemove={handleRemove}
-                onBack={handleBackToList}
-              />
-            ) : (
-              <aside
-                className={`note-list-pane p-x-2${view === "calendar" ? " calendar-mode" : ""}`}
-              >
-                {view === "calendar" ? (
-                  <>
-                    <CategoryTabs />
-                    <CalendarPane onSelect={handleSelect} />
-                  </>
-                ) : trashOpen ? (
-                  <TrashPane onBack={handleCloseTrash} />
-                ) : (
-                  <>
-                    <div className="flex items-center">
+      {/* 这里再嵌套一层 App：让 message 的承载节点落在动态主题的 ConfigProvider 内，
+          暗色模式下提示也能跟随；component={false} 不额外产生包裹元素 */}
+      <AntdApp component={false}>
+        <main
+          className={`app-shell kind-${kindClass} relative`}
+          data-tauri-drag-region="deep"
+          style={
+            {
+              "--panel-alpha": panelAlpha,
+              "--chrome-alpha": chromeAlpha,
+              "--surface-alpha": surfaceAlpha,
+              "--assistant-alpha": assistantAlpha,
+              ...glassTokens,
+            } as CSSProperties
+          }
+        >
+          <TitleBar quickOpen={quickOpen} setQuickOpen={setQuickOpen} />
+          <div className={`app-body${isNarrow ? " app-body-narrow" : ""}`}>
+            {isNarrow ? (
+              detailView ? (
+                <DetailPane
+                  entry={selectedEntry}
+                  onRemove={handleRemove}
+                  onBack={handleBackToList}
+                />
+              ) : (
+                <aside
+                  className={`note-list-pane p-x-2${view === "calendar" ? " calendar-mode" : ""}`}
+                >
+                  {view === "calendar" ? (
+                    <>
                       <CategoryTabs />
-                      <SearchBar />
-                    </div>
-                    <div className="list-header w-full">
-                      <span className="list-title">
-                        {filter === "all" ? "全部笔记" : KIND_LABEL[filter]}
-                      </span>
-                      <div
-                        className="flex shrink-0 items-center gap-0.5 rounded-[9px] bg-[var(--hover-fill)] p-0.5"
-                        role="group"
-                        aria-label="切换列表展示模式"
-                        data-tauri-drag-region="false"
-                      >
-                        {ENTRY_VIEW_OPTIONS.map((option) => {
-                          const active = entryView === option.value;
-                          return (
-                            <button
-                              key={option.value}
-                              type="button"
-                              title={option.label}
-                              aria-label={option.label}
-                              aria-pressed={active}
-                              className={`flex h-6 w-6 items-center justify-center rounded-[7px] border-0 text-[12px] transition-colors duration-150 ${
-                                active
-                                  ? "bg-[var(--card-bg)] text-[var(--text)] shadow-[0_1px_2px_rgba(16,24,40,0.12)]"
-                                  : "bg-transparent text-[var(--text-muted)] hover:text-[var(--text)]"
-                              }`}
-                              onClick={() => setEntryView(option.value)}
-                            >
-                              {option.icon}
-                            </button>
-                          );
-                        })}
+                      <CalendarPane onSelect={handleSelect} />
+                    </>
+                  ) : trashOpen ? (
+                    <TrashPane onBack={handleCloseTrash} />
+                  ) : (
+                    <>
+                      <div className="flex items-center">
+                        <CategoryTabs />
+                        <SearchBar />
                       </div>
-                      <div className="flex items-center gap-1.5">
-                        <Badge
-                          count={trash.length}
-                          size="small"
-                          offset={[-3, 3]}
-                          title={`废纸篓（${trash.length} 条）`}
-                          styles={trashBadgeStyles(trash.length)}
+                      <div className="list-header w-full">
+                        <span className="list-title">
+                          {filter === "all" ? "全部笔记" : ENTRY_KIND_LABEL[filter]}
+                        </span>
+                        <div
+                          className="flex shrink-0 items-center gap-0.5 rounded-[9px] bg-[var(--hover-fill)] p-0.5"
+                          role="group"
+                          aria-label="切换列表展示模式"
+                          data-tauri-drag-region="false"
                         >
+                          {ENTRY_VIEW_OPTIONS.map((option) => {
+                            const active = entryView === option.value;
+                            return (
+                              <button
+                                key={option.value}
+                                type="button"
+                                title={option.label}
+                                aria-label={option.label}
+                                aria-pressed={active}
+                                className={`flex h-6 w-6 items-center justify-center rounded-[7px] border-0 text-[12px] transition-colors duration-150 ${
+                                  active
+                                    ? "bg-[var(--card-bg)] text-[var(--text)] shadow-[0_1px_2px_rgba(16,24,40,0.12)]"
+                                    : "bg-transparent text-[var(--text-muted)] hover:text-[var(--text)]"
+                                }`}
+                                onClick={() => setEntryView(option.value)}
+                              >
+                                {option.icon}
+                              </button>
+                            );
+                          })}
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <Badge
+                            count={trash.length}
+                            size="small"
+                            offset={[-3, 3]}
+                            title={`废纸篓（${trash.length} 条）`}
+                            styles={trashBadgeStyles(trash.length)}
+                          >
+                            <Button
+                              type="text"
+                              shape="circle"
+                              size="small"
+                              icon={<RestOutlined />}
+                              title="废纸篓"
+                              onClick={handleOpenTrash}
+                            />
+                          </Badge>
                           <Button
-                            type="text"
+                            type="primary"
                             shape="circle"
                             size="small"
-                            icon={<RestOutlined />}
-                            title="废纸篓"
-                            onClick={handleOpenTrash}
+                            icon={<PlusOutlined />}
+                            title="新建一条"
+                            onClick={handleCreate}
                           />
-                        </Badge>
-                        <Button
-                          type="primary"
-                          shape="circle"
-                          size="small"
-                          icon={<PlusOutlined />}
-                          title="新建一条"
-                          onClick={handleCreate}
-                        />
+                        </div>
                       </div>
-                    </div>
-                    <EntryList onSelect={handleSelect} mode={entryView} />
-                  </>
-                )}
-              </aside>
-            )
-          ) : view === "calendar" ? (
-            <>
-              <aside className="note-list-pane p-x-2 calendar-mode">
-                <CategoryTabs />
-                <CalendarPane onSelect={handleSelect} />
-              </aside>
-              <DetailPane entry={selectedEntry} onRemove={handleRemove} />
-            </>
-          ) : (
-            <>
-              <section
-                className="wall-pane"
-                data-tauri-drag-region="false"
-                aria-label="便签贴纸墙"
-              >
-                <header className="wall-toolbar">
-                  <span className="wall-hint">
-                    <span className="wall-hint-dot" aria-hidden="true" />
-                    便签贴纸墙 · 按住卡片拖到任意位置
-                  </span>
-                  <div className="wall-toolbar-actions">
-                    <Badge
-                      count={trash.length}
-                      size="small"
-                      offset={[-2, 5]}
-                      title={`废纸篓（${trash.length} 条）`}
-                      styles={trashBadgeStyles(trash.length)}
-                    >
+                      <EntryList onSelect={handleSelect} mode={entryView} />
+                    </>
+                  )}
+                </aside>
+              )
+            ) : view === "calendar" ? (
+              <>
+                <aside className="note-list-pane p-x-2 calendar-mode">
+                  <CategoryTabs />
+                  <CalendarPane onSelect={handleSelect} />
+                </aside>
+                <DetailPane entry={selectedEntry} onRemove={handleRemove} />
+              </>
+            ) : (
+              <>
+                <section
+                  className="wall-pane"
+                  data-tauri-drag-region="false"
+                  aria-label="便签贴纸墙"
+                >
+                  <header className="wall-toolbar">
+                    <span className="wall-hint">
+                      <span className="wall-hint-dot" aria-hidden="true" />
+                      便签贴纸墙 · 按住卡片拖到任意位置
+                    </span>
+                    <div className="wall-toolbar-actions">
+                      <Badge
+                        count={trash.length}
+                        size="small"
+                        offset={[-2, 5]}
+                        title={`废纸篓（${trash.length} 条）`}
+                        styles={trashBadgeStyles(trash.length)}
+                      >
+                        <button
+                          type="button"
+                          className="wall-tool-btn"
+                          title="废纸篓"
+                          aria-label="废纸篓"
+                          onClick={handleOpenTrash}
+                        >
+                          <RestOutlined />
+                        </button>
+                      </Badge>
                       <button
                         type="button"
                         className="wall-tool-btn"
-                        title="废纸篓"
-                        aria-label="废纸篓"
-                        onClick={handleOpenTrash}
+                        title="按最近编辑重新归整"
+                        onClick={handleTidyWall}
                       >
-                        <RestOutlined />
+                        <Sparkles size={13} />
+                        <span>智能归整</span>
                       </button>
-                    </Badge>
-                    <button
-                      type="button"
-                      className="wall-tool-btn"
-                      title="按最近编辑重新归整"
-                      onClick={handleTidyWall}
-                    >
-                      <Sparkles size={13} />
-                      <span>智能归整</span>
-                    </button>
-                    <button
-                      type="button"
-                      className="wall-new-btn"
-                      title="贴新便签"
-                      onClick={handleCreate}
-                    >
-                      <PlusOutlined />
-                      <span>贴新便签</span>
-                    </button>
+                      <button
+                        type="button"
+                        className="wall-new-btn"
+                        title="贴新便签"
+                        onClick={handleCreate}
+                      >
+                        <PlusOutlined />
+                        <span>贴新便签</span>
+                      </button>
+                    </div>
+                  </header>
+                  <div className="wall-filters">
+                    <CategoryTabs />
+                    <SearchBar />
                   </div>
-                </header>
-                <div className="wall-filters">
-                  <CategoryTabs />
-                  <SearchBar />
-                </div>
-                <EntryList onSelect={handleSelect} mode="wall" />
-              </section>
-              {detailView && selectedEntry && (
-                <Modal
-                  open
-                  onCancel={handleBackToList}
-                  footer={null}
-                  centered
-                  width={680}
+                  <EntryList onSelect={handleSelect} mode="wall" />
+                </section>
+                {detailView && selectedEntry && (
+                  <Modal
+                    open
+                    onCancel={handleBackToList}
+                    footer={null}
+                    centered
+                    width={680}
+                    destroyOnHidden
+                    className="wall-detail-modal"
+                  >
+                    <div
+                      className="wall-detail-dialog"
+                      data-tauri-drag-region="false"
+                    >
+                      <DetailPane
+                        entry={selectedEntry}
+                        onRemove={handleRemove}
+                      />
+                    </div>
+                  </Modal>
+                )}
+                <Drawer
+                  open={trashOpen}
+                  onClose={handleCloseTrash}
+                  placement="right"
+                  width={420}
                   destroyOnHidden
-                  className="wall-detail-modal"
-                >
-                  <div
-                    className="wall-detail-dialog"
-                    data-tauri-drag-region="false"
-                  >
-                    <DetailPane
-                      entry={selectedEntry}
-                      onRemove={handleRemove}
-                    />
-                  </div>
-                </Modal>
-              )}
-              <Drawer
-                open={trashOpen}
-                onClose={handleCloseTrash}
-                placement="right"
-                width={420}
-                destroyOnHidden
-                rootClassName="trash-drawer"
-                title={
-                  <span className="flex items-center gap-2">
-                    废纸篓
-                    <span className="text-[11px] font-normal text-[var(--text-muted)]">
-                      {trash.length} 条
+                  rootClassName="trash-drawer"
+                  title={
+                    <span className="flex items-center gap-2">
+                      废纸篓
+                      <span className="text-[11px] font-normal text-[var(--text-muted)]">
+                        {trash.length} 条
+                      </span>
                     </span>
-                  </span>
-                }
-                extra={
-                  <Popconfirm
-                    title="清空废纸篓"
-                    description="将彻底删除全部条目，不可恢复"
-                    okText="清空"
-                    cancelText="取消"
-                    okButtonProps={{ danger: true }}
-                    onConfirm={handleEmptyTrash}
-                    disabled={trash.length === 0}
-                  >
-                    <Button
-                      type="text"
-                      danger
-                      size="small"
+                  }
+                  extra={
+                    <Popconfirm
+                      title="清空废纸篓"
+                      description="将彻底删除全部条目，不可恢复"
+                      okText="清空"
+                      cancelText="取消"
+                      okButtonProps={{ danger: true }}
+                      onConfirm={handleEmptyTrash}
                       disabled={trash.length === 0}
                     >
-                      清空
-                    </Button>
-                  </Popconfirm>
-                }
-              >
-                <TrashPane onBack={handleCloseTrash} embedded />
-              </Drawer>
-            </>
-          )}
-        </div>
-        <AssistantPanel />
-      </main>
-      <CloseConfirmDialog
-        open={closeConfirmOpen}
-        onClose={() => setCloseConfirmOpen(false)}
-      />
-      <CreateKindDialog
-        open={createOpen}
-        onClose={() => setCreateOpen(false)}
-        onCreate={(kind) => void handleCreateWithKind(kind)}
-      />
+                      <Button
+                        type="text"
+                        danger
+                        size="small"
+                        disabled={trash.length === 0}
+                      >
+                        清空
+                      </Button>
+                    </Popconfirm>
+                  }
+                >
+                  <TrashPane onBack={handleCloseTrash} embedded />
+                </Drawer>
+              </>
+            )}
+          </div>
+          <AssistantPanel />
+        </main>
+        <CloseConfirmDialog
+          open={closeConfirmOpen}
+          onClose={() => setCloseConfirmOpen(false)}
+        />
+        <CreateKindDialog
+          open={createOpen}
+          onClose={() => setCreateOpen(false)}
+          onCreate={(kind) => void handleCreateWithKind(kind)}
+        />
+      </AntdApp>
     </ConfigProvider>
   );
 }

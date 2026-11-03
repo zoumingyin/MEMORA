@@ -8,6 +8,7 @@ import { readText } from "@tauri-apps/plugin-clipboard-manager";
 import { useEffect, useRef, useState } from "react";
 import { useEntryStore } from "../store/useEntryStore";
 import { isTauriRuntime } from "../repository";
+import { ENTRY_KIND_LABEL } from "../utils/entryLabels";
 import type { EntryKind } from "../types/entry";
 
 interface QuickCaptureProps {
@@ -67,7 +68,7 @@ export function QuickCapture({ open, onClose }: QuickCaptureProps) {
     if (!raw) return;
     const entry = await useEntryStore
       .getState()
-      .addEntry({ title: "", content: raw }, kind);
+      .addEntry({ title: ENTRY_KIND_LABEL[kind], content: raw }, kind);
     onClose();
     setText("");
     if (entry) {

@@ -1,4 +1,4 @@
-import { Button, Empty, Popconfirm, message } from "antd";
+import { App as AntdApp, Button, Empty, Popconfirm } from "antd";
 import {
   ArrowLeftOutlined,
   BellOutlined,
@@ -52,6 +52,7 @@ interface TrashPaneProps {
  * 支持单条恢复 / 彻底删除（均带确认），以及一键清空。
  */
 export function TrashPane({ onBack, embedded = false }: TrashPaneProps) {
+  const { message } = AntdApp.useApp();
   // 宽屏固定卡片；窄屏跟随笔记列表的网格 / 列表偏好
   const { isNarrow } = useViewport();
   const entryView = useUiStore((state) => state.entryView);
