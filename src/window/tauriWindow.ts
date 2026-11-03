@@ -178,6 +178,46 @@ export async function isMaximized(): Promise<boolean> {
   }
 }
 
+/** 窗口是否处于最小化状态（最小化时 Windows 把窗口矩形挪到屏幕外并缩成窄条） */
+export async function isMinimized(): Promise<boolean> {
+  if (!isTauriRuntime()) return false
+  try {
+    return await win().isMinimized()
+  } catch {
+    return false
+  }
+}
+
+/** 边界是否值得落盘：最小化矩形的典型值是屏幕外坐标 + 几十像素高，保存后下次启动会恢复成异常窗口 */
+export function isStorableBounds(bounds: Bounds): boolean {
+  return (
+    bounds.width >= 100 &&
+    bounds.height >= 100 &&
+    bounds.x > -10_000 &&
+    bounds.y > -10_000
+  )
+}
+
+/**
+ * 主窗口可用性兜底：最小化后 show() 仍停在屏幕外的窄条矩形，必须 unminimize；
+ * 若还原出的边界异常（最小化期间被吸附/落盘的脏数据）则钳回当前工作区。
+ * 托盘 / 全局快捷键 / 导出图片等唤起路径调用。
+ */
+export async function ensureWindowVisible(): Promise<void> {
+  if (!isTauriRuntime()) return
+  const window = win()
+  const minimized = await window.isMinimized().catch(() => false)
+  if (minimized) await window.unminimize()
+  const bounds = await getBounds()
+  if (bounds && !isStorableBounds(bounds)) {
+    await restoreBounds(bounds)
+  }
+  if (minimized) {
+    await window.show()
+    await window.setFocus()
+  }
+}
+
 /** 恢复窗口到指定边界（物理坐标与尺寸）；尺寸与位置并行下发，减少展开/收回的串行等待。
  *  对越界/超大边界做工作区钳制：若保存的边界来自最大化状态（全屏尺寸）或显示器变化
  *  （屏幕外坐标），恢复时收缩/移回可见区域，避免透明窗口恢复成异常尺寸后不显示。 */

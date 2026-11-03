@@ -2,6 +2,7 @@ import {
   currentWorkArea,
   getBounds,
   isMaximized,
+  isMinimized,
   setPosition,
   setSize,
   type Bounds,
@@ -83,6 +84,9 @@ export async function autoSnapIfNearEdge(): Promise<SnapResult | null> {
   // 最大化状态下不做任何吸附/移动：最大化窗口被 setPosition 会被 Windows 立即还原，
   // 双击标题栏最大化后「马上变回来」即由此路径引发
   if (await isMaximized()) return null
+  // 最小化窗口矩形在屏幕外（如 -25600,-25600），会被误判为贴左边并吸附，
+  // 把窗口的正常位置改写成一个屏幕外的坏坐标
+  if (await isMinimized()) return null
   const bounds = await getBounds()
   const workArea = await currentWorkArea()
   if (!bounds || !workArea) return null
