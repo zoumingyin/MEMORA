@@ -258,6 +258,28 @@ export class SqliteEntryRepository implements EntryRepository {
     )
   }
 
+  async snoozeAlarm(entryId: string, alarmId: string, remindAt: number): Promise<void> {
+    const database = await getDb()
+    const rows = await database.select<Array<Pick<EntryRow, 'alarms'>>>(
+      'SELECT alarms FROM entries WHERE id = $1',
+      [entryId],
+    )
+    if (rows.length === 0) return
+    const alarms = parseAlarms(rows[0].alarms)
+    const next = alarms.map((alarm) =>
+      alarm.id === alarmId ? { ...alarm, remindAt, notified: false } : alarm,
+    )
+    const pending = next.filter((alarm) => !alarm.notified)
+    const nextDue = pending.length
+      ? Math.min(...pending.map((alarm) => alarm.remindAt))
+      : Math.min(...next.map((alarm) => alarm.remindAt))
+    const allNotified = next.length > 0 && next.every((alarm) => alarm.notified)
+    await database.execute(
+      'UPDATE entries SET alarms = $2, remind_at = $3, notified = $4, updated_at = $5 WHERE id = $1',
+      [entryId, JSON.stringify(next), nextDue, allNotified ? 1 : 0, Date.now()],
+    )
+  }
+
   async listPendingSync(): Promise<Entry[]> {
     const database = await getDb()
     const rows = await database.select<EntryRow[]>(

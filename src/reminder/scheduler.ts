@@ -214,8 +214,10 @@ export function startReminderScheduler(): () => void {
       for (const entry of state.entries) {
         if (entry.kind !== 'reminder' || entry.done) continue
         for (const alarm of entry.alarms) {
-          if (alarm.notified || alarm.remindAt > now) continue
           const key = `${entry.id}:${alarm.id}`
+          // 稍后提醒会把闹钟推到未来：旧弹窗登记必须解除，否则到点后会被误判为「弹窗仍开着」
+          if (alarm.remindAt > now && openDialogIds.has(key)) openDialogIds.delete(key)
+          if (alarm.notified || alarm.remindAt > now) continue
           if (openDialogIds.has(key)) continue
 
           if (alarm.method === 'notification') {
@@ -275,8 +277,31 @@ export function startReminderScheduler(): () => void {
     }
   }
 
+  // 稍后提醒：解除弹窗登记并把闹钟改到新时间（仓储已由弹窗写入，这里同步内存状态与派生字段）
+  let detachSnoozed: () => void = () => undefined
+  if (isTauriRuntime()) {
+    const promise = listen<{ entryId: string; alarmId: string; remindAt: number }>(
+      'reminder:snoozed',
+      async (event) => {
+        const { entryId, alarmId, remindAt } = event.payload
+        openDialogIds.delete(`${entryId}:${alarmId}`)
+        const state = useEntryStore.getState()
+        const entry = state.entries.find((item) => item.id === entryId)
+        if (entry?.kind !== 'reminder') return
+        const alarms = entry.alarms.map((item) =>
+          item.id === alarmId ? { ...item, remindAt, notified: false } : item,
+        )
+        await state.updateEntry(entryId, { kind: 'reminder', alarms })
+      },
+    )
+    detachSnoozed = () => {
+      void promise.then((detach) => detach())
+    }
+  }
+
   return () => {
     stopTicker()
     detachConfirmed()
+    detachSnoozed()
   }
 }

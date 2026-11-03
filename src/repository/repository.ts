@@ -35,6 +35,8 @@ export interface EntryRepository {
   markNotified(id: string): Promise<void>
   /** 标记某条提醒下的单个闹钟已通知（按闹钟 id） */
   markAlarmNotified(entryId: string, alarmId: string): Promise<void>
+  /** 稍后提醒：把单个闹钟推到新的触发时间并重置已通知状态 */
+  snoozeAlarm(entryId: string, alarmId: string, remindAt: number): Promise<void>
   /** 预留：取出待同步条目 */
   listPendingSync(): Promise<Entry[]>
   /** 预留：同步完成后批量标记 */

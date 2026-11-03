@@ -46,6 +46,9 @@ function readParams(): {
   }
 }
 
+/** 稍后提醒可选时长（分钟） */
+const SNOOZE_MINUTES = [5, 10, 30]
+
 const pad2 = (n: number): string => String(n).padStart(2, '0')
 
 /** 模拟表盘：时针 / 分针 / 秒针按当前时间旋转，秒针每秒走动 */
@@ -219,6 +222,32 @@ export function AlarmDialog() {
   const handleConfirm = useCallback(() => void finishAndClose(false), [finishAndClose])
   const handleEnter = useCallback(() => void finishAndClose(true), [finishAndClose])
 
+  // 稍后提醒：把当前闹钟推到 N 分钟后并重置通知状态，主窗口解除弹窗登记后到点再次触发
+  const handleSnooze = useCallback(
+    async (minutes: number): Promise<void> => {
+      if (confirmedRef.current) return
+      confirmedRef.current = true
+      setConfirmed(true)
+      try {
+        const remindAt = Date.now() + minutes * 60_000
+        if (isTauriRuntime() && params.id) {
+          await getRepository().snoozeAlarm(params.id, params.alarm, remindAt)
+          await emit('reminder:snoozed', {
+            entryId: params.id,
+            alarmId: params.alarm,
+            remindAt,
+          })
+          await getCurrentWindow().close()
+        }
+      } catch (error) {
+        console.error('稍后提醒失败', error)
+        confirmedRef.current = false
+        setConfirmed(false)
+      }
+    },
+    [params.id, params.alarm],
+  )
+
   // Esc 等同于「我知道了」关闭弹窗
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
@@ -271,6 +300,22 @@ export function AlarmDialog() {
               <span>进入便签</span>
               <span>&gt;&gt;&gt;</span>
             </button>
+
+            <div className="mt-1 flex w-full items-center justify-center gap-1.5">
+              <span className="whitespace-nowrap text-[12px] text-[var(--text-muted)]">
+                稍后提醒
+              </span>
+              {SNOOZE_MINUTES.map((minutes) => (
+                <Button
+                  key={minutes}
+                  size="small"
+                  disabled={confirmed}
+                  onClick={() => void handleSnooze(minutes)}
+                >
+                  {minutes} 分钟
+                </Button>
+              ))}
+            </div>
 
             <Button
               type="primary"

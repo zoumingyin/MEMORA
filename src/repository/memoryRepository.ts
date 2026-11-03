@@ -235,6 +235,22 @@ export class MemoryEntryRepository implements EntryRepository {
     saveAll(entries)
   }
 
+  async snoozeAlarm(entryId: string, alarmId: string, remindAt: number): Promise<void> {
+    const entries = loadAll()
+    const target = entries.find((entry) => entry.id === entryId)
+    if (!target || target.kind !== 'reminder') return
+    target.alarms = target.alarms.map((alarm) =>
+      alarm.id === alarmId ? { ...alarm, remindAt, notified: false } : alarm,
+    )
+    const pending = target.alarms.filter((alarm) => !alarm.notified)
+    target.remindAt = pending.length
+      ? Math.min(...pending.map((alarm) => alarm.remindAt))
+      : Math.min(...target.alarms.map((alarm) => alarm.remindAt))
+    target.notified =
+      target.alarms.length > 0 && target.alarms.every((alarm) => alarm.notified)
+    saveAll(entries)
+  }
+
   async listPendingSync(): Promise<Entry[]> {
     return loadAll().filter((entry) => entry.syncStatus === 'pending')
   }
