@@ -53,6 +53,163 @@ fn read_entries_json(path: String) -> Result<String, String> {
     std::fs::read_to_string(&path).map_err(|error| format!("读取失败：{error}"))
 }
 
+/// 导出分享图：前端把 canvas 转成 base64 PNG，这里解码并写入用户选择的路径
+#[tauri::command]
+fn write_image_file(path: String, data: String) -> Result<(), String> {
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data.as_bytes())
+        .map_err(|error| format!("图片解码失败：{error}"))?;
+    std::fs::write(&path, bytes).map_err(|error| format!("写入失败：{error}"))
+}
+
+/// 每日自动备份保留份数
+const AUTO_BACKUP_KEEP: usize = 7;
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AutoBackupConfig {
+    enabled: bool,
+}
+
+impl Default for AutoBackupConfig {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AutoBackupStatus {
+    enabled: bool,
+    dir: String,
+    last_backup_at: Option<u64>,
+    count: usize,
+}
+
+/// 自动备份目录：应用数据目录下的 backups
+fn backup_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?
+        .join("backups");
+    Ok(dir)
+}
+
+fn backup_config_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    let dir = app.path().app_data_dir().map_err(|error| error.to_string())?;
+    Ok(dir.join("backup-config.json"))
+}
+
+fn load_backup_config(app: &tauri::AppHandle) -> AutoBackupConfig {
+    backup_config_path(app)
+        .ok()
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_default()
+}
+
+/// UTC 日期戳（YYYY-MM-DD）：仅用于备份文件命名，跨时区午夜附近可能差一天
+fn utc_date_stamp() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(0);
+    let days = secs.div_euclid(86_400);
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let year_base = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if month <= 2 { year_base + 1 } else { year_base };
+    format!("{year:04}-{month:02}-{day:02}")
+}
+
+/// 备份文件列表：按文件名（日期）从新到旧
+fn list_backups(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut files: Vec<std::path::PathBuf> = entries
+        .filter_map(|entry| entry.ok().map(|item| item.path()))
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("bianqian-") && name.ends_with(".db"))
+        })
+        .collect();
+    files.sort();
+    files.reverse();
+    files
+}
+
+fn backup_status(app: &tauri::AppHandle) -> Result<AutoBackupStatus, String> {
+    let dir = backup_dir(app)?;
+    let files = list_backups(&dir);
+    let last_backup_at = files.first().and_then(|path| {
+        path.metadata()
+            .ok()
+            .and_then(|meta| meta.modified().ok())
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|duration| duration.as_millis() as u64)
+    });
+    Ok(AutoBackupStatus {
+        enabled: load_backup_config(app).enabled,
+        dir: dir.to_string_lossy().to_string(),
+        last_backup_at,
+        count: files.len(),
+    })
+}
+
+/// 每日自动备份：同一天只生成一份，超过保留份数后删除最旧的
+fn run_daily_backup(app: &tauri::AppHandle) -> Result<(), String> {
+    if !load_backup_config(app).enabled {
+        return Ok(());
+    }
+    let db = db_path(app)?;
+    if !db.exists() {
+        return Ok(());
+    }
+    let dir = backup_dir(app)?;
+    std::fs::create_dir_all(&dir).map_err(|error| format!("创建备份目录失败：{error}"))?;
+    let target = dir.join(format!("bianqian-{}.db", utc_date_stamp()));
+    if !target.exists() {
+        std::fs::copy(&db, &target).map_err(|error| format!("自动备份失败：{error}"))?;
+    }
+    for stale in list_backups(&dir).into_iter().skip(AUTO_BACKUP_KEEP) {
+        let _ = std::fs::remove_file(stale);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn auto_backup_status(app: tauri::AppHandle) -> Result<AutoBackupStatus, String> {
+    backup_status(&app)
+}
+
+#[tauri::command]
+fn set_auto_backup(app: tauri::AppHandle, enabled: bool) -> Result<AutoBackupStatus, String> {
+    let path = backup_config_path(&app)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| format!("创建配置目录失败：{error}"))?;
+    }
+    let config = AutoBackupConfig { enabled };
+    std::fs::write(
+        path,
+        serde_json::to_string_pretty(&config).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| format!("保存备份设置失败：{error}"))?;
+    if enabled {
+        run_daily_backup(&app)?;
+    }
+    backup_status(&app)
+}
+
 /// 递归复制目录：WebView2 的 localStorage 是 LevelDB 目录，须整目录搬运
 #[cfg(windows)]
 fn copy_dir_all(source: &std::path::Path, dest: &std::path::Path) -> std::io::Result<()> {
@@ -262,6 +419,8 @@ CREATE INDEX IF NOT EXISTS idx_entries_deleted ON entries(deleted_at);
         // 单实例：二次启动时聚焦已有主窗口并向前端发事件（重复启动不新开窗口）
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
+                // 最小化时 show() 不会还原窗口（仍停在屏幕外的最小化矩形），必须先 unminimize
+                let _ = window.unminimize();
                 let _ = window.show();
                 let _ = window.set_focus();
             }
@@ -277,20 +436,43 @@ CREATE INDEX IF NOT EXISTS idx_entries_deleted ON entries(deleted_at);
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, shortcut, event| {
-                    if event.state() == ShortcutState::Pressed
-                        && shortcut.matches(Modifiers::CONTROL | Modifiers::SHIFT, Code::KeyN)
-                    {
+                    if event.state() != ShortcutState::Pressed {
+                        return;
+                    }
+                    if shortcut.matches(Modifiers::CONTROL | Modifiers::SHIFT, Code::KeyN) {
                         if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.unminimize();
                             let _ = window.show();
                             let _ = window.set_focus();
                         }
                         let _ = app.emit("global:quick-capture", ());
+                    } else if shortcut
+                        .matches(Modifiers::CONTROL | Modifiers::SHIFT, Code::Space)
+                    {
+                        if let Some(window) = app.get_webview_window("main") {
+                            // 已可见且持有焦点 → 交给前端隐藏（收纳窄条态由前端改为展开）；
+                            // 可见但失焦 → 仅聚焦；隐藏 → 显示并聚焦，前端收到事件后展开窄条
+                            if window.is_visible().unwrap_or(false)
+                                && window.is_focused().unwrap_or(false)
+                            {
+                                let _ = app.emit("global:toggle-window", ());
+                            } else {
+                                let _ = window.unminimize();
+                                let _ = window.show();
+                                let _ = window.set_focus();
+                                let _ = app.emit("global:window-shown", ());
+                            }
+                        }
                     }
                 })
                 .build(),
         )
         .setup(|app| {
             build_tray(app)?;
+            // 每日自动备份：启动时检查当天是否已备份，失败只记录日志，不阻塞启动
+            if let Err(error) = run_daily_backup(app.handle()) {
+                eprintln!("每日自动备份失败: {error}");
+            }
             // 注册全局快捷键 Ctrl+Shift+N：唤起快速记录
             {
                 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
@@ -298,6 +480,12 @@ CREATE INDEX IF NOT EXISTS idx_entries_deleted ON entries(deleted_at);
                     Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyN);
                 if let Err(error) = app.global_shortcut().register(shortcut) {
                     eprintln!("注册全局快捷键失败: {error}");
+                }
+                // Ctrl+Shift+Space：显示 / 隐藏主窗口
+                let toggle =
+                    Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::Space);
+                if let Err(error) = app.global_shortcut().register(toggle) {
+                    eprintln!("注册窗口显示/隐藏快捷键失败: {error}");
                 }
             }
             // 关闭拦截：点 X 时不直接退出，交由前端弹「最小化到后台 / 退出应用」选择
@@ -318,6 +506,9 @@ CREATE INDEX IF NOT EXISTS idx_entries_deleted ON entries(deleted_at);
             restore_db,
             write_entries_json,
             read_entries_json,
+            write_image_file,
+            auto_backup_status,
+            set_auto_backup,
             ai::ai_get_status,
             ai::ai_save_profile,
             ai::ai_activate_profile,
@@ -376,6 +567,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
         .on_menu_event(|app, event| match event.id.as_ref() {
             "show" => {
                 if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.unminimize();
                     let _ = window.show();
                     let _ = window.set_focus();
                 }
@@ -388,6 +580,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
             "new" => {
                 // 显示聚焦主窗口，由前端弹出「新建便签」类型选择弹窗
                 if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.unminimize();
                     let _ = window.show();
                     let _ = window.set_focus();
                 }
@@ -396,6 +589,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
             "assistant" => {
                 // 显示聚焦主窗口，由前端打开 AI 助手面板
                 if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.unminimize();
                     let _ = window.show();
                     let _ = window.set_focus();
                 }
@@ -431,9 +625,12 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                 } => {
                     // 单击切换显示/隐藏
                     if let Some(window) = tray.app_handle().get_webview_window("main") {
-                        if window.is_visible().unwrap_or(true) {
+                        if window.is_visible().unwrap_or(true)
+                            && !window.is_minimized().unwrap_or(false)
+                        {
                             let _ = window.hide();
                         } else {
+                            let _ = window.unminimize();
                             let _ = window.show();
                             let _ = window.set_focus();
                         }
@@ -444,6 +641,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                     ..
                 } => {
                     if let Some(window) = tray.app_handle().get_webview_window("main") {
+                        let _ = window.unminimize();
                         let _ = window.show();
                         let _ = window.set_focus();
                     }

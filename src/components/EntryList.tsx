@@ -1,4 +1,4 @@
-import { Collapse, Empty, message } from "antd";
+import { App as AntdApp, Collapse, Empty } from "antd";
 import {
   BellOutlined,
   CheckSquareOutlined,
@@ -21,6 +21,7 @@ import { useNow } from "../hooks/useNow";
 import { formatRelative, formatShort } from "../utils/format";
 import { paperTintHex } from "../utils/paper";
 import { markdownToHtml } from "../utils/markdown";
+import { exportEntryImage } from "../utils/exportEntryImage";
 import { EntryTags, EntryTools, TodoPreview } from "./EntryCardParts";
 
 const KIND_ICON: Record<EntryKind, ReactNode> = {
@@ -199,6 +200,123 @@ function toPlainText(md: string): string {
     .trim();
 }
 
+/** 复制用的完整时间：闹钟需要带年份，避免只看到月日 */
+function formatCopyTime(ms: number): string {
+  const date = new Date(ms);
+  const pad = (value: number): string => String(value).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(
+    date.getDate(),
+  )} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function escapeHtml(value: string): string {
+  return value.replace(
+    /[&<>"]/g,
+    (char) =>
+      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[char] ?? char,
+  );
+}
+
+/** 纯文本兜底：保留 Markdown 结构，只把内嵌图片的 base64 换成占位，避免剪贴板塞入几 MB 数据 */
+function clipboardTextFromMarkdown(md: string): string {
+  return md
+    .replace(/!\[([^\]]*)\]\(\s*data:[^)]*\)/gi, (_, alt: string) =>
+      alt ? `[图片：${alt}]` : "[图片]",
+    )
+    .replace(/<img\b[^>]*>/gi, "[图片]")
+    .trim();
+}
+
+interface ClipboardPayload {
+  html: string;
+  text: string;
+}
+
+/** 按分类拼出完整内容：备忘保留格式与图片，待办带勾选状态，提醒带全部闹钟，涂鸦带原图 */
+function buildClipboardPayload(entry: Entry): ClipboardPayload {
+  const title = entry.title.trim();
+  const htmlParts: string[] = [];
+  const textParts: string[] = [];
+
+  if (title) {
+    htmlParts.push(`<h3>${escapeHtml(title)}</h3>`);
+    textParts.push(title);
+  }
+
+  const appendContent = (content: string): void => {
+    if (!content.trim()) return;
+    htmlParts.push(markdownToHtml(content));
+    textParts.push(clipboardTextFromMarkdown(content));
+  };
+
+  if (entry.kind === "note") {
+    appendContent(entry.content);
+  } else if (entry.kind === "todo") {
+    if (entry.items.length > 0) {
+      htmlParts.push(
+        `<ul style="list-style:none;padding-left:0">${entry.items
+          .map(
+            (item) =>
+              `<li>${item.done ? "☑" : "☐"} ${escapeHtml(item.text)}</li>`,
+          )
+          .join("")}</ul>`,
+      );
+      textParts.push(
+        entry.items
+          .map((item) => `- [${item.done ? "x" : " "}] ${item.text}`)
+          .join("\n"),
+      );
+    }
+    appendContent(entry.content);
+  } else if (entry.kind === "reminder") {
+    if (entry.alarms.length > 0) {
+      const lines = entry.alarms.map(
+        (alarm) =>
+          `${formatCopyTime(alarm.remindAt)} · ${ALARM_MODE_LABEL[alarm.mode]}${
+            alarm.notified ? " · 已提醒" : ""
+          }`,
+      );
+      htmlParts.push(`<ul>${lines.map((line) => `<li>${line}</li>`).join("")}</ul>`);
+      textParts.push(lines.map((line) => `- ${line}`).join("\n"));
+    }
+    appendContent(entry.content);
+  } else if (entry.content) {
+    htmlParts.push(
+      `<img src="${escapeHtml(entry.content)}" alt="${escapeHtml(title || "手写涂鸦")}">`,
+    );
+    textParts.push("[手写涂鸦图片]");
+  }
+
+  if (entry.tags.length > 0) {
+    htmlParts.push(
+      `<p>${entry.tags.map((tag) => `#${escapeHtml(tag)}`).join(" ")}</p>`,
+    );
+    textParts.push(entry.tags.map((tag) => `#${tag}`).join(" "));
+  }
+
+  return { html: htmlParts.join("\n"), text: textParts.join("\n\n") };
+}
+
+/** 优先写 HTML（保留加粗、列表、颜色与图片），环境不支持时退化为纯文本 */
+async function writeClipboard(payload: ClipboardPayload): Promise<void> {
+  const clipboard = navigator.clipboard;
+  if (!clipboard) throw new Error("当前环境不支持剪贴板");
+  if (clipboard.write && typeof ClipboardItem !== "undefined") {
+    try {
+      await clipboard.write([
+        new ClipboardItem({
+          "text/html": new Blob([payload.html], { type: "text/html" }),
+          "text/plain": new Blob([payload.text], { type: "text/plain" }),
+        }),
+      ]);
+      return;
+    } catch {
+      // 部分 WebView 只允许写纯文本，回退到 writeText
+    }
+  }
+  await clipboard.writeText(payload.text);
+}
+
 /** 列表模式的一行摘要：待办取未完成子任务，提醒取最近闹钟，其余取正文纯文本 */
 function listSummary(entry: Entry): string {
   if (entry.kind === "draw") {
@@ -263,6 +381,7 @@ interface EntryListProps {
 
 /** 左侧主从列表：按贴纸墙 / 网格 / 列表展示，点击选中后在右侧详情编辑；已完成条目自动归入下方「已完成」分组 */
 export function EntryList({ onSelect, mode }: EntryListProps) {
+  const { message } = AntdApp.useApp();
   const filter = useEntryStore((state) => state.filter);
   const entries = useEntryStore((state) => state.entries);
   const search = useEntryStore((state) => state.search);
@@ -281,6 +400,64 @@ export function EntryList({ onSelect, mode }: EntryListProps) {
   const filtered = filterEntries(entries, search, tagFilter, timeRange);
   const list = sortEntries(filter, filtered, sortBy);
 
+  // 搜索框键盘导航：↑/↓ 在可见条目间移动高亮，Enter 打开当前项（窄屏只高亮、Enter 才进详情）。
+  // 用 ref 保存最新列表，监听器只注册一次，避免列表每次渲染都重新绑定。
+  const listRef = useRef(list);
+  const selectedIdRef = useRef(selectedId);
+  const onSelectRef = useRef(onSelect);
+  useEffect(() => {
+    selectedIdRef.current = selectedId;
+    onSelectRef.current = onSelect;
+  });
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (
+        event.key !== "ArrowDown" &&
+        event.key !== "ArrowUp" &&
+        event.key !== "Enter"
+      ) {
+        return;
+      }
+      const targetEl = event.target as HTMLElement | null;
+      if (
+        !targetEl ||
+        targetEl.tagName !== "INPUT" ||
+        !targetEl.closest(".titlebar-search")
+      ) {
+        return;
+      }
+      const rows = listRef.current;
+      if (rows.length === 0) return;
+      event.preventDefault();
+      if (event.key === "Enter") {
+        const current = rows.find((entry) => entry.id === selectedIdRef.current);
+        const next = current ?? rows[0];
+        if (next) onSelectRef.current(next.id);
+        return;
+      }
+      const currentIndex = rows.findIndex(
+        (entry) => entry.id === selectedIdRef.current,
+      );
+      const delta = event.key === "ArrowDown" ? 1 : -1;
+      const nextIndex =
+        currentIndex < 0
+          ? delta > 0
+            ? 0
+            : rows.length - 1
+          : (currentIndex + delta + rows.length) % rows.length;
+      const next = rows[nextIndex];
+      if (!next) return;
+      useEntryStore.getState().setSelectedId(next.id);
+      requestAnimationFrame(() => {
+        document
+          .querySelector(`[data-entry-id="${next.id}"]`)
+          ?.scrollIntoView({ block: "nearest" });
+      });
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
   // 分组视图：待办/提醒拆「进行中/其他」与「已完成」两组，
   // 待办勾选完成、提醒标记已处理后自动归入下方「已完成」区
   const activeRows = list.filter((entry) => !entryDone(entry));
@@ -294,6 +471,11 @@ export function EntryList({ onSelect, mode }: EntryListProps) {
           (a, b) =>
             Number(pinnedSet.has(b.id)) - Number(pinnedSet.has(a.id))
         );
+  // 搜索框 ↑/↓ 只遍历实际展示的条目（已完成分组默认折叠，跳进去会看不到高亮）
+  useEffect(() => {
+    listRef.current = cardRows;
+  }, [cardRows]);
+
   // 已完成区默认折叠：点「已完成项 (n)」标题展开查看已完成的卡片
   const [doneExpanded, setDoneExpanded] = useState(false);
 
@@ -399,15 +581,7 @@ export function EntryList({ onSelect, mode }: EntryListProps) {
   };
 
   const copyEntry = (entry: Entry): void => {
-    // 涂鸦正文是图片数据，复制时只带标题，避免把 base64 串写进剪贴板
-    const text =
-      entry.kind === "draw"
-        ? entry.title || "手写涂鸦"
-        : entry.title
-          ? `${entry.title}\n${toPlainText(entry.content || "")}`
-          : toPlainText(entry.content || "");
-    void navigator.clipboard
-      ?.writeText(text)
+    void writeClipboard(buildClipboardPayload(entry))
       .then(() => message.success("已复制"))
       .catch(() => message.error("复制失败"));
   };
@@ -422,6 +596,17 @@ export function EntryList({ onSelect, mode }: EntryListProps) {
     void moveToTrash(entry.id).then(() => message.success("已移入废纸篓"));
   };
 
+  const exportEntry = (entry: Entry): void => {
+    void exportEntryImage(entry)
+      .then((result) => {
+        if (result === "saved") message.success("已导出图片");
+      })
+      .catch((error) => {
+        console.error("导出图片失败", error);
+        message.error("导出图片失败");
+      });
+  };
+
   /** 卡片工具条渲染入口：贴纸墙与网格卡片共用同一组件 */
   const renderEntryTools = (entry: Entry) => (
     <EntryTools
@@ -430,6 +615,7 @@ export function EntryList({ onSelect, mode }: EntryListProps) {
       onEdit={(target) => onSelect(target.id)}
       onTogglePin={toggleWallPin}
       onCopy={copyEntry}
+      onExport={exportEntry}
       onRemove={removeEntry}
     />
   );

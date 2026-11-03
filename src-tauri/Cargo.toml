@@ -23,6 +23,8 @@ tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# 导出分享图：前端传 base64 PNG，Rust 解码后写文件
+base64 = "0.22"
 # AI 助手代理：默认 TLS 走 rustls + aws-lc（需 cmake/NASM），改用 native-tls 在 Windows 上走 schannel，
 # 不引入 C 构建工具链依赖。http2 / system-proxy / charset 与默认特性保持一致；
 # query 供联网搜索拼查询参数（0.13 起该能力为独立 feature，默认关闭）。
