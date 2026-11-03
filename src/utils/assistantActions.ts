@@ -8,28 +8,42 @@ const MAX_CONTENT_CHARS = 4000
 const MAX_ITEM_CHARS = 200
 const MAX_ITEMS = 20
 
-/** AI 提议新建的一条便签（用户确认前不会写入仓储） */
+/** 操作类型：create 新建便签；complete-todo 勾选已有待办的子任务；append-note 向已有备忘追加内容 */
+export type AssistantActionOp = 'create' | 'complete-todo' | 'append-note'
+
+/** AI 提议的一条操作（用户确认前不会写入仓储） */
 export interface AssistantAction {
+  /** 缺省视为 create（兼容旧回答里的动作块） */
+  op?: AssistantActionOp
   kind: EntryKind
   title: string
   content: string
   /** 提醒专用：毫秒时间戳（已校验为未来时间） */
   remindAt?: number
-  /** 待办专用：子任务文本 */
+  /** 待办专用：子任务文本（create 为新建项；complete-todo 为要勾选的现有项） */
   items?: string[]
+  /** 操作已有便签时的目标 id（来自上下文） */
+  targetId?: string
 }
 
-/** 系统提示词里的操作协议：模型按此格式提出新建请求，界面渲染确认卡片 */
+/** 系统提示词里的操作协议：模型按此格式提出操作请求，界面渲染确认卡片 */
 export const ACTION_PROTOCOL = [
-  '可执行操作（新建便签）：',
-  '用户要求新建备忘、待办或提醒时，先用一句话说明，再在回答末尾输出 1–3 个操作块，每个操作块单独一行：',
-  '<action>{"kind":"reminder","title":"打开 epic","content":"","remindAt":"2026-10-30T15:50"}</action>',
+  '可执行操作：',
+  '当用户要求新建便签、勾选已有待办的子任务、或向已有备忘追加内容时，先用一句话说明，再在回答末尾输出 1–3 个操作块，每个操作块单独一行。',
+  '新建便签：',
+  '<action>{"op":"create","kind":"reminder","title":"打开 epic","content":"","remindAt":"2026-10-30T15:50"}</action>',
+  '- op：create（可省略）',
   '- kind：note（备忘）/ todo（待办）/ reminder（提醒）',
   '- title：必填，简明标题，不要把时间写进标题',
   '- content：可选，Markdown 正文',
-  '- items：仅 todo 可选，子任务文本数组，例如 ["买牛奶","买鸡蛋"]，按用户描述拆成一条条可勾选项',
+  '- items：仅 todo 可选，子任务文本数组，例如 ["买牛奶","买鸡蛋"]',
   '- remindAt：仅 reminder 必填，格式 YYYY-MM-DDTHH:mm（用户本地时间），必须晚于当前时间；「半小时后」「明早」这类相对时间要先按当前时间换算成具体时刻',
-  '输出要求：不要声称已经创建成功，界面会展示确认卡片、由用户点击创建；不要用代码块包裹 <action>；修改、删除、勾选等操作仍请提示用户手动完成。',
+  '勾选已有待办的子任务（targetId 必须原样复制 <notes> 中该条目后的 id）：',
+  '<action>{"op":"complete-todo","targetId":"<notes 中的 id>","items":["买牛奶"]}</action>',
+  '- items：要勾选的子任务文本，必须与待办中现有子任务文本一致',
+  '向已有备忘追加内容（targetId 同样取自 <notes>）：',
+  '<action>{"op":"append-note","targetId":"<notes 中的 id>","content":"追加的文本"}</action>',
+  '输出要求：不要声称已经执行成功，界面会展示确认卡片、由用户点击执行；不要用代码块包裹 <action>；删除、改标题、改时间等操作仍请提示用户手动完成。',
 ].join('\n')
 
 const ACTION_BLOCK = /<action>([\s\S]*?)<\/action>/gi
@@ -74,6 +88,26 @@ function parseAction(body: string): AssistantAction | null {
   if (typeof data !== 'object' || data === null || Array.isArray(data)) return null
 
   const item = data as Record<string, unknown>
+  const opValue =
+    item.op === 'complete-todo' || item.op === 'append-note' ? item.op : 'create'
+  const targetId =
+    typeof item.targetId === 'string' ? item.targetId.trim() : ''
+
+  // 勾选已有待办：只需目标 id 与子任务文本，标题 / 类型由客户端按 id 解析
+  if (opValue === 'complete-todo') {
+    const items = parseItems(item.items)
+    if (!targetId || items.length === 0) return null
+    return { op: opValue, kind: 'todo', title: '', content: '', targetId, items }
+  }
+  if (opValue === 'append-note') {
+    const content =
+      typeof item.content === 'string'
+        ? item.content.trim().slice(0, MAX_CONTENT_CHARS)
+        : ''
+    if (!targetId || !content) return null
+    return { op: opValue, kind: 'note', title: '', content, targetId }
+  }
+
   const kind = item.kind
   if (kind !== 'note' && kind !== 'todo' && kind !== 'reminder') return null
   const title =

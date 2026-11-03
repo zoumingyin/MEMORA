@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
-import { Button, Dropdown, Flex, Popconfirm, Select, Tooltip, message as antdMessage } from 'antd'
+import { App as AntdApp, Button, Dropdown, Flex, Popconfirm, Select, Tooltip } from 'antd'
 import dayjs from 'dayjs'
 import {
   ArrowUp,
@@ -166,6 +166,7 @@ function ErrorCard({
 }
 
 function CopyReplyButton({ text }: { text: string }) {
+  const { message: antdMessage } = AntdApp.useApp()
   const [copied, setCopied] = useState(false)
   const timerRef = useRef<number | undefined>(undefined)
 
@@ -214,7 +215,7 @@ const ACTION_META: Record<EntryKind, { label: string; icon: ReactNode }> = {
   draw: { label: '涂鸦', icon: <Pencil size={12} /> },
 }
 
-/** AI 提议新建的便签：卡片确认后才写入仓储，避免模型直接改数据 */
+/** AI 提议的操作：卡片确认后才写入仓储，避免模型直接改数据 */
 function ActionCard({
   action,
   created,
@@ -224,38 +225,101 @@ function ActionCard({
   created: boolean
   onCreated: () => void
 }) {
+  const { message: antdMessage } = AntdApp.useApp()
   const [status, setStatus] = useState<'idle' | 'creating' | 'dismissed'>('idle')
+  const target = useEntryStore((state) =>
+    action.targetId
+      ? state.entries.find((entry) => entry.id === action.targetId)
+      : undefined
+  )
   const meta = ACTION_META[action.kind]
+  const op = action.op ?? 'create'
   if (status === 'dismissed') return null
 
-  const handleCreate = async () => {
+  // 操作已有条目：目标被删除或类型不符时不再提供确认按钮
+  const targetMissing =
+    op !== 'create' && (!target || target.kind !== action.kind)
+  const headerLabel =
+    op === 'create'
+      ? `新建${meta.label}`
+      : op === 'complete-todo'
+        ? '勾选待办子任务'
+        : '追加备忘内容'
+  const doneLabel =
+    op === 'create' ? '已创建' : op === 'complete-todo' ? '已勾选' : '已追加'
+  const confirmLabel =
+    op === 'create' ? `创建${meta.label}` : op === 'complete-todo' ? '勾选' : '追加'
+
+  const handleApply = async (): Promise<void> => {
     if (created || status !== 'idle') return
     setStatus('creating')
-    const entry = await useEntryStore.getState().addEntry(
-      {
-        title: action.title,
-        content: action.content,
-        remindAt: action.remindAt,
-        items: action.items,
-      },
-      action.kind,
-    )
-    if (!entry) {
+    const state = useEntryStore.getState()
+
+    if (op === 'create') {
+      const entry = await state.addEntry(
+        {
+          title: action.title,
+          content: action.content,
+          remindAt: action.remindAt,
+          items: action.items,
+        },
+        action.kind,
+      )
+      if (!entry) {
+        setStatus('idle')
+        antdMessage.error(`创建${meta.label}失败，请稍后重试`)
+        return
+      }
+      // 记到消息里并持久化：重开面板或重启应用后不再重复提供操作按钮
+      onCreated()
+      antdMessage.success(`已创建${meta.label}`)
       setStatus('idle')
-      antdMessage.error(`创建${meta.label}失败，请稍后重试`)
       return
     }
+
+    const targetEntry = action.targetId
+      ? state.entries.find((entry) => entry.id === action.targetId)
+      : undefined
+    if (!targetEntry || targetEntry.kind !== action.kind) {
+      setStatus('idle')
+      antdMessage.error('找不到对应便签，可能已被删除')
+      return
+    }
+
+    if (op === 'complete-todo' && targetEntry.kind === 'todo') {
+      const wanted = new Set(action.items ?? [])
+      let matched = 0
+      const items = targetEntry.items.map((item) => {
+        if (!item.done && wanted.has(item.text)) {
+          matched += 1
+          return { ...item, done: true }
+        }
+        return item
+      })
+      if (matched === 0) {
+        setStatus('idle')
+        antdMessage.warning('没有找到匹配的子任务，可能已被修改')
+        return
+      }
+      await state.updateEntry(targetEntry.id, { kind: 'todo', items })
+      onCreated()
+      antdMessage.success(`已勾选 ${matched} 项`)
+    } else if (op === 'append-note' && targetEntry.kind === 'note') {
+      const next = targetEntry.content
+        ? `${targetEntry.content}\n\n${action.content}`
+        : action.content
+      await state.updateEntry(targetEntry.id, { content: next })
+      onCreated()
+      antdMessage.success('已追加到备忘')
+    }
     setStatus('idle')
-    // 记到消息里并持久化：重开面板或重启应用后不再重复提供创建按钮
-    onCreated()
-    antdMessage.success(`已创建${meta.label}`)
   }
 
   return (
     <div className="rounded-[10px] border border-[var(--border)] bg-[var(--field)] px-3 py-2.5">
       <div className="flex items-center gap-1.5 text-[10.5px] text-[var(--text-muted)]">
         <span className="flex-center text-[var(--kind-accent)]">{meta.icon}</span>
-        <span>新建{meta.label}</span>
+        <span>{headerLabel}</span>
         {action.remindAt !== undefined && (
           <span className="text-[var(--text)]">
             · {dayjs(action.remindAt).format('M月D日 HH:mm')}
@@ -264,50 +328,85 @@ function ActionCard({
         {created && (
           <span className="ml-auto flex items-center gap-0.5 text-[var(--kind-accent)]">
             <Check size={11} />
-            已创建
+            {doneLabel}
           </span>
         )}
       </div>
-      <div className="mt-1 whitespace-pre-wrap break-words text-[12.5px] font-semibold leading-snug text-[var(--text)]">
-        {action.title}
-      </div>
-      {action.content && (
-        <p className="mt-0.5 line-clamp-2 whitespace-pre-wrap break-words text-[11.5px] leading-relaxed text-[var(--text-muted)]">
-          {action.content}
+
+      {targetMissing ? (
+        <p className="mt-1 text-[12px] leading-relaxed text-[var(--text-muted)]">
+          找不到对应便签，可能已被删除或修改，可让助手重新确认标题。
         </p>
-      )}
-      {action.items && action.items.length > 0 && (
+      ) : op === 'create' ? (
         <>
-          <Flex vertical gap={2} className="mt-1">
-            {action.items.slice(0, 4).map((item) => (
-              <Flex
-                key={item}
-                align="flex-start"
-                gap={6}
-                className="text-[11.5px] leading-relaxed text-[var(--text-muted)]"
-              >
-                <span className="mt-[7px] h-[3px] w-[3px] shrink-0 rounded-full bg-[var(--text-muted)]" />
-                <span className="min-w-0 break-words">{item}</span>
+          <div className="mt-1 whitespace-pre-wrap break-words text-[12.5px] font-semibold leading-snug text-[var(--text)]">
+            {action.title}
+          </div>
+          {action.content && (
+            <p className="mt-0.5 line-clamp-2 whitespace-pre-wrap break-words text-[11.5px] leading-relaxed text-[var(--text-muted)]">
+              {action.content}
+            </p>
+          )}
+          {action.items && action.items.length > 0 && (
+            <>
+              <Flex vertical gap={2} className="mt-1">
+                {action.items.slice(0, 4).map((item) => (
+                  <Flex
+                    key={item}
+                    align="flex-start"
+                    gap={6}
+                    className="text-[11.5px] leading-relaxed text-[var(--text-muted)]"
+                  >
+                    <span className="mt-[7px] h-[3px] w-[3px] shrink-0 rounded-full bg-[var(--text-muted)]" />
+                    <span className="min-w-0 break-words">{item}</span>
+                  </Flex>
+                ))}
               </Flex>
-            ))}
-          </Flex>
-          {action.items.length > 4 && (
-            <div className="pl-[9px] text-[11px] text-[var(--text-muted)]">
-              还有 {action.items.length - 4} 项…
-            </div>
+              {action.items.length > 4 && (
+                <div className="pl-[9px] text-[11px] text-[var(--text-muted)]">
+                  还有 {action.items.length - 4} 项…
+                </div>
+              )}
+            </>
+          )}
+        </>
+      ) : (
+        <>
+          <div className="mt-1 break-words text-[12.5px] font-semibold leading-snug text-[var(--text)]">
+            {target?.title || '无标题'}
+          </div>
+          {op === 'complete-todo' ? (
+            <Flex vertical gap={2} className="mt-1">
+              {(action.items ?? []).slice(0, 4).map((item) => (
+                <Flex
+                  key={item}
+                  align="flex-start"
+                  gap={6}
+                  className="text-[11.5px] leading-relaxed text-[var(--text-muted)]"
+                >
+                  <Check size={11} className="mt-[3px] shrink-0" />
+                  <span className="min-w-0 break-words">{item}</span>
+                </Flex>
+              ))}
+            </Flex>
+          ) : (
+            <p className="mt-0.5 line-clamp-3 whitespace-pre-wrap break-words text-[11.5px] leading-relaxed text-[var(--text-muted)]">
+              {action.content}
+            </p>
           )}
         </>
       )}
-      {!created && (
+
+      {!created && !targetMissing && (
         <div className="mt-2 flex items-center gap-2">
           <Button
             size="small"
             type="primary"
-            icon={<Plus size={12} />}
+            icon={op === 'create' ? <Plus size={12} /> : <Check size={12} />}
             loading={status === 'creating'}
-            onClick={() => void handleCreate()}
+            onClick={() => void handleApply()}
           >
-            创建{meta.label}
+            {confirmLabel}
           </Button>
           <Button size="small" type="text" onClick={() => setStatus('dismissed')}>
             忽略
@@ -427,6 +526,7 @@ function MessageBubble({
 }
 
 function AssistantPanelBody() {
+  const { message: antdMessage } = AntdApp.useApp()
   const messages = useAssistantStore((state) => state.messages)
   const input = useAssistantStore((state) => state.input)
   const sending = useAssistantStore((state) => state.sending)
