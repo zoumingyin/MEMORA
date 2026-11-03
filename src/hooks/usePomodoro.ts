@@ -2,6 +2,9 @@ import { useEffect, useRef, useState } from "react";
 import {
   beep,
   fmt,
+  loadFocusStats,
+  recordFocusRound,
+  type FocusStats,
   type PomodoroControls,
   type PomodoroState,
 } from "../utils/pomodoro";
@@ -11,6 +14,8 @@ const STORAGE_KEY = "bianqian.pomodoro.v1";
 interface PomodoroSettings {
   workMinutes: number;
   breakMinutes: number;
+  /** 绑定的待办条目 id：专注轮结束后据此提示勾选已完成子任务 */
+  linkedEntryId: string | null;
 }
 
 function loadSettings(): PomodoroSettings {
@@ -24,12 +29,19 @@ function loadSettings(): PomodoroSettings {
       const brk = [5, 10, 15].includes(parsed.breakMinutes ?? -1)
         ? parsed.breakMinutes!
         : 5;
-      return { workMinutes: work, breakMinutes: brk };
+      return {
+        workMinutes: work,
+        breakMinutes: brk,
+        linkedEntryId:
+          typeof parsed.linkedEntryId === "string"
+            ? parsed.linkedEntryId
+            : null,
+      };
     }
   } catch {
     // 损坏数据回退默认
   }
-  return { workMinutes: 25, breakMinutes: 5 };
+  return { workMinutes: 25, breakMinutes: 5, linkedEntryId: null };
 }
 
 function saveSettings(settings: PomodoroSettings): void {
@@ -46,6 +58,7 @@ function saveSettings(settings: PomodoroSettings): void {
  */
 export function usePomodoro() {
   const [settings, setSettings] = useState<PomodoroSettings>(loadSettings);
+  const [todayStats, setTodayStats] = useState<FocusStats>(loadFocusStats);
   const [state, setState] = useState<PomodoroState>(() => {
     const saved = loadSettings();
     return {
@@ -55,6 +68,15 @@ export function usePomodoro() {
       rounds: 0,
     };
   });
+
+  // 每完成一轮专注（rounds 递增）记入当天统计：跨天读取时自动归零
+  const prevRoundsRef = useRef(state.rounds);
+  useEffect(() => {
+    if (state.rounds > prevRoundsRef.current) {
+      setTodayStats(recordFocusRound(settings.workMinutes));
+    }
+    prevRoundsRef.current = state.rounds;
+  }, [state.rounds, settings.workMinutes]);
 
   // 每秒 tick：剩余时间递减，归零自动切换模式
   useEffect(() => {
@@ -139,6 +161,12 @@ export function usePomodoro() {
           : prev,
       );
     },
+    setLinkedEntry: (id) =>
+      setSettings((prev) => {
+        const next = { ...prev, linkedEntryId: id };
+        saveSettings(next);
+        return next;
+      }),
   };
 
   const stateRef = useRef(state);
@@ -154,5 +182,13 @@ export function usePomodoro() {
     return fmt(ms);
   };
 
-  return { state, controls, workMinutes: settings.workMinutes, breakMinutes: settings.breakMinutes, getRemainingLabel };
+  return {
+    state,
+    controls,
+    workMinutes: settings.workMinutes,
+    breakMinutes: settings.breakMinutes,
+    linkedEntryId: settings.linkedEntryId,
+    todayStats,
+    getRemainingLabel,
+  };
 }

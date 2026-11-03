@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Input } from "antd";
 import { Pin, Search, Settings, Sparkles, Timer, X, Zap } from "lucide-react";
 import { useWindowStore } from "../store/useWindowStore";
@@ -9,6 +9,7 @@ import { closeWindow } from "../window/tauriWindow";
 import { SettingsDialog } from "./SettingsDialog";
 import { QuickCapture } from "./QuickCapture";
 import { PomodoroDialog } from "./PomodoroDialog";
+import { FocusReviewDialog } from "./FocusReviewDialog";
 import { usePomodoro } from "../hooks/usePomodoro";
 
 interface TitleBarProps {
@@ -32,6 +33,28 @@ export function TitleBar({ quickOpen, setQuickOpen }: TitleBarProps) {
   const pomodoroLabel = pomodoro.getRemainingLabel();
   const search = useEntryStore((state) => state.search);
   const setSearch = useEntryStore((state) => state.setSearch);
+  const entries = useEntryStore((state) => state.entries);
+  /** 番茄钟绑定的待办（移入废纸篓 / 已换分类时自然失效） */
+  const linkedTodo = useMemo(() => {
+    const entry = pomodoro.linkedEntryId
+      ? entries.find((item) => item.id === pomodoro.linkedEntryId)
+      : undefined;
+    return entry?.kind === "todo" ? entry : null;
+  }, [entries, pomodoro.linkedEntryId]);
+  const pendingTodoCount =
+    linkedTodo?.items.filter((item) => !item.done).length ?? 0;
+  /** 专注结束后弹出勾选面板（仅绑定待办且还有未完成子任务时） */
+  const [focusReviewOpen, setFocusReviewOpen] = useState(false);
+  const completedRoundsRef = useRef(pomodoro.state.rounds);
+  useEffect(() => {
+    if (
+      pomodoro.state.rounds > completedRoundsRef.current &&
+      pendingTodoCount > 0
+    ) {
+      setFocusReviewOpen(true);
+    }
+    completedRoundsRef.current = pomodoro.state.rounds;
+  }, [pomodoro.state.rounds, pendingTodoCount]);
   /** 搜索框展开状态：点击搜索图标展开，点击空白区域收起 */
   const [searchOpen, setSearchOpen] = useState(false);
 
@@ -72,6 +95,12 @@ export function TitleBar({ quickOpen, setQuickOpen }: TitleBarProps) {
             placeholder="搜索标题或内容"
             value={search}
             onChange={(event) => setSearch(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key !== "Escape") return;
+              event.preventDefault();
+              if (search) setSearch("");
+              else setSearchOpen(false);
+            }}
           />
         </div>
         <button
@@ -156,7 +185,16 @@ export function TitleBar({ quickOpen, setQuickOpen }: TitleBarProps) {
         controls={pomodoro.controls}
         workMinutes={pomodoro.workMinutes}
         breakMinutes={pomodoro.breakMinutes}
+        linkedEntryId={pomodoro.linkedEntryId}
+        todayStats={pomodoro.todayStats}
       />
+      {focusReviewOpen && linkedTodo && (
+        <FocusReviewDialog
+          open
+          entry={linkedTodo}
+          onClose={() => setFocusReviewOpen(false)}
+        />
+      )}
     </header>
   );
 }

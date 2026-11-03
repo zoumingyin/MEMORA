@@ -5,15 +5,19 @@ import {
   PlayCircleOutlined,
   RedoOutlined,
 } from "@ant-design/icons";
-import { useEffect } from "react";
+import { useEffect, useMemo } from "react";
 import {
   BREAK_PRESETS,
   fmt,
+  localDateKey,
   MODE_LABEL,
   WORK_PRESETS,
+  type FocusStats,
   type PomodoroControls,
   type PomodoroState,
 } from "../utils/pomodoro";
+import { useEntryStore } from "../store/useEntryStore";
+import type { TodoEntry } from "../types/entry";
 
 interface PomodoroDialogProps {
   open: boolean;
@@ -22,6 +26,9 @@ interface PomodoroDialogProps {
   controls: PomodoroControls;
   workMinutes: number;
   breakMinutes: number;
+  /** 当前绑定的待办 id（null = 不绑定） */
+  linkedEntryId: string | null;
+  todayStats: FocusStats;
 }
 
 /** 番茄钟弹窗：专注/休息倒计时 + 轮次计数，计时器本身由标题栏常驻（关闭弹窗仍在走） */
@@ -32,10 +39,44 @@ export function PomodoroDialog({
   controls,
   workMinutes,
   breakMinutes,
+  linkedEntryId,
+  todayStats,
 }: PomodoroDialogProps) {
   const { mode, remainingMs, running, rounds } = state;
   const totalMs = (mode === "work" ? workMinutes : breakMinutes) * 60_000;
   const percent = Math.min(100, Math.max(0, 100 - (remainingMs / totalMs) * 100));
+
+  const entries = useEntryStore((state) => state.entries);
+  const linkedEntry = linkedEntryId
+    ? entries.find((entry) => entry.id === linkedEntryId)
+    : undefined;
+  const linkedTodo = linkedEntry?.kind === "todo" ? linkedEntry : null;
+
+  // 可绑定待办：还有未完成子任务的待办；已绑定但全部完成的也保留在选项里，避免值显示成 id
+  const todoOptions = useMemo(() => {
+    const pendingOptions = entries
+      .filter(
+        (entry): entry is TodoEntry =>
+          entry.kind === "todo" && entry.items.some((item) => !item.done)
+      )
+      .map((entry) => ({
+        value: entry.id,
+        label: `剩 ${entry.items.filter((item) => !item.done).length} 项 · ${entry.title}`,
+      }));
+    if (linkedTodo && !pendingOptions.some((item) => item.value === linkedTodo.id)) {
+      pendingOptions.push({
+        value: linkedTodo.id,
+        label: `${linkedTodo.title}（已完成）`,
+      });
+    }
+    return pendingOptions;
+  }, [entries, linkedTodo]);
+
+  // 跨天但尚未完成新一轮时，本地统计还停在昨天：展示层按今天归零
+  const stats =
+    todayStats.date === localDateKey()
+      ? todayStats
+      : { date: todayStats.date, rounds: 0, minutes: 0 };
 
   // 弹窗打开时切到当前模式对应预设
   useEffect(() => {
@@ -69,6 +110,29 @@ export function PomodoroDialog({
             {MODE_LABEL[mode]}
           </span>
           <span className="pomodoro-rounds">第 {rounds + 1} 轮</span>
+        </div>
+
+        <div className="flex w-full flex-col gap-1.5">
+          <div className="flex w-full items-center justify-between text-[11.5px] text-[var(--text-muted)]">
+            <span>今日专注</span>
+            <span className="font-semibold text-[var(--text)]">
+              {stats.rounds} 轮 · {stats.minutes} 分钟
+            </span>
+          </div>
+          <div className="flex w-full items-center gap-2 text-[12px] text-[var(--text-muted)]">
+            <span className="shrink-0">绑定待办</span>
+            <Select
+              size="small"
+              className="min-w-0 flex-1"
+              allowClear
+              placeholder="不绑定"
+              value={linkedTodo ? linkedTodo.id : undefined}
+              onChange={(value) => controls.setLinkedEntry(value ?? null)}
+              options={todoOptions}
+              popupMatchSelectWidth={false}
+              notFoundContent="暂无未完成待办"
+            />
+          </div>
         </div>
 
         <div className="pomodoro-controls">

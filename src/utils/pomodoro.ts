@@ -18,6 +18,8 @@ export interface PomodoroControls {
   setMode: (mode: PomodoroMode) => void;
   setWorkMinutes: (minutes: number) => void;
   setBreakMinutes: (minutes: number) => void;
+  /** 绑定/解绑番茄钟关联的待办（null = 不绑定） */
+  setLinkedEntry: (id: string | null) => void;
 }
 
 export const WORK_PRESETS = [15, 25, 45];
@@ -34,6 +36,62 @@ export function fmt(ms: number): string {
   const m = Math.floor(total / 60);
   const s = total % 60;
   return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+}
+
+/** 每日专注统计（date 为本地日期键，跨天自动归零） */
+export interface FocusStats {
+  date: string;
+  /** 完成的工作轮数 */
+  rounds: number;
+  /** 累计专注分钟数 */
+  minutes: number;
+}
+
+const FOCUS_STATS_KEY = "bianqian.pomodoro.stats.v1";
+
+/** 本地日期键 YYYY-MM-DD（按用户时区，而非 UTC） */
+export function localDateKey(date = new Date()): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+/** 读取今天的专注统计（存的是别的日期则视为零） */
+export function loadFocusStats(): FocusStats {
+  const today = localDateKey();
+  try {
+    const raw = localStorage.getItem(FOCUS_STATS_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as Partial<FocusStats>;
+      if (parsed.date === today) {
+        return {
+          date: today,
+          rounds: Math.max(0, Math.floor(parsed.rounds ?? 0)),
+          minutes: Math.max(0, Math.floor(parsed.minutes ?? 0)),
+        };
+      }
+    }
+  } catch {
+    // 损坏数据回退为零
+  }
+  return { date: today, rounds: 0, minutes: 0 };
+}
+
+/** 记录一轮完成的专注并写回今天统计 */
+export function recordFocusRound(workMinutes: number): FocusStats {
+  const prev = loadFocusStats();
+  const next: FocusStats = {
+    date: prev.date,
+    rounds: prev.rounds + 1,
+    minutes: prev.minutes + workMinutes,
+  };
+  try {
+    localStorage.setItem(FOCUS_STATS_KEY, JSON.stringify(next));
+  } catch {
+    // 存储不可用时仅内存生效
+  }
+  return next;
 }
 
 /** 完成提示音：Web Audio 短促双音（无需权限文件） */
