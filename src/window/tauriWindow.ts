@@ -403,11 +403,15 @@ export async function restoreBounds(
     const y = Math.min(Math.max(b.y, area.y), area.y + area.height - height)
     b = { x, y, width, height }
   }
+  // 先恢复投影再下发尺寸：开投影会让 WM_NCCALCSIZE 重新内缩客户区（一圈不可见边框，
+  // 约 16px）——若在尺寸确认之后再开（旧顺序），客户区会比设定值小一圈且无人校正，
+  // 表现为布局挤压、拖拽窗口边框才恢复；先开投影，applyBounds 的边框换算与
+  // 回读确认拿到的才是最终态，尺寸不足时 fixup 轮会自动补正。
+  // 收纳路径（collapseToStripLocked）已是对称顺序：先关投影、再缩窗。
+  await setShadowEnabled(true)
   // 先撑尺寸再设回最小约束：反过来的话，保存的尺寸只要比「逻辑最小值 × 当前缩放」
   // 小一两像素就会被 WM_GETMINMAXINFO 顶住，applyBounds 永远回读不到目标尺寸
   const settled = await applyBounds(b, settleMs)
   await setMinSizeConstraint(true)
-  // 窗口恢复正常尺寸后重新开启投影；展开失败（未撑开）时保持无投影，与窄条视觉一致
-  if (settled) await setShadowEnabled(true)
   return settled
 }

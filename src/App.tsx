@@ -527,7 +527,21 @@ export default function App() {
     });
     // 尺寸变化：保存边界（供下次启动恢复）。最大化状态落盘会让下次启动恢复成
     // 异常大窗口（透明窗口渲染异常），故最大化时不落盘。
+    // WebView2 在程序化改尺寸（IPC 下发）后偶尔不重排：视口停在旧尺寸，
+    // 页面元素按错误宽度布局（表现为尺寸突然低于设定值，拖拽边框才恢复）。
+    // 这里对每次尺寸变化合并触发一次合成层刷新，等价于拖拽时的强制重排兜底
+    let refreshPending = false;
     void onWindowResized(async (bounds) => {
+      if (!refreshPending) {
+        refreshPending = true;
+        requestAnimationFrame(() => {
+          document.documentElement.style.transform = "translateZ(0)";
+          requestAnimationFrame(() => {
+            document.documentElement.style.transform = "";
+            refreshPending = false;
+          });
+        });
+      }
       // 最小化检测：Windows 最小化时窗口矩形缩成约 160×28（IsIconic 为真）。
       // 收纳窄条被点任务栏按钮会最小化到屏幕外——这正是「贴边后便签消失」的路径；
       // 按需求改为弹出展开：任务栏点击收纳态便签 = 显示 + 自动展开。
