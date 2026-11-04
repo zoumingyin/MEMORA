@@ -613,6 +613,7 @@ textarea {
   flex: none;
   border-right: 1px solid var(--border);
   background: rgba(var(--panel-soft-rgb), var(--chrome-alpha));
+  padding-bottom:0.5rem;
 }
 
 /* 分类筛选胶囊：独立成行（参考浅色风，active 蓝填充 / 非 active 灰底） */

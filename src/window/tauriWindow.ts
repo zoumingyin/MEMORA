@@ -129,8 +129,9 @@ export async function setSize(width: number, height: number): Promise<void> {
 }
 
 /** 不可见边框的宽度（物理像素）：客户区左上角相对窗口左上角的偏移。
- *  透明窗口 + shadow 会在四周留一圈看不见的边框，占几到十几像素。
- *  读不到就按 0 处理：applyBounds 下发后会实测补偿，换算起点错不影响最终贴边。 */
+ *  透明窗口 + shadow 会在四周留一圈看不见的边框，占几到十几像素；
+ *  当前投影已全局关闭（shadow: false），通常读到 0。函数保留实测兜底：
+ *  读不到就按 0 处理，applyBounds 下发后会实测补偿，换算起点错不影响最终贴边。 */
 async function getFrameInsets(): Promise<{ x: number; y: number }> {
   if (!isTauriRuntime()) return { x: 0, y: 0 }
   try {
@@ -263,17 +264,6 @@ export async function setMinSizeConstraint(enabled: boolean): Promise<void> {
   }
 }
 
-/** 开关窗口投影：收纳窄条是贴边浮层，DWM 投影会让胶囊列看起来悬空发虚；
- *  收纳时关掉，展开恢复正常窗口时再开回来 */
-export async function setShadowEnabled(enabled: boolean): Promise<void> {
-  if (!isTauriRuntime()) return
-  try {
-    await win().setShadow(enabled)
-  } catch (error) {
-    console.error('切换窗口投影失败', error)
-  }
-}
-
 /** 工作区缓存：显示器工作区极少变化，5 秒内复用，避免收纳/弹出时反复 IPC 查询 */
 let workAreaCache: { area: WorkArea; at: number } | null = null
 
@@ -403,12 +393,8 @@ export async function restoreBounds(
     const y = Math.min(Math.max(b.y, area.y), area.y + area.height - height)
     b = { x, y, width, height }
   }
-  // 先恢复投影再下发尺寸：开投影会让 WM_NCCALCSIZE 重新内缩客户区（一圈不可见边框，
-  // 约 16px）——若在尺寸确认之后再开（旧顺序），客户区会比设定值小一圈且无人校正，
-  // 表现为布局挤压、拖拽窗口边框才恢复；先开投影，applyBounds 的边框换算与
-  // 回读确认拿到的才是最终态，尺寸不足时 fixup 轮会自动补正。
-  // 收纳路径（collapseToStripLocked）已是对称顺序：先关投影、再缩窗。
-  await setShadowEnabled(true)
+  // 窗口投影已在 tauri.conf.json 全局关闭（shadow: false），展开/收纳均无 DWM 投影，
+  // 也就不存在开投影触发的 WM_NCCALCSIZE 客户区内缩问题。
   // 先撑尺寸再设回最小约束：反过来的话，保存的尺寸只要比「逻辑最小值 × 当前缩放」
   // 小一两像素就会被 WM_GETMINMAXINFO 顶住，applyBounds 永远回读不到目标尺寸
   const settled = await applyBounds(b, settleMs)

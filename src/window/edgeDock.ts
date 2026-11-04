@@ -9,7 +9,6 @@ import {
   isMinimized,
   logDockGeometry,
   setMinSizeConstraint,
-  setShadowEnabled,
   type Bounds,
   type WorkArea,
 } from "./tauriWindow";
@@ -257,14 +256,12 @@ async function collapseToStripLocked(
   // 不先清空最小尺寸约束，Windows 的 WM_GETMINMAXINFO 会把 setSize 顶回 422×540，
   // 表现为「收一下又弹回原尺寸」；展开时由 restoreBounds 设回约束
   await setMinSizeConstraint(false);
-  // 关投影会让 tao 重写窗口样式并强制非客户区重算（SWP_FRAMECHANGED + WM_NCCALCSIZE），
-  // 客户区向外扩一圈不可见边框，DWM 对重算后的边框绘一帧亮色——画面闪现白边。
+  // 窗口投影已全局关闭（tauri.conf.json shadow: false），无需在收纳/展开时切换，
+  // 也就没有切换投影触发的 WM_NCCALCSIZE 样式重算与白边闪现问题。
   // 先用 DWMWA_CLOAK 把窗口从合成器临时隐藏（此刻 dock-out 已播完、内容本就全透明，
-  // 斗篷/揭开在视觉上无感），样式重算与缩窗全程不可见，揭开时即是最终窄条
+  // 斗篷/揭开在视觉上无感），缩窗全程不可见，揭开时即是最终窄条
   await invoke("set_window_cloaked", { cloaked: true }).catch(() => undefined);
   try {
-    // 收纳窄条是贴边浮层，关掉 DWM 投影避免胶囊列悬空发虚；展开恢复时再开回来
-    await setShadowEnabled(false);
     // 沿边缘方向的长度按条目数自适应：初值是估算，DockBar 挂载后实测校正
     lastFitLengthPx = -1;
     const target = stripRect(
