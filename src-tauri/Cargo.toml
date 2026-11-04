@@ -23,6 +23,10 @@ tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# 自实现「开机自启动」状态读取：插件底层 auto_launch 0.6 的 is_enabled 在 Windows 上
+# 先读 HKLM\Run，非管理员无权限会抛 access-denied 且未忽略，导致整个判定失效，
+# 故直接读 Run 键（HKCU 优先、HKLM 被拒忽略）以可靠反映真实开关状态
+windows-registry = "0.6"
 # 导出分享图：前端传 base64 PNG，Rust 解码后写文件
 base64 = "0.22"
 # AI 助手代理：默认 TLS 走 rustls + aws-lc（需 cmake/NASM），改用 native-tls 在 Windows 上走 schannel，

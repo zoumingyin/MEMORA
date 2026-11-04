@@ -314,6 +314,7 @@ dependencies = [
  "tauri-plugin-sql",
  "tokio",
  "windows",
+ "windows-registry",
 ]
 
 [[package]]

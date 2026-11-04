@@ -10,12 +10,13 @@ import {
 } from "antd";
 import type { InputRef, TreeDataNode } from "antd";
 import { ExportOutlined } from "@ant-design/icons";
-import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
+import { disable, enable } from "@tauri-apps/plugin-autostart";
 import {
   open as dialogOpen,
   save as dialogSave,
 } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
+import { emit, listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { isTauriRuntime } from "../repository";
 import { useWindowStore } from "../store/useWindowStore";
@@ -661,11 +662,23 @@ export function SettingsDialog({
 
   useEffect(() => {
     if (open && isTauriRuntime()) {
-      void isEnabled()
+      // 用 Rust 命令读取真实开关：插件 isEnabled 在 Windows 非管理员下读 HKLM 会抛错而失效
+      void invoke<boolean>("get_autostart_enabled")
         .then(setAutostart)
         .catch(() => setAutostart(false));
     }
   }, [open]);
+
+  // 监听托盘菜单切换「开机自启动」：实时同步设置页开关，无需重开弹窗
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    const promise = listen<boolean>("autostart:changed", (event) => {
+      setAutostart(event.payload);
+    });
+    return () => {
+      void promise.then((unlisten) => unlisten());
+    };
+  }, []);
 
   /** 修改关闭行为：每次询问清除记忆，其余记住并直接执行 */
   const handleCloseBehavior = (action: CloseAction | null) => {
@@ -687,6 +700,8 @@ export function SettingsDialog({
       } else {
         await disable();
       }
+      // 回传新状态，让托盘菜单勾选态实时同步（Rust 只更新勾选视觉，不重复 enable/disable）
+      if (isTauriRuntime()) void emit("autostart:set", { enabled: value });
     } catch {
       setAutostart(!value);
     }

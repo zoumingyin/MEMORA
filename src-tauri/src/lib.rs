@@ -1,6 +1,6 @@
 use tauri::menu::{CheckMenuItem, CheckMenuItemBuilder, Menu, MenuItemBuilder, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{Emitter, Manager, WindowEvent};
+use tauri::{Emitter, Listener, Manager, WindowEvent};
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 use tauri_plugin_global_shortcut::{Code, Modifiers, ShortcutState};
 use tauri_plugin_sql::{Migration, MigrationKind};
@@ -12,6 +12,12 @@ pub mod web_search;
 /// 托盘菜单中的「开机自启动」勾选项：事件回调里通过 state 同步勾选状态
 /// （TrayIcon 没有读取菜单的 API，只能保存引用后 set_checked）
 struct TrayMenuState(std::sync::Mutex<Option<CheckMenuItem<tauri::Wry>>>);
+
+/// 前端设置页切换「开机自启动」后回传的新开关状态，用于同步托盘菜单勾选态
+#[derive(serde::Deserialize)]
+struct AutostartSetPayload {
+    enabled: bool,
+}
 
 /// 「显示主窗口」兜底：show() 对「可见但矩形落在工作区外」或「窄条/异常小窗」无能为力。
 /// 拖放贴边相关的各种竞态可能把窗口留在看不见的位置；这里检查窗口外框与所在
@@ -554,6 +560,31 @@ CREATE INDEX IF NOT EXISTS idx_entries_deleted ON entries(deleted_at);
         )
         .setup(|app| {
             build_tray(app)?;
+            // 开机自启动：系统以 --autostart 参数拉起，静默进托盘而非弹出主窗口；
+            // 该参数由 tauri_plugin_autostart 注册时指定，仅用于区分「自启」与「手动」启动
+            if std::env::args().any(|arg| arg == "--autostart") {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.hide();
+                }
+            }
+            // 设置页切换「开机自启动」后，前端回传新状态：该侧已通过插件完成 enable/disable，
+            // 这里只同步托盘菜单的勾选视觉（更新后无需再发事件，避免与下方 tray 回发形成回环）
+            let sync_handle = std::sync::Arc::new(app.handle().clone());
+            sync_handle.listen("autostart:set", {
+                let handle = sync_handle.clone();
+                move |event| {
+                    let Ok(payload) =
+                        serde_json::from_str::<AutostartSetPayload>(event.payload())
+                    else {
+                        return;
+                    };
+                    let state = handle.state::<TrayMenuState>();
+                    let guard = state.0.lock().unwrap();
+                    if let Some(item) = guard.as_ref() {
+                        let _ = item.set_checked(payload.enabled);
+                    }
+                }
+            });
             // 每日自动备份：启动时检查当天是否已备份，失败只记录日志，不阻塞启动
             if let Err(error) = run_daily_backup(app.handle()) {
                 eprintln!("每日自动备份失败: {error}");
@@ -605,10 +636,43 @@ CREATE INDEX IF NOT EXISTS idx_entries_deleted ON entries(deleted_at);
             ai::ai_list_models,
             ai::ai_chat,
             ai::ai_cancel,
-            web_search::ai_web_search
+            web_search::ai_web_search,
+            get_autostart_enabled
         ])
         .run(context)
         .expect("启动便签应用失败");
+}
+
+/// 读取「开机自启动」真实开关状态。
+///
+/// 插件底层 auto_launch 0.6 的 `is_enabled()` 在 Windows 上会先读 `HKLM\...\Run`，
+/// 非管理员无权限时返回 access-denied 且未被忽略，导致整个判定抛错——表现为托盘点击
+/// 永远按「启用」处理、勾选与事件不更新、且关不掉。这里改为直接读 Run 键：
+/// HKCU 优先（Dynamic 模式对非管理员写入此处），HKLM 仅在可访问时检查，被拒则忽略。
+#[cfg(windows)]
+fn autostart_is_enabled(app: &tauri::AppHandle) -> bool {
+    use windows_registry::{CURRENT_USER, LOCAL_MACHINE};
+    const RUN_KEY: &str = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run";
+    let name = app.package_info().name.clone();
+    [CURRENT_USER, LOCAL_MACHINE].iter().any(|root| {
+        root.open(RUN_KEY)
+            .and_then(|key| key.get_string(&name))
+            .map(|value| !value.trim().is_empty())
+            .unwrap_or(false)
+    })
+}
+
+/// 非 Windows 平台：插件原逻辑正常，直接复用
+#[cfg(not(windows))]
+fn autostart_is_enabled(app: &tauri::AppHandle) -> bool {
+    use tauri_plugin_autostart::ManagerExt;
+    app.autolaunch().is_enabled().unwrap_or(false)
+}
+
+/// 供前端（设置页）读取开机自启动真实状态，绕过插件 is_enabled 在 Windows 上的缺陷
+#[tauri::command]
+fn get_autostart_enabled(app: tauri::AppHandle) -> bool {
+    autostart_is_enabled(&app)
 }
 
 /// 构建系统托盘：图标 + 菜单（显示/隐藏主窗口、新建便签、AI 助手、开机自启动勾选、退出）。
@@ -618,8 +682,8 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     let hide_item = MenuItemBuilder::with_id("hide", "隐藏主窗口").build(app)?;
     let new_item = MenuItemBuilder::with_id("new", "新建便签").build(app)?;
     let assistant_item = MenuItemBuilder::with_id("assistant", "AI 助手").build(app)?;
-    // 开机自启动勾选状态：启动时读取插件当前开关
-    let autostart_enabled = app.autolaunch().is_enabled().unwrap_or(false);
+    // 开机自启动勾选状态：启动时读取真实开关（绕过插件在 Windows 上的缺陷）
+    let autostart_enabled = autostart_is_enabled(app.handle());
     let autostart_item = CheckMenuItemBuilder::with_id("autostart", "开机自启动")
         .checked(autostart_enabled)
         .build(app)?;
@@ -686,18 +750,29 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                 let _ = app.emit("tray:open-assistant", ());
             }
             "autostart" => {
-                let enabled = app.autolaunch().is_enabled().unwrap_or(false);
-                let result = if enabled {
-                    app.autolaunch().disable()
-                } else {
+                // 用真实状态判定（插件 is_enabled 在 Windows 非管理员下会因 HKLM 读权限抛错而失效）
+                let target = !autostart_is_enabled(app);
+                let result = if target {
                     app.autolaunch().enable()
+                } else {
+                    app.autolaunch().disable()
                 };
-                if let Ok(now_enabled) = result.and_then(|_| app.autolaunch().is_enabled()) {
-                    // 同步菜单勾选状态
-                    let state = app.state::<TrayMenuState>();
-                    let guard = state.0.lock().unwrap();
-                    if let Some(item) = guard.as_ref() {
-                        let _ = item.set_checked(now_enabled);
+                match result {
+                    Ok(()) => {
+                        // enable/disable 已落地，重新读取确认真实状态
+                        let now_enabled = autostart_is_enabled(app);
+                        // 同步菜单勾选状态
+                        let state = app.state::<TrayMenuState>();
+                        let guard = state.0.lock().unwrap();
+                        if let Some(item) = guard.as_ref() {
+                            let _ = item.set_checked(now_enabled);
+                        }
+                        // 回发前端设置页，刷新开关 Switch（与设置页→托盘方向相反，不会成环）
+                        let _ = app.emit("autostart:changed", now_enabled);
+                    }
+                    Err(err) => {
+                        // 写注册表失败（如权限不足）时如实记录，避免静默无反馈
+                        eprintln!("切换开机自启动失败: {err}");
                     }
                 }
             }
