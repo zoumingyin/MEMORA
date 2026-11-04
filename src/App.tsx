@@ -4,7 +4,6 @@ import {
   useState,
   type CSSProperties,
 } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import {
   App as AntdApp,
   ConfigProvider,
@@ -59,7 +58,6 @@ import { toMinuteStart } from "./utils/format";
 import { ENTRY_KIND_COLOR, ENTRY_KIND_LABEL } from "./utils/entryLabels";
 import { startReminderScheduler } from "./reminder/scheduler";
 import { isTauriRuntime } from "./repository";
-import { loadCloseBehavior } from "./window/closeBehavior";
 import type { EntryKind, NewEntryInput } from "./types/entry";
 import { TitleBar } from "./components/TitleBar";
 import { CategoryTabs } from "./components/CategoryTabs";
@@ -67,7 +65,6 @@ import { SearchBar } from "./components/SearchBar";
 import { EntryList } from "./components/EntryList";
 import { DetailPane } from "./components/DetailPane";
 import { DockBar } from "./components/DockBar";
-import { CloseConfirmDialog } from "./components/CloseConfirmDialog";
 import { CalendarPane } from "./components/CalendarPane";
 import { CreateKindDialog } from "./components/CreateKindDialog";
 import { TrashPane } from "./components/TrashPane";
@@ -168,8 +165,6 @@ export default function App() {
   const { isNarrow } = useViewport();
   // 窄窗口单栏模式：是否正在查看详情（true 时列表页被详情替换）
   const [detailView, setDetailView] = useState(false);
-  // 点 X 的关闭确认弹窗（Rust 拦截 CloseRequested 后触发）
-  const [closeConfirmOpen, setCloseConfirmOpen] = useState(false);
   // 快速记录弹窗（全局快捷键 Ctrl+Shift+N / 标题栏闪电按钮）
   const [quickOpen, setQuickOpen] = useState(false);
   // 「+ 新建」的类型选择弹窗
@@ -273,7 +268,6 @@ export default function App() {
     let detachTrayAssistant: () => void = () => undefined;
     let detachTrayToggle: () => void = () => undefined;
     let detachSecondInstance: () => void = () => undefined;
-    let detachCloseRequested: () => void = () => undefined;
     let detachQuickCapture: () => void = () => undefined;
     let detachToggleWindow: () => void = () => undefined;
     let detachWindowShown: () => void = () => undefined;
@@ -445,22 +439,7 @@ export default function App() {
       focusPromise.then((detach) => {
         detachFocusShown = detach;
       });
-      // 点 X / Alt+F4：Rust 拦截关闭后发事件——已记住行为则直接执行，否则弹选择
-      const closePromise = listen("window:close-requested", () => {
-        const behavior = loadCloseBehavior();
-        if (behavior) {
-          if (behavior.action === "quit") {
-            void invoke("quit_app");
-          } else {
-            void getCurrentWindow().hide();
-          }
-        } else {
-          setCloseConfirmOpen(true);
-        }
-      });
-      closePromise.then((detach) => {
-        detachCloseRequested = detach;
-      });
+      // 点 X / Alt+F4：Rust 端拦截后直接隐藏到系统托盘，前端无需处理
       // 全局快捷键唤起快速记录（Rust global-shortcut Ctrl+Shift+N）
       // 收纳窄条态不渲染主界面与弹窗：先展开回普通窗口，quickOpen 状态保留，
       // 展开完成后快速记录弹窗随主界面一起出现
@@ -586,7 +565,6 @@ export default function App() {
       detachTrayAssistant();
       detachTrayToggle();
       detachSecondInstance();
-      detachCloseRequested();
       detachQuickCapture();
       detachToggleWindow();
       detachWindowShown();
@@ -1044,10 +1022,6 @@ export default function App() {
           </div>
           <AssistantPanel />
         </main>
-        <CloseConfirmDialog
-          open={closeConfirmOpen}
-          onClose={() => setCloseConfirmOpen(false)}
-        />
         <CreateKindDialog
           open={createOpen}
           onClose={() => setCreateOpen(false)}

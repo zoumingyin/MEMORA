@@ -13,10 +13,78 @@ pub mod web_search;
 /// （TrayIcon 没有读取菜单的 API，只能保存引用后 set_checked）
 struct TrayMenuState(std::sync::Mutex<Option<CheckMenuItem<tauri::Wry>>>);
 
+/// 主窗口最后可见位置（客户区物理像素）：托盘 hide→show 循环位置漂移的校正基准。
+/// Windows 上无装饰 + 阴影窗口每次 hide/show 都会被 tao 重写窗口样式并强制
+/// 非客户区重算（SWP_FRAMECHANGED），位置可能被挪动且逐次累积；
+/// 显示路径据此把窗口拉回用户上次看到的位置。
+struct LastWindowPos(std::sync::Mutex<Option<(i32, i32)>>);
+
+/// 位置校正容差（物理像素）：小于此值的偏差视为取整误差，不校正
+const POS_GUARD_TOLERANCE: i32 = 2;
+
+/// 「显示主窗口」后的位置漂移校正：对比记录的最后可见客户区位置，
+/// 偏差超容差时按当前内外框偏移换算，把客户区拉回记录位置。
+/// 窄条 / 最小化等异常尺寸不在此处理（分别由收纳展开与 ensure_main_window_visible 兜底）。
+fn correct_window_position(app: &tauri::AppHandle, window: &tauri::WebviewWindow) {
+    let recorded = app.state::<LastWindowPos>().0.lock().unwrap().clone();
+    let Some((recorded_x, recorded_y)) = recorded else {
+        return;
+    };
+    let Ok(size) = window.outer_size() else {
+        return;
+    };
+    if size.width < 200 || size.height < 200 {
+        return;
+    }
+    let (Ok(outer), Ok(inner)) = (window.outer_position(), window.inner_position()) else {
+        return;
+    };
+    if (inner.x - recorded_x).abs() <= POS_GUARD_TOLERANCE
+        && (inner.y - recorded_y).abs() <= POS_GUARD_TOLERANCE
+    {
+        return;
+    }
+    // set_position 设置的是外框位置：按当前内外框偏移换算，让客户区落回记录位置
+    let _ = window.set_position(tauri::PhysicalPosition::new(
+        recorded_x - (inner.x - outer.x),
+        recorded_y - (inner.y - outer.y),
+    ));
+}
+
 /// 前端设置页切换「开机自启动」后回传的新开关状态，用于同步托盘菜单勾选态
 #[derive(serde::Deserialize)]
 struct AutostartSetPayload {
     enabled: bool,
+}
+
+/// 临时斗篷窗口（DWMWA_CLOAK，Win8+）：收纳时关投影会触发 tao 重写窗口样式并
+/// 强制非客户区重算（SWP_FRAMECHANGED + WM_NCCALCSIZE），客户区向外扩一圈不可见
+/// 边框，DWM 对重算后的边框按经典亮色绘一帧——表现为收纳时画面闪现白边。
+/// 斗篷期间 DWM 不合成该窗口，重算与缩窗全程不可见，揭开时即是最终窄条。
+#[tauri::command]
+#[cfg(windows)]
+fn set_window_cloaked(window: tauri::WebviewWindow, cloaked: bool) -> Result<(), String> {
+    use windows::core::BOOL;
+    use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_CLOAK};
+    let hwnd = window.hwnd().map_err(|error| error.to_string())?;
+    let value = BOOL::from(cloaked);
+    unsafe {
+        DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_CLOAK,
+            &value as *const BOOL as *const std::ffi::c_void,
+            std::mem::size_of::<BOOL>() as u32,
+        )
+        .map_err(|error| format!("设置窗口斗篷失败: {error}"))
+    }
+}
+
+/// 非 Windows 平台无 DWM，直接成功
+#[tauri::command]
+#[cfg(not(windows))]
+fn set_window_cloaked(window: tauri::WebviewWindow, _cloaked: bool) -> Result<(), String> {
+    let _ = window;
+    Ok(())
 }
 
 /// 「显示主窗口」兜底：show() 对「可见但矩形落在工作区外」或「窄条/异常小窗」无能为力。
@@ -376,7 +444,9 @@ fn migrate_legacy_data_dir(identifier: &str) {
 }
 
 /// 应用入口：注册插件（SQL / 通知 / 自启动 / 单实例）、执行数据库迁移、
-/// 构建系统托盘菜单（显示/隐藏、新建便签、AI 助手、开机自启动开关、退出）、启动主窗口。
+/// 构建系统托盘菜单（显示/最小化/隐藏、新建便签、AI 助手、开机自启动开关、退出）。
+/// 主窗口配置 skipTaskbar：启动时正常显示但不占任务栏，程序图标只在系统托盘；
+/// 关闭窗口只是隐藏到托盘，退出需通过托盘菜单。
 /// 透明度由前端 CSS 背景 alpha 控制（背景半透明、文字不透明），无需 Rust 自定义命令。
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -493,6 +563,8 @@ CREATE INDEX IF NOT EXISTS idx_entries_deleted ON entries(deleted_at);
     tauri::Builder::default()
         // AI 助手请求取消标记（跨命令共享）
         .manage(ai::AiState::default())
+        // 主窗口最后可见位置：hide→show 循环位置漂移的校正基准
+        .manage(LastWindowPos(std::sync::Mutex::new(None)))
         .plugin(tauri_plugin_notification::init())
         .plugin(
             tauri_plugin_sql::Builder::default()
@@ -511,6 +583,7 @@ CREATE INDEX IF NOT EXISTS idx_entries_deleted ON entries(deleted_at);
                 let _ = window.unminimize();
                 let _ = window.show();
                 let _ = window.set_focus();
+                correct_window_position(app, &window);
                 ensure_main_window_visible(&window);
             }
             let _ = app.emit("app:second-instance", ());
@@ -533,6 +606,7 @@ CREATE INDEX IF NOT EXISTS idx_entries_deleted ON entries(deleted_at);
                             let _ = window.unminimize();
                             let _ = window.show();
                             let _ = window.set_focus();
+                            correct_window_position(app, &window);
                             ensure_main_window_visible(&window);
                         }
                         let _ = app.emit("global:quick-capture", ());
@@ -550,6 +624,7 @@ CREATE INDEX IF NOT EXISTS idx_entries_deleted ON entries(deleted_at);
                                 let _ = window.unminimize();
                                 let _ = window.show();
                                 let _ = window.set_focus();
+                                correct_window_position(app, &window);
                                 ensure_main_window_visible(&window);
                                 let _ = app.emit("global:window-shown", ());
                             }
@@ -560,13 +635,9 @@ CREATE INDEX IF NOT EXISTS idx_entries_deleted ON entries(deleted_at);
         )
         .setup(|app| {
             build_tray(app)?;
-            // 开机自启动：系统以 --autostart 参数拉起，静默进托盘而非弹出主窗口；
-            // 该参数由 tauri_plugin_autostart 注册时指定，仅用于区分「自启」与「手动」启动
-            if std::env::args().any(|arg| arg == "--autostart") {
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.hide();
-                }
-            }
+            // 主窗口在 tauri.conf.json 中配置为 skipTaskbar: true：
+            // 任何方式启动（手动 / 开机自启）都正常显示窗口，但不显示任务栏图标，
+            // 程序图标仅在系统托盘；通过托盘单击、托盘菜单或全局快捷键操作主窗口
             // 设置页切换「开机自启动」后，前端回传新状态：该侧已通过插件完成 enable/disable，
             // 这里只同步托盘菜单的勾选视觉（更新后无需再发事件，避免与下方 tray 回发形成回环）
             let sync_handle = std::sync::Arc::new(app.handle().clone());
@@ -604,13 +675,32 @@ CREATE INDEX IF NOT EXISTS idx_entries_deleted ON entries(deleted_at);
                     eprintln!("注册窗口显示/隐藏快捷键失败: {error}");
                 }
             }
-            // 关闭拦截：点 X 时不直接退出，交由前端弹「最小化到后台 / 退出应用」选择
+            // 关闭拦截：点 X / Alt+F4 不退出，直接隐藏到系统托盘继续运行
+            // （提醒、闹钟、自动备份等后台能力不受影响；退出走托盘菜单「退出」）
             if let Some(window) = app.get_webview_window("main") {
                 let window_clone = window.clone();
                 window.on_window_event(move |event| {
-                    if let WindowEvent::CloseRequested { api, .. } = event {
-                        api.prevent_close();
-                        let _ = window_clone.emit("window:close-requested", ());
+                    match event {
+                        WindowEvent::CloseRequested { api, .. } => {
+                            api.prevent_close();
+                            let _ = window_clone.hide();
+                        }
+                        // 记录可见状态下的最后客户区位置（物理像素），供显示后的漂移校正。
+                        // 隐藏 / 最小化期间的屏幕外坐标（最小化约 -32000）不记录；
+                        // tao 的 hide/show 样式重算引发的漂移发生在隐藏阶段，也不会被记录
+                        WindowEvent::Moved(_) => {
+                            if !matches!(window_clone.is_visible(), Ok(true)) {
+                                return;
+                            }
+                            if let Ok(inner) = window_clone.inner_position() {
+                                if inner.x > -10_000 && inner.y > -10_000 {
+                                    let state =
+                                        window_clone.app_handle().state::<LastWindowPos>();
+                                    *state.0.lock().unwrap() = Some((inner.x, inner.y));
+                                }
+                            }
+                        }
+                        _ => {}
                     }
                 });
             }
@@ -637,7 +727,8 @@ CREATE INDEX IF NOT EXISTS idx_entries_deleted ON entries(deleted_at);
             ai::ai_chat,
             ai::ai_cancel,
             web_search::ai_web_search,
-            get_autostart_enabled
+            get_autostart_enabled,
+            set_window_cloaked
         ])
         .run(context)
         .expect("启动便签应用失败");
@@ -675,10 +766,11 @@ fn get_autostart_enabled(app: tauri::AppHandle) -> bool {
     autostart_is_enabled(&app)
 }
 
-/// 构建系统托盘：图标 + 菜单（显示/隐藏主窗口、新建便签、AI 助手、开机自启动勾选、退出）。
+/// 构建系统托盘：图标 + 菜单（显示/最小化/隐藏主窗口、新建便签、AI 助手、开机自启动勾选、退出）。
 /// 左键单击切换显示/隐藏，左键双击显示并聚焦。
 fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     let show_item = MenuItemBuilder::with_id("show", "显示主窗口").build(app)?;
+    let minimize_item = MenuItemBuilder::with_id("minimize", "最小化主窗口").build(app)?;
     let hide_item = MenuItemBuilder::with_id("hide", "隐藏主窗口").build(app)?;
     let new_item = MenuItemBuilder::with_id("new", "新建便签").build(app)?;
     let assistant_item = MenuItemBuilder::with_id("assistant", "AI 助手").build(app)?;
@@ -696,6 +788,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
         app,
         &[
             &show_item,
+            &minimize_item,
             &hide_item,
             &new_item,
             &assistant_item,
@@ -721,6 +814,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                     let _ = window.show();
                     let _ = window.set_focus();
                     // 显示兜底：窗口若被留在屏幕外/窄条尺寸，强制拉回可见区
+                    correct_window_position(app, &window);
                     ensure_main_window_visible(&window);
                 }
                 // 通知前端把收纳窄条展开（未收纳时前端侧为空操作）
@@ -731,12 +825,18 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                     let _ = window.hide();
                 }
             }
+            "minimize" => {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.minimize();
+                }
+            }
             "new" => {
                 // 显示聚焦主窗口，由前端弹出「新建便签」类型选择弹窗
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = window.unminimize();
                     let _ = window.show();
                     let _ = window.set_focus();
+                    correct_window_position(app, &window);
                 }
                 let _ = app.emit("tray:create-entry", ());
             }
@@ -746,6 +846,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                     let _ = window.unminimize();
                     let _ = window.show();
                     let _ = window.set_focus();
+                    correct_window_position(app, &window);
                 }
                 let _ = app.emit("tray:open-assistant", ());
             }
@@ -799,6 +900,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                             let _ = window.unminimize();
                             let _ = window.show();
                             let _ = window.set_focus();
+                            correct_window_position(tray.app_handle(), &window);
                             ensure_main_window_visible(&window);
                             let _ = tray.app_handle().emit("global:window-shown", ());
                         }
@@ -812,6 +914,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                         let _ = window.unminimize();
                         let _ = window.show();
                         let _ = window.set_focus();
+                        correct_window_position(tray.app_handle(), &window);
                         ensure_main_window_visible(&window);
                     }
                     // 通知前端把收纳窄条展开（未收纳时前端侧为空操作）

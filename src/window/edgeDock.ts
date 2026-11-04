@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import { useEntryStore } from "../store/useEntryStore";
 import { useWindowStore } from "../store/useWindowStore";
 import {
@@ -256,19 +257,28 @@ async function collapseToStripLocked(
   // 不先清空最小尺寸约束，Windows 的 WM_GETMINMAXINFO 会把 setSize 顶回 422×540，
   // 表现为「收一下又弹回原尺寸」；展开时由 restoreBounds 设回约束
   await setMinSizeConstraint(false);
-  // 收纳窄条是贴边浮层，关掉 DWM 投影避免胶囊列悬空发虚；展开恢复时再开回来
-  await setShadowEnabled(false);
-  // 沿边缘方向的长度按条目数自适应：初值是估算，DockBar 挂载后实测校正
-  lastFitLengthPx = -1;
-  const target = stripRect(
-    edge,
-    bounds,
-    workArea,
-    stripEstimatedLengthPx(edge)
-  );
-  const settled = await applyBounds(target);
-  await logDockGeometry("collapse", { edge, target, settled });
-  return true;
+  // 关投影会让 tao 重写窗口样式并强制非客户区重算（SWP_FRAMECHANGED + WM_NCCALCSIZE），
+  // 客户区向外扩一圈不可见边框，DWM 对重算后的边框绘一帧亮色——画面闪现白边。
+  // 先用 DWMWA_CLOAK 把窗口从合成器临时隐藏（此刻 dock-out 已播完、内容本就全透明，
+  // 斗篷/揭开在视觉上无感），样式重算与缩窗全程不可见，揭开时即是最终窄条
+  await invoke("set_window_cloaked", { cloaked: true }).catch(() => undefined);
+  try {
+    // 收纳窄条是贴边浮层，关掉 DWM 投影避免胶囊列悬空发虚；展开恢复时再开回来
+    await setShadowEnabled(false);
+    // 沿边缘方向的长度按条目数自适应：初值是估算，DockBar 挂载后实测校正
+    lastFitLengthPx = -1;
+    const target = stripRect(
+      edge,
+      bounds,
+      workArea,
+      stripEstimatedLengthPx(edge)
+    );
+    const settled = await applyBounds(target);
+    await logDockGeometry("collapse", { edge, target, settled });
+    return true;
+  } finally {
+    await invoke("set_window_cloaked", { cloaked: false }).catch(() => undefined);
+  }
 }
 
 /** 收纳出场动画时长：与 index.css .app-shell.dock-out-* 的 0.18s 对齐，留少量余量 */

@@ -43,12 +43,6 @@ import {
   testAiConnection,
 } from "../services/aiClient";
 import type { Entry } from "../types/entry";
-import {
-  clearCloseBehavior,
-  loadCloseBehavior,
-  saveCloseBehavior,
-  type CloseAction,
-} from "../window/closeBehavior";
 import { currentWorkArea, getBounds } from "../window/tauriWindow";
 import { collapseToStripAnimated, detectDockEdge } from "../window/edgeDock";
 import { openExternal } from "../utils/openExternal";
@@ -59,12 +53,6 @@ interface SettingsDialogProps {
   /** 打开时定位的叶子设置页（AI 助手「去设置」跳转用） */
   initialSection?: string | null;
 }
-
-const CLOSE_ACTION_LABEL: { value: CloseAction | null; label: string }[] = [
-  { value: null, label: "每次询问" },
-  { value: "hide", label: "最小化" },
-  { value: "quit", label: "退出应用" },
-];
 
 /**
  * AI 服务预设：选择后自动填入接口地址与默认模型；模型名可自由修改
@@ -167,7 +155,6 @@ const SETTING_TREE: SettingGroup[] = [
       { key: "pin", label: "窗口置顶", hint: "常驻其他程序最上层" },
       { key: "edge", label: "边缘吸附", hint: "拖拽贴近屏幕边缘自动停靠" },
       { key: "collapse", label: "收纳到屏幕", hint: "收起为屏幕边缘窄条" },
-      { key: "close", label: "关闭窗口时", hint: "点 X 或 Alt+F4 后的行为" },
       { key: "shortcut", label: "全局快捷键", hint: "任意应用下生效" },
     ],
   },
@@ -300,9 +287,9 @@ function parseExportFile(raw: string): Entry[] {
 
 /**
  * 软件设置入口（标题栏齿轮按钮）：树形分组展示。
- * 外观 / 窗口行为（置顶、边缘吸附、收纳到屏幕边缘、关闭行为）/ 启动与后台 / 数据管理。
+ * 外观 / 窗口行为（置顶、边缘吸附、收纳到屏幕边缘）/ 启动与后台 / 数据管理。
  * 边缘吸附与收纳到屏幕边缘自标题栏移入此处集中管理。
- * 关闭行为持久化 `bianqian.closeBehavior.v1`；开机自启动走 tauri-plugin-autostart。
+ * 关闭窗口固定隐藏到系统托盘（Rust 端拦截实现）；开机自启动走 tauri-plugin-autostart。
  */
 export function SettingsDialog({
   open,
@@ -318,11 +305,6 @@ export function SettingsDialog({
       ? initialSection
       : "theme"
   );
-  // 关闭窗口时的默认行为：null=每次询问；hide/quit=记住并直接执行
-  const [closeAction, setCloseAction] = useState<CloseAction | null>(() => {
-    const behavior = loadCloseBehavior();
-    return behavior ? behavior.action : null;
-  });
   // 开机自启动开关状态（仅 Tauri 环境可查询，默认关）
   const [autostart, setAutostart] = useState(false);
   // 数据管理操作结果提示（弹窗内文本，避免 portal 脱离主题）
@@ -680,16 +662,6 @@ export function SettingsDialog({
     };
   }, []);
 
-  /** 修改关闭行为：每次询问清除记忆，其余记住并直接执行 */
-  const handleCloseBehavior = (action: CloseAction | null) => {
-    setCloseAction(action);
-    if (action === null) {
-      clearCloseBehavior();
-    } else {
-      saveCloseBehavior({ action, remember: true });
-    }
-  };
-
   /** 开机自启动开关：写入/移除系统启动项 */
   const handleAutostart = async (value: boolean) => {
     setAutostart(value);
@@ -941,31 +913,6 @@ export function SettingsDialog({
             >
               收纳
             </button>
-          </div>
-        );
-      case "close":
-        return (
-          <div className="settings-item grid ">
-            <div className="settings-item-main">
-              <span className="settings-item-label">关闭窗口时</span>
-              <span className="settings-item-hint">
-                点 X 或 Alt+F4 后的行为
-              </span>
-            </div>
-            <div className="close-behavior-options">
-              {CLOSE_ACTION_LABEL.map(({ value, label }) => (
-                <button
-                  key={label}
-                  type="button"
-                  className={`close-behavior-option ${
-                    closeAction === value ? "active" : ""
-                  }`}
-                  onClick={() => handleCloseBehavior(value)}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
           </div>
         );
       case "shortcut":
@@ -1251,9 +1198,9 @@ export function SettingsDialog({
               </div>
               <div className="rounded-[8px] border border-[var(--border)] bg-[var(--hover-fill)] px-2.5 py-2 text-[10.5px] leading-relaxed text-[var(--text-muted)]">
                 模型清单在运行时从各网关的 /models
-                接口获取；接口不可用时回退到本地缓存或内置默认模型。OpenCode
-                Zen 使用应用内置的账号密钥，只保留零费用模型；其余为公开第三方网关，选中后提问会直接发送给对应服务商，提示词可能被记录，请勿发送敏感内容。标有「语音 / 视频 /
-                图片」的模型不能用于文本对话，已置灰。
+                接口获取；接口不可用时回退到本地缓存或内置默认模型。OpenCode Zen
+                使用应用内置的账号密钥，只保留零费用模型；其余为公开第三方网关，选中后提问会直接发送给对应服务商，提示词可能被记录，请勿发送敏感内容。标有「语音
+                / 视频 / 图片」的模型不能用于文本对话，已置灰。
               </div>
               {freeGroups.map((group) => (
                 <div
