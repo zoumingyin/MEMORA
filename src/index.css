@@ -4746,7 +4746,10 @@ body.img-viewer-window .ant-image-preview {
 }
 
 /* ===== AI 助手面板 =====
-   覆盖正文区域（保留标题栏），玻璃底跟随主题与透明度；40px 与 .titlebar 高度一致 */
+   覆盖正文区域（保留标题栏），玻璃底跟随主题与透明度；40px 与 .titlebar 高度一致。
+   移动端 / 窄窗口：全屏铺满（默认样式）；
+   桌面端（≥560px）：不全屏，参考主流聊天工具 / 在线客服的布局——
+   右侧悬浮对话窗，固定宽度、圆角 + 投影，主界面在左侧仍可见 */
 .assistant-panel {
   position: absolute;
   top: 40px;
@@ -4761,6 +4764,22 @@ body.img-viewer-window .ant-image-preview {
   backdrop-filter: blur(18px) saturate(1.05);
   -webkit-backdrop-filter: blur(18px) saturate(1.05);
   animation: assistant-panel-in 0.16s ease-out;
+}
+
+@media (min-width: 560px) {
+  .assistant-panel {
+    top: 52px;
+    right: 16px;
+    bottom: 16px;
+    left: auto;
+    width: min(420px, calc(100vw - 32px));
+    overflow: hidden;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    box-shadow:
+      0 12px 40px rgba(0, 0, 0, 0.16),
+      0 2px 8px rgba(0, 0, 0, 0.08);
+  }
 }
 
 @keyframes assistant-panel-in {
@@ -4783,6 +4802,13 @@ body.img-viewer-window .ant-image-preview {
   width: 300px !important;
   min-width: 0 !important;
   max-width: calc(100vw - 20px) !important;
+}
+
+/* 桌面端面板距视口右侧 16px：下拉同步右移，保持与面板右缘的内边距一致 */
+@media (min-width: 560px) {
+  .assistant-model-dropdown {
+    right: 26px !important;
+  }
 }
 
 .assistant-model-dropdown .ant-select-item-option-content {
