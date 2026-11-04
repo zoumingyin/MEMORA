@@ -49,7 +49,7 @@ import {
   type CloseAction,
 } from "../window/closeBehavior";
 import { currentWorkArea, getBounds } from "../window/tauriWindow";
-import { collapseToStrip, detectDockEdge } from "../window/edgeDock";
+import { collapseToStripAnimated, detectDockEdge } from "../window/edgeDock";
 import { openExternal } from "../utils/openExternal";
 
 interface SettingsDialogProps {
@@ -309,7 +309,7 @@ export function SettingsDialog({
   initialSection,
 }: SettingsDialogProps) {
   const { alwaysOnTop, opacity, edgeDocking, theme } = useWindowStore();
-  const { setAlwaysOnTop, setOpacity, setEdgeDocking, setDock, setTheme } =
+  const { setAlwaysOnTop, setOpacity, setEdgeDocking, setTheme } =
     useWindowStore();
   // 当前树节点：默认「主题」；由「去设置」跳转时直接定位到目标页
   const [activeKey, setActiveKey] = useState(() =>
@@ -822,16 +822,18 @@ export function SettingsDialog({
     }
   };
 
-  /** 收纳到屏幕边缘：收纳为窄条并关闭设置（原标题栏入口，已移入设置） */
+  /** 收纳到屏幕边缘：带出场动画收为窄条并关闭设置（原标题栏入口，已移入设置） */
   const handleCollapseToEdge = async () => {
     const bounds = await getBounds();
     if (!bounds) return;
     const workArea = await currentWorkArea();
     if (!workArea) return;
+    if (useWindowStore.getState().collapsing) return;
     let edge = useWindowStore.getState().dockedEdge;
     if (!edge) edge = detectDockEdge(bounds, workArea) ?? "right";
-    setDock(edge, bounds, true);
-    await collapseToStrip(edge, bounds, workArea);
+    const started = await collapseToStripAnimated(edge, bounds, workArea);
+    // 持锁被拒：回滚收纳态，保持展开原状
+    if (!started) useWindowStore.getState().setDock(edge, bounds, false);
     onClose();
   };
 
@@ -898,7 +900,7 @@ export function SettingsDialog({
             <div className="settings-item-main">
               <span className="settings-item-label">边缘吸附</span>
               <span className="settings-item-hint">
-                拖拽贴近屏幕边缘自动停靠
+                拖到屏幕边缘松手自动收成窄条，移入窄条即展开
               </span>
             </div>
             <Switch

@@ -3,10 +3,13 @@ import {
   getCurrentWindow,
   type Window as TauriWindow,
 } from '@tauri-apps/api/window'
-import { PhysicalPosition, PhysicalSize } from '@tauri-apps/api/dpi'
+import { PhysicalPosition, PhysicalSize, LogicalSize } from '@tauri-apps/api/dpi'
+import { invoke } from '@tauri-apps/api/core'
 import { isTauriRuntime } from '../repository'
 
-/** 窗口物理边界（坐标均为物理像素） */
+/** 窗口可见矩形（客户区，物理像素）：桌面坐标 + 客户区尺寸。
+ *  不含透明窗口那圈不可见阴影边框，贴边判定与落盘都用它，
+ *  否则判定会把「还差一个边框宽度」当成已经贴边。 */
 export interface Bounds {
   x: number
   y: number
@@ -88,28 +91,187 @@ export async function applyAlwaysOnTop(enabled: boolean): Promise<void> {
   await win().setAlwaysOnTop(enabled)
 }
 
-/** 读取当前窗口位置与尺寸 */
+/** 读取当前窗口的可见矩形（客户区） */
 export async function getBounds(): Promise<Bounds | null> {
   if (!isTauriRuntime()) return null
   const [position, size] = await Promise.all([
-    win().outerPosition(),
-    win().outerSize(),
+    win().innerPosition(),
+    win().innerSize(),
   ])
   return { x: position.x, y: position.y, width: size.width, height: size.height }
 }
 
-/** 移动窗口到物理坐标 (x, y) */
+/** 最近一次由本程序下发窗口位置/尺寸的时刻（毫秒） */
+let lastProgrammaticBoundsAt = 0
+
+/**
+ * 窗口是否刚被本程序移动过。贴边收纳只看用户拖拽：悬停展开会把窗口放回贴边位置，
+ * 这次移动同样触发 moved 事件，不区分的话刚展开就又被判定为「拖到边缘」而收回去。
+ */
+export function isProgrammaticMoveRecent(withinMs: number): boolean {
+  return Date.now() - lastProgrammaticBoundsAt < withinMs
+}
+
+/** 移动窗口到物理坐标 (x, y)：外框（含不可见边框）口径，可见矩形请用 setBounds */
 export async function setPosition(x: number, y: number): Promise<void> {
   if (!isTauriRuntime()) return
+  lastProgrammaticBoundsAt = Date.now()
   await win().setPosition(new PhysicalPosition(Math.round(x), Math.round(y)))
 }
 
-/** 设置窗口物理尺寸 */
+/** 设置窗口物理尺寸（客户区尺寸） */
 export async function setSize(width: number, height: number): Promise<void> {
   if (!isTauriRuntime()) return
+  lastProgrammaticBoundsAt = Date.now()
   await win().setSize(
     new PhysicalSize(Math.round(width), Math.round(height)),
   )
+}
+
+/** 不可见边框的宽度（物理像素）：客户区左上角相对窗口左上角的偏移。
+ *  透明窗口 + shadow 会在四周留一圈看不见的边框，占几到十几像素。
+ *  读不到就按 0 处理：applyBounds 下发后会实测补偿，换算起点错不影响最终贴边。 */
+async function getFrameInsets(): Promise<{ x: number; y: number }> {
+  if (!isTauriRuntime()) return { x: 0, y: 0 }
+  try {
+    const [inner, outer] = await Promise.all([
+      win().innerPosition(),
+      win().outerPosition(),
+    ])
+    return { x: inner.x - outer.x, y: inner.y - outer.y }
+  } catch {
+    return { x: 0, y: 0 }
+  }
+}
+
+/** 把可见矩形落到桌面上：尺寸本来就是客户区口径，位置要换算掉不可见边框。
+ *  位置与尺寸必须单条 IPC 原子下发（Rust 侧一次 SetWindowPos）：分开 setSize/setPosition
+ *  时两条消息先后落地，中间态窗口按左上角锚点放大——右侧/顶部收纳的贴边窗口会被
+ *  甩出屏幕，钉在边缘的窄条闪没一帧再弹回（收纳展开时「小条闪烁」即由此而来）。 */
+async function setBounds(
+  bounds: Bounds,
+  insets: { x: number; y: number },
+): Promise<void> {
+  lastProgrammaticBoundsAt = Date.now()
+  await invoke('set_window_bounds', {
+    x: Math.round(bounds.x - insets.x),
+    y: Math.round(bounds.y - insets.y),
+    width: Math.round(bounds.width),
+    height: Math.round(bounds.height),
+  })
+}
+
+const BOUNDS_SETTLE_MS = 120
+const BOUNDS_TOLERANCE = 2
+/** 下发后的复查轮数：首帧可能被系统拖拽循环忽略，边框换算误差也要一轮补偿 */
+const BOUNDS_FIXUP_LIMIT = 3
+
+/**
+ * 把可见矩形真正落到目标位置并回读确认，返回是否落到位。
+ * 边框宽度只用于给出换算起点：DPI、阴影实现都会让它偏离，所以每轮下发后实测——
+ * 尺寸已到位而位置还偏，就把这个差值补进换算里再发一轮（窄条贴边靠它才不留缝）；
+ * 尺寸都没变说明整段 SetWindowPos 被拖拽循环吞了，原样重发，不能拿假差值去污染补偿。
+ */
+export async function applyBounds(
+  target: Bounds,
+  settleMs: number = BOUNDS_SETTLE_MS,
+): Promise<boolean> {
+  const insets = await getFrameInsets()
+  let dx = 0
+  let dy = 0
+  for (let i = 0; i < BOUNDS_FIXUP_LIMIT; i += 1) {
+    try {
+      await setBounds(
+        {
+          ...target,
+          x: target.x - dx,
+          y: target.y - dy,
+        },
+        insets,
+      )
+    } catch (error) {
+      // IPC 失败按「未落位」处理：调用方（DockBar/expandIfDocked）会维持原状并回退钉住态，
+      // 不能让异常逃出去变成未处理 rejection
+      console.error('[window] 下发窗口矩形失败', error)
+      return false
+    }
+    await new Promise((resolve) => window.setTimeout(resolve, settleMs))
+    const after = await getBounds()
+    if (!after) return false
+    const sized =
+      Math.abs(after.width - target.width) <= BOUNDS_TOLERANCE &&
+      Math.abs(after.height - target.height) <= BOUNDS_TOLERANCE
+    if (!sized) continue
+    if (
+      Math.abs(after.x - target.x) <= BOUNDS_TOLERANCE &&
+      Math.abs(after.y - target.y) <= BOUNDS_TOLERANCE
+    )
+      return true
+    dx = after.x - target.x
+    dy = after.y - target.y
+  }
+  return false
+}
+
+/** 贴边收纳的几何诊断：一次性打印原生读到的内外框、工作区与缩放，用于定位贴边偏差 */
+export async function logDockGeometry(
+  tag: string,
+  extra?: Record<string, unknown>,
+): Promise<void> {
+  if (!isTauriRuntime()) return
+  try {
+    const w = win()
+    const [innerPos, outerPos, innerSize, outerSize, monitor, scale] =
+      await Promise.all([
+        w.innerPosition(),
+        w.outerPosition(),
+        w.innerSize(),
+        w.outerSize(),
+        currentMonitor(),
+        w.scaleFactor(),
+      ])
+    console.info(`[dock:${tag}]`, {
+      inner: [innerPos.x, innerPos.y, innerSize.width, innerSize.height],
+      outer: [outerPos.x, outerPos.y, outerSize.width, outerSize.height],
+      workArea: monitor
+        ? [
+            monitor.workArea.position.x,
+            monitor.workArea.position.y,
+            monitor.workArea.size.width,
+            monitor.workArea.size.height,
+          ]
+        : null,
+      scale,
+      ...extra,
+    })
+  } catch (error) {
+    console.warn(`[dock:${tag}] 读取几何失败`, error)
+  }
+}
+
+/** 设置/清空窗口最小尺寸约束（逻辑像素，对齐 tauri.conf.json）。
+ *  收纳窄条要把窗口缩到 10px，必须先清空约束，否则 Windows 会按最小尺寸顶回；
+ *  展开恢复时再设回来。 */
+export async function setMinSizeConstraint(enabled: boolean): Promise<void> {
+  if (!isTauriRuntime()) return
+  try {
+    await win().setMinSize(
+      enabled ? new LogicalSize(APP_MIN_WIDTH, APP_MIN_HEIGHT) : null,
+    )
+  } catch (error) {
+    console.error('调整窗口最小尺寸约束失败', error)
+  }
+}
+
+/** 开关窗口投影：收纳窄条是贴边浮层，DWM 投影会让胶囊列看起来悬空发虚；
+ *  收纳时关掉，展开恢复正常窗口时再开回来 */
+export async function setShadowEnabled(enabled: boolean): Promise<void> {
+  if (!isTauriRuntime()) return
+  try {
+    await win().setShadow(enabled)
+  } catch (error) {
+    console.error('切换窗口投影失败', error)
+  }
 }
 
 /** 工作区缓存：显示器工作区极少变化，5 秒内复用，避免收纳/弹出时反复 IPC 查询 */
@@ -220,8 +382,14 @@ export async function ensureWindowVisible(): Promise<void> {
 
 /** 恢复窗口到指定边界（物理坐标与尺寸）；尺寸与位置并行下发，减少展开/收回的串行等待。
  *  对越界/超大边界做工作区钳制：若保存的边界来自最大化状态（全屏尺寸）或显示器变化
- *  （屏幕外坐标），恢复时收缩/移回可见区域，避免透明窗口恢复成异常尺寸后不显示。 */
-export async function restoreBounds(bounds: Bounds): Promise<void> {
+ *  （屏幕外坐标），恢复时收缩/移回可见区域，避免透明窗口恢复成异常尺寸后不显示。
+ *  边界一步到位、不做逐帧补间：尺寸与位置是两次独立 IPC，且中间宽度会触发界面重排，
+ *  按帧下发表现为抖动；过渡动效改由内容层的 CSS 动画承担。
+ *  返回窗口是否真的撑到了目标尺寸——调用方据此决定要不要把主界面换上去。 */
+export async function restoreBounds(
+  bounds: Bounds,
+  settleMs: number = BOUNDS_SETTLE_MS,
+): Promise<boolean> {
   let b = bounds
   // 异常尺寸兜底：历史数据可能被写入窄条/弹窗尺寸，小于设计最小值时回退默认尺寸
   if (b.width < APP_MIN_WIDTH || b.height < APP_MIN_HEIGHT) {
@@ -231,18 +399,15 @@ export async function restoreBounds(bounds: Bounds): Promise<void> {
   if (area) {
     const width = Math.min(Math.max(b.width, 320), area.width)
     const height = Math.min(Math.max(b.height, 240), area.height)
-    const x = Math.min(
-      Math.max(b.x, area.x),
-      area.x + area.width - width,
-    )
-    const y = Math.min(
-      Math.max(b.y, area.y),
-      area.y + area.height - height,
-    )
+    const x = Math.min(Math.max(b.x, area.x), area.x + area.width - width)
+    const y = Math.min(Math.max(b.y, area.y), area.y + area.height - height)
     b = { x, y, width, height }
   }
-  await Promise.all([
-    setSize(b.width, b.height),
-    setPosition(b.x, b.y),
-  ])
+  // 先撑尺寸再设回最小约束：反过来的话，保存的尺寸只要比「逻辑最小值 × 当前缩放」
+  // 小一两像素就会被 WM_GETMINMAXINFO 顶住，applyBounds 永远回读不到目标尺寸
+  const settled = await applyBounds(b, settleMs)
+  await setMinSizeConstraint(true)
+  // 窗口恢复正常尺寸后重新开启投影；展开失败（未撑开）时保持无投影，与窄条视觉一致
+  if (settled) await setShadowEnabled(true)
+  return settled
 }

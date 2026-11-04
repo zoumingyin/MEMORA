@@ -313,6 +313,7 @@ dependencies = [
  "tauri-plugin-single-instance",
  "tauri-plugin-sql",
  "tokio",
+ "windows",
 ]
 
 [[package]]

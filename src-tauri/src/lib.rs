@@ -13,10 +13,92 @@ pub mod web_search;
 /// （TrayIcon 没有读取菜单的 API，只能保存引用后 set_checked）
 struct TrayMenuState(std::sync::Mutex<Option<CheckMenuItem<tauri::Wry>>>);
 
+/// 「显示主窗口」兜底：show() 对「可见但矩形落在工作区外」或「窄条/异常小窗」无能为力。
+/// 拖放贴边相关的各种竞态可能把窗口留在看不见的位置；这里检查窗口外框与所在
+/// 显示器工作区的交集，完全不可见或窄条尺寸时重置为默认尺寸放回工作区，
+/// 保证「显示主窗口」一定能让用户看到窗口。
+fn ensure_main_window_visible(window: &tauri::WebviewWindow) {
+    let Ok(Some(monitor)) = window.current_monitor() else {
+        return;
+    };
+    let (Ok(pos), Ok(size)) = (window.outer_position(), window.outer_size()) else {
+        return;
+    };
+    let area = monitor.work_area();
+    let (ax, ay) = (area.position.x, area.position.y);
+    let (aw, ah) = (area.size.width as i32, area.size.height as i32);
+    // 外框与工作区的交集面积：为 0 说明窗口完全不可见
+    let ix = pos.x.max(ax);
+    let iy = pos.y.max(ay);
+    let ix2 = (pos.x + size.width as i32).min(ax + aw);
+    let iy2 = (pos.y + size.height as i32).min(ay + ah);
+    let visible_px = (ix2 - ix).max(0) * (iy2 - iy).max(0);
+    // 正常窗口 422×540 逻辑像素起步；任一边小于 100 物理像素即窄条/异常小窗
+    if visible_px > 0 && size.width >= 100 && size.height >= 100 {
+        return;
+    }
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let w = ((422.0 * scale).round() as u32).min(area.size.width);
+    let h = ((540.0 * scale).round() as u32).min(area.size.height);
+    // 放回工作区中央偏上，避开贴边位置与任务栏
+    let x = ax + (((aw - w as i32) / 2).max(0));
+    let y = ay + (((ah - h as i32) / 3).max(0));
+    let _ = window.set_size(tauri::PhysicalSize::new(w, h));
+    let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
+}
+
 /// 前端「退出应用」：绕过关闭拦截直接结束进程（点 X 的选择弹窗里触发）
 #[tauri::command]
 fn quit_app(app: tauri::AppHandle) {
     app.exit(0);
+}
+
+/// 一步下发窗口位置与客户区尺寸：单个 SetWindowPos 原子生效。
+/// 前端分开调 setSize/setPosition 时两条消息先后落地，中间态窗口按左上角锚点放大——
+/// 右侧/顶部收纳的贴边窗口会被甩出屏幕，钉在边缘的窄条闪没一帧再弹回
+/// （收纳展开时「小条闪烁」即由此而来）。
+#[tauri::command]
+fn set_window_bounds(
+    window: tauri::WebviewWindow,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        use windows::Win32::Foundation::RECT;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            GetClientRect, GetWindowRect, SetWindowPos, SWP_NOACTIVATE, SWP_NOZORDER,
+        };
+        let hwnd = window.hwnd().map_err(|error| error.to_string())?;
+        unsafe {
+            let mut frame = RECT::default();
+            let mut client = RECT::default();
+            if GetWindowRect(hwnd, &mut frame).is_err()
+                || GetClientRect(hwnd, &mut client).is_err()
+            {
+                return Err("读取窗口矩形失败".into());
+            }
+            // SetWindowPos 的宽高是外框（含边框）口径；调用方给的是客户区尺寸，
+            // 补上透明窗口那圈不可见边框，与 setSize 的客户区口径对齐
+            let frame_w = (frame.right - frame.left) - (client.right - client.left);
+            let frame_h = (frame.bottom - frame.top) - (client.bottom - client.top);
+            SetWindowPos(
+                hwnd,
+                None,
+                x,
+                y,
+                width as i32 + frame_w,
+                height as i32 + frame_h,
+                SWP_NOZORDER | SWP_NOACTIVATE,
+            )
+            .map_err(|error| format!("下发窗口矩形失败: {error}"))?;
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = (window, x, y, width, height);
+    Ok(())
 }
 
 /// SQLite 数据库文件实际路径：应用数据目录下的 bianqian.db
@@ -423,6 +505,7 @@ CREATE INDEX IF NOT EXISTS idx_entries_deleted ON entries(deleted_at);
                 let _ = window.unminimize();
                 let _ = window.show();
                 let _ = window.set_focus();
+                ensure_main_window_visible(&window);
             }
             let _ = app.emit("app:second-instance", ());
         }))
@@ -444,6 +527,7 @@ CREATE INDEX IF NOT EXISTS idx_entries_deleted ON entries(deleted_at);
                             let _ = window.unminimize();
                             let _ = window.show();
                             let _ = window.set_focus();
+                            ensure_main_window_visible(&window);
                         }
                         let _ = app.emit("global:quick-capture", ());
                     } else if shortcut
@@ -460,6 +544,7 @@ CREATE INDEX IF NOT EXISTS idx_entries_deleted ON entries(deleted_at);
                                 let _ = window.unminimize();
                                 let _ = window.show();
                                 let _ = window.set_focus();
+                                ensure_main_window_visible(&window);
                                 let _ = app.emit("global:window-shown", ());
                             }
                         }
@@ -502,6 +587,7 @@ CREATE INDEX IF NOT EXISTS idx_entries_deleted ON entries(deleted_at);
         })
         .invoke_handler(tauri::generate_handler![
             quit_app,
+            set_window_bounds,
             backup_db,
             restore_db,
             write_entries_json,
@@ -570,7 +656,11 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                     let _ = window.unminimize();
                     let _ = window.show();
                     let _ = window.set_focus();
+                    // 显示兜底：窗口若被留在屏幕外/窄条尺寸，强制拉回可见区
+                    ensure_main_window_visible(&window);
                 }
+                // 通知前端把收纳窄条展开（未收纳时前端侧为空操作）
+                let _ = app.emit("global:window-shown", ());
             }
             "hide" => {
                 if let Some(window) = app.get_webview_window("main") {
@@ -623,16 +713,19 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                     button_state: MouseButtonState::Up,
                     ..
                 } => {
-                    // 单击切换显示/隐藏
+                    // 单击分治：隐藏态由 Rust 直接唤起（前端未就绪/事件丢失时也保证窗口可见），
+                    // 可见态交给前端判定——只有前端知道收纳态（隐藏/展开切换）
                     if let Some(window) = tray.app_handle().get_webview_window("main") {
-                        if window.is_visible().unwrap_or(true)
-                            && !window.is_minimized().unwrap_or(false)
-                        {
-                            let _ = window.hide();
+                        let visible = window.is_visible().unwrap_or(false);
+                        let minimized = window.is_minimized().unwrap_or(false);
+                        if visible && !minimized {
+                            let _ = tray.app_handle().emit("tray:toggle-main", ());
                         } else {
                             let _ = window.unminimize();
                             let _ = window.show();
                             let _ = window.set_focus();
+                            ensure_main_window_visible(&window);
+                            let _ = tray.app_handle().emit("global:window-shown", ());
                         }
                     }
                 }
@@ -644,7 +737,10 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                         let _ = window.unminimize();
                         let _ = window.show();
                         let _ = window.set_focus();
+                        ensure_main_window_visible(&window);
                     }
+                    // 通知前端把收纳窄条展开（未收纳时前端侧为空操作）
+                    let _ = tray.app_handle().emit("global:window-shown", ());
                 }
                 _ => {}
             }

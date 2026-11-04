@@ -16,18 +16,26 @@ interface PersistedSettings {
 }
 
 interface WindowState extends PersistedSettings {
-  /** 当前被吸附/收纳的边缘，null 表示自由悬浮 */
+  /** 收纳会话所在边缘；展开后仍保留（移出窗口据此收回窄条），null 表示无会话、自由悬浮 */
   dockedEdge: DockEdge | null;
   /** 是否处于收纳窄条状态 */
   docked: boolean;
+  /** 收纳出场动画进行中：docked 已置 true（防缩窗事件写盘/重入），
+   *  但主界面仍在播放滑向边缘的 dock-out-* 动画，播完才真正缩窗换窄条 */
+  collapsing: boolean;
   /** 收纳前恢复用的窗口边界（物理坐标） */
   restoredBounds: Bounds | null;
+  /** 主界面滑入动画的方向提示：托盘/快捷键展开会清掉收纳会话（dockedEdge 置 null），
+   *  挂载时据此仍播放一次从该侧滑入的动画；动画结束后由调用方清回 null */
+  slideFromEdge: DockEdge | null;
   setAlwaysOnTop: (enabled: boolean) => Promise<void>;
   setOpacity: (value: number) => void;
   setEdgeDocking: (enabled: boolean) => void;
   setTheme: (theme: AppTheme) => void;
   setDock: (edge: DockEdge, restored: Bounds, docked: boolean) => void;
+  setCollapsing: (value: boolean) => void;
   clearDock: () => void;
+  setSlideFrom: (edge: DockEdge | null) => void;
   restoreBounds: () => Bounds | null;
 }
 
@@ -63,7 +71,9 @@ export const useWindowStore = create<WindowState>((set, get) => ({
   theme: initial.theme,
   dockedEdge: null,
   docked: false,
+  collapsing: false,
   restoredBounds: null,
+  slideFromEdge: null,
 
   setAlwaysOnTop: async (enabled) => {
     await applyAlwaysOnTop(enabled);
@@ -110,8 +120,12 @@ export const useWindowStore = create<WindowState>((set, get) => ({
   setDock: (edge, restored, docked) =>
     set({ dockedEdge: edge, restoredBounds: restored, docked }),
 
+  setCollapsing: (value) => set({ collapsing: value }),
+
   clearDock: () =>
     set({ dockedEdge: null, docked: false, restoredBounds: null }),
+
+  setSlideFrom: (edge) => set({ slideFromEdge: edge }),
 
   restoreBounds: () => get().restoredBounds,
 }));

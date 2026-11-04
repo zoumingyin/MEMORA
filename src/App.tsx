@@ -1,4 +1,9 @@
-import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import {
+  useEffect,
+  useMemo,
+  useState,
+  type CSSProperties,
+} from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   App as AntdApp,
@@ -26,7 +31,11 @@ import { useUiStore } from "./store/useUiStore";
 import { useViewport } from "./hooks/useViewport";
 import {
   applyAlwaysOnTop,
+  currentWorkArea,
+  getBounds,
   isMaximized,
+  isMinimized,
+  isProgrammaticMoveRecent,
   isStorableBounds,
   loadBoundsFromStorage,
   onWindowMoved,
@@ -34,10 +43,20 @@ import {
   restoreBounds,
   saveBoundsToStorage,
 } from "./window/tauriWindow";
-import { autoSnapIfNearEdge } from "./window/edgeDock";
+import {
+  acquireExpandLock,
+  collapseToStripAnimated,
+  detectDockEdge,
+  detectDockTarget,
+  EXPAND_SETTLE_MS,
+  isCollapsedStrip,
+  recedeStripForExpand,
+  releaseExpandLock,
+  unpinStrip,
+} from "./window/edgeDock";
 import { prewarmCtxMenuWindow } from "./window/ctxMenuWindow";
 import { toMinuteStart } from "./utils/format";
-import { ENTRY_KIND_LABEL } from "./utils/entryLabels";
+import { ENTRY_KIND_COLOR, ENTRY_KIND_LABEL } from "./utils/entryLabels";
 import { startReminderScheduler } from "./reminder/scheduler";
 import { isTauriRuntime } from "./repository";
 import { loadCloseBehavior } from "./window/closeBehavior";
@@ -54,16 +73,22 @@ import { CreateKindDialog } from "./components/CreateKindDialog";
 import { TrashPane } from "./components/TrashPane";
 import { AssistantPanel } from "./components/AssistantPanel";
 
-/** 移动事件停止多久后再判定吸附，避免读到拖拽中的旧坐标 */
-const SNAP_DEBOUNCE_MS = 160;
+/** 移动事件停止多久后再判定贴边收纳，避免读到拖拽中的旧坐标 */
+const DOCK_DEBOUNCE_MS = 160;
 
-/** antd 主题主色跟随分类主题色（备忘蓝 / 提醒珊瑚红 / 待办绿 / 涂鸦紫） */
-const KIND_COLOR: Record<EntryKind, string> = {
-  note: "#2563eb",
-  reminder: "#d9686b",
-  todo: "#57a878",
-  draw: "#8b5cf6",
-};
+/** 本程序下发位置/尺寸后的忽略窗口（毫秒）：这段时间内的移动事件视为自己造成的，不做收纳判定 */
+const PROGRAMMED_MOVE_MS = 900;
+
+/** 指针离开窗口后延迟收回窄条（毫秒）：吸收擦过边缘阴影的瞬时移出，指针回到窗口即取消 */
+const DOCK_LEAVE_COLLAPSE_MS = 320;
+
+/** 托盘单击去抖窗口（毫秒）：双击会产生连续两次 Click + 一次 DoubleClick，
+ *  窗口内的第二次 Click 在此忽略，交给 DoubleClick 分支统一「显示 + 展开」，
+ *  否则表现为 折→展→折 来回闪 */
+const TRAY_TOGGLE_DEBOUNCE_MS = 300;
+
+/** antd 主题主色跟随分类主题色，定义收敛到 utils/entryLabels 的 ENTRY_KIND_COLOR */
+const KIND_COLOR = ENTRY_KIND_COLOR;
 
 /** 窄屏视图切换选项：网格 / 列表 */
 const ENTRY_VIEW_OPTIONS = [
@@ -119,6 +144,11 @@ export default function App() {
   // 使用 Context 版 message，提示可继承动态主题（静态 message 拿不到 ConfigProvider）
   const { message } = AntdApp.useApp();
   const docked = useWindowStore((state) => state.docked);
+  // 收纳出场动画进行中：仍渲染主界面（播放 dock-out-*），播完才换窄条
+  const collapsing = useWindowStore((state) => state.collapsing);
+  const dockedEdge = useWindowStore((state) => state.dockedEdge);
+  // 主界面滑入方向提示（托盘/快捷键展开时 dockedEdge 已清空，据此仍播放滑入动画）
+  const slideFromEdge = useWindowStore((state) => state.slideFromEdge);
   const currentKind = useEntryStore((state) => state.currentKind);
   const filter = useEntryStore((state) => state.filter);
   const view = useEntryStore((state) => state.view);
@@ -235,12 +265,13 @@ export default function App() {
     }
 
     let disposed = false;
-    let snapTimer: number | undefined;
+    let dockTimer: number | undefined;
     let detachMoved: () => void = () => undefined;
     let detachResized: () => void = () => undefined;
     let detachOpenNote: () => void = () => undefined;
     let detachTrayCreate: () => void = () => undefined;
     let detachTrayAssistant: () => void = () => undefined;
+    let detachTrayToggle: () => void = () => undefined;
     let detachSecondInstance: () => void = () => undefined;
     let detachCloseRequested: () => void = () => undefined;
     let detachQuickCapture: () => void = () => undefined;
@@ -248,12 +279,70 @@ export default function App() {
     let detachWindowShown: () => void = () => undefined;
     let detachFocusShown: () => void = () => undefined;
 
-    // 收纳窄条态不渲染列表与弹窗：托盘 / 提醒唤起前先展开回普通窗口
-    const expandIfDocked = () => {
-      const winState = useWindowStore.getState();
-      if (!winState.docked) return;
-      if (winState.restoredBounds) void restoreBounds(winState.restoredBounds);
-      winState.clearDock();
+    // 收纳窄条态不渲染列表与弹窗：托盘 / 提醒唤起前先展开回普通窗口。
+    // drawer 式展开：窄条先滑进边缘收起（同时保证撑窗瞬间上一帧全透明防闪），
+    // 窗口原子撑大后主界面从同侧滑入。先撑窗口再换界面——反过来的话，
+    // 撑开失败时就变成「主界面画在窄条宽度的窗口里」的挤扁状态。
+    // 返回 Promise：托盘单击的「隐藏+收纳」分支要等展开完成后再 show，
+    // 避免窄条先闪一帧；其余调用方保持 fire-and-forget 不受影响
+    const expandIfDocked = (): Promise<void> => {
+      if (!acquireExpandLock()) return Promise.resolve();
+      return (async () => {
+        try {
+          let winState = useWindowStore.getState();
+          let edge = winState.dockedEdge;
+          let docked = winState.docked;
+          // 状态自愈：展开/收纳竞态可能留下「窗口已是窄条尺寸、docked 却是 false」
+          // 的脏状态（表现为贴边后便签消失、显示主窗口也无反应）。
+          // 按当前几何重建收纳会话再展开；正常尺寸的窗口不命中此分支，行为不变
+          if (!docked) {
+            const bounds = await getBounds();
+            const area = await currentWorkArea();
+            const stripShaped =
+              !!bounds &&
+              (isCollapsedStrip(bounds, "left") ||
+                isCollapsedStrip(bounds, "top"));
+            if (bounds && area && stripShaped) {
+              const detected = detectDockEdge(bounds, area);
+              edge =
+                detected ??
+                (isCollapsedStrip(bounds, "left") ? "left" : "top");
+              docked = true;
+              useWindowStore.getState().setDock(edge, bounds, true);
+              winState = useWindowStore.getState();
+            } else if (bounds && area) {
+              // 窗口整个落在工作区外（收纳/竞态残留）：夹回可见区即完成「重新显示」
+              const outside =
+                bounds.x + bounds.width <= area.x ||
+                bounds.x >= area.x + area.width ||
+                bounds.y + bounds.height <= area.y ||
+                bounds.y >= area.y + area.height;
+              if (outside) {
+                await restoreBounds(bounds, EXPAND_SETTLE_MS);
+                return;
+              }
+            }
+          }
+          if (!docked) return;
+          if (edge) await recedeStripForExpand(edge);
+          const bounds = winState.restoredBounds ?? (await getBounds());
+          // restoreBounds 回读确认窗口真的撑开了才换界面：撑不开就恢复窄条，
+          // 否则主界面会画在窄条宽度的窗口里，挤成一条没法操作
+          if (bounds && (await restoreBounds(bounds, EXPAND_SETTLE_MS))) {
+            // 结束收纳会话（鼠标移出不再收回），但保留滑入方向供主界面播放动画
+            winState.setSlideFrom(edge);
+            winState.clearDock();
+            window.setTimeout(
+              () => useWindowStore.getState().setSlideFrom(null),
+              600,
+            );
+          } else {
+            unpinStrip();
+          }
+        } finally {
+          releaseExpandLock();
+        }
+      })();
     };
 
     // 提醒弹窗「进入便签」：主窗口聚焦，选中对应条目并切到该分类；收纳态先展开
@@ -294,8 +383,46 @@ export default function App() {
       trayAssistantPromise.then((detach) => {
         detachTrayAssistant = detach;
       });
-      // 单实例二次启动：Rust 已聚焦主窗口，前端仅作兜底再聚焦一次
+      // 托盘左键单击（任务栏图标）：显示/隐藏切换的判定挪到前端——
+      // 只有前端知道收纳态，收纳时点击图标应弹出展开而不是把窄条隐藏掉
+      let lastToggleAt = 0;
+      const trayTogglePromise = listen("tray:toggle-main", async () => {
+        // 双击去抖：第二次 Click 在窗口内忽略，由 DoubleClick 分支统一显示+展开
+        const now = Date.now();
+        if (now - lastToggleAt < TRAY_TOGGLE_DEBOUNCE_MS) return;
+        lastToggleAt = now;
+        const winState = useWindowStore.getState();
+        const win = getCurrentWindow();
+        // 收纳窄条态（含窄条被隐藏的情况）：单击 = 显示 + 自动展开，不做隐藏切换。
+        // 隐藏态下先在后台把窗口撑回正常尺寸再 show：直接 show 会让窄条
+        // 先闪一帧、随后才被展开替换
+        if (winState.docked) {
+          await expandIfDocked();
+          void win.unminimize();
+          void win.show();
+          void win.setFocus();
+          return;
+        }
+        // 与原 Rust 侧判定一致：可见性读取失败按可见处理，最小化读取失败按未最小化处理
+        const visible = await win.isVisible().catch(() => true);
+        const minimized = await win.isMinimized().catch(() => false);
+        if (visible && !minimized) {
+          void win.hide();
+        } else {
+          void win.unminimize();
+          void win.show();
+          void win.setFocus();
+          // 窗口若处于「窄条尺寸但 docked=false」的脏状态（展开/收纳竞态残留），
+          // 顺带自愈展开；正常尺寸时空操作
+          expandIfDocked();
+        }
+      });
+      trayTogglePromise.then((detach) => {
+        detachTrayToggle = detach;
+      });
+      // 单实例二次启动：Rust 已聚焦主窗口，前端兜底再聚焦一次；收纳窄条态先展开
       const secondPromise = listen("app:second-instance", () => {
+        expandIfDocked();
         void getCurrentWindow().setFocus();
       });
       secondPromise.then((detach) => {
@@ -335,7 +462,10 @@ export default function App() {
         detachCloseRequested = detach;
       });
       // 全局快捷键唤起快速记录（Rust global-shortcut Ctrl+Shift+N）
+      // 收纳窄条态不渲染主界面与弹窗：先展开回普通窗口，quickOpen 状态保留，
+      // 展开完成后快速记录弹窗随主界面一起出现
       const quickPromise = listen("global:quick-capture", () => {
+        expandIfDocked();
         setQuickOpen(true);
       });
       quickPromise.then((detach) => {
@@ -375,30 +505,67 @@ export default function App() {
     };
     window.addEventListener("keydown", onKeyDown);
 
-    const scheduleSnap = () => {
-      window.clearTimeout(snapTimer);
-      snapTimer = window.setTimeout(() => {
+    const scheduleDock = () => {
+      window.clearTimeout(dockTimer);
+      dockTimer = window.setTimeout(() => {
         const state = useWindowStore.getState();
         if (!state.edgeDocking || state.docked) return;
-        void autoSnapIfNearEdge().then((result) => {
-          if (!result || disposed) return;
-          useWindowStore.getState().setDock(result.edge, result.bounds, false);
+        // 只看用户拖拽：本程序刚下发过位置/尺寸（悬停展开、启动恢复），
+        // 由此产生的移动事件不算「拖到边缘」，否则展开后马上又收回去
+        if (isProgrammaticMoveRecent(PROGRAMMED_MOVE_MS)) return;
+        void detectDockTarget().then(async (scan) => {
+          if (!scan || disposed) return;
+          const state = useWindowStore.getState();
+          // 停手但没贴边：用户把窗口拖离了边缘，结束收纳会话（此后移出窗口不再收回窄条）
+          if (!scan.edge) {
+            state.clearDock();
+            return;
+          }
+          // 先置收纳态再缩窗：缩窗触发的 move/resize 事件到达时 docked 已为 true，
+          // 既不会把窄条尺寸写进启动恢复存储，也不会再排一轮检测
+          // （collapseToStripAnimated 内部先 setDock 再播出场动画、最后缩窗）
+          if (useWindowStore.getState().collapsing) return;
+          const started = await collapseToStripAnimated(
+            scan.edge,
+            scan.bounds,
+            scan.workArea,
+          );
+          // 展开流程持锁期间收纳被拒：回滚收纳态，避免「docked=true 但窗口
+          // 还是正常尺寸」导致 DockBar 渲染成一大块色板
+          if (!started) state.clearDock();
         });
-      }, SNAP_DEBOUNCE_MS);
+      }, DOCK_DEBOUNCE_MS);
     };
 
-    // 移动：吸附判定 + 保存边界（供下次启动恢复）；收纳窄条态不覆盖保存的位置。
-    // 最小化时 Windows 会把窗口矩形挪到屏幕外（-25600）并缩成窄条，这类脏边界既不落盘也不吸附。
+    // 移动：贴边收纳判定 + 保存边界（供下次启动恢复）；收纳窄条态不覆盖保存的位置。
+    // 最小化时 Windows 会把窗口矩形挪到屏幕外（-25600）并缩成窄条，这类脏边界既不落盘也不收纳。
     void onWindowMoved((bounds) => {
       if (!isStorableBounds(bounds)) return;
       if (!useWindowStore.getState().docked) saveBoundsToStorage(bounds);
-      scheduleSnap();
+      scheduleDock();
     }).then((detach) => {
       detachMoved = detach;
     });
     // 尺寸变化：保存边界（供下次启动恢复）。最大化状态落盘会让下次启动恢复成
     // 异常大窗口（透明窗口渲染异常），故最大化时不落盘。
     void onWindowResized(async (bounds) => {
+      // 最小化检测：Windows 最小化时窗口矩形缩成约 160×28（IsIconic 为真）。
+      // 收纳窄条被点任务栏按钮会最小化到屏幕外——这正是「贴边后便签消失」的路径；
+      // 按需求改为弹出展开：任务栏点击收纳态便签 = 显示 + 自动展开。
+      // 普通窗口的最小化保持系统默认行为，不干预
+      if (bounds.width <= 200 && bounds.height <= 60) {
+        if (await isMinimized()) {
+          if (useWindowStore.getState().docked) {
+            void (async () => {
+              const win = getCurrentWindow();
+              await win.unminimize();
+              await expandIfDocked();
+              await win.setFocus();
+            })();
+          }
+          return;
+        }
+      }
       if (!isStorableBounds(bounds)) return;
       if (useWindowStore.getState().docked) return;
       const maximized = await isMaximized();
@@ -410,13 +577,14 @@ export default function App() {
     return () => {
       disposed = true;
       stopScheduler();
-      window.clearTimeout(snapTimer);
+      window.clearTimeout(dockTimer);
       window.removeEventListener("keydown", onKeyDown);
       detachMoved();
       detachResized();
       detachOpenNote();
       detachTrayCreate();
       detachTrayAssistant();
+      detachTrayToggle();
       detachSecondInstance();
       detachCloseRequested();
       detachQuickCapture();
@@ -425,6 +593,48 @@ export default function App() {
       detachFocusShown();
     };
   }, []);
+
+  // 窄条展开后「鼠标移出窗口就收回」：展开时窄条组件已卸载，没人再监听它的 mouseleave，
+  // 所以这一半逻辑挂在窗口级——指针离开文档可视区即收回，回到窗口则取消这次收回。
+  useEffect(() => {
+    if (!dockedEdge || docked) return;
+    const root = document.documentElement;
+    let timer: number | undefined;
+    const cancel = () => {
+      if (timer === undefined) return;
+      window.clearTimeout(timer);
+      timer = undefined;
+    };
+    const collapse = () => {
+      timer = undefined;
+      const state = useWindowStore.getState();
+      const edge = state.dockedEdge;
+      const bounds = state.restoredBounds;
+      if (!edge || !bounds || state.docked || !state.edgeDocking) return;
+      void (async () => {
+        const workArea = await currentWorkArea();
+        const latest = useWindowStore.getState();
+        // 取工作区期间会话变了（托盘展开、拖离边缘）：不再下发
+        if (!workArea || latest.docked || latest.dockedEdge !== edge) return;
+        // 收纳出场动画进行中（另一条路径已在收）：不重入
+        if (latest.collapsing) return;
+        const started = await collapseToStripAnimated(edge, bounds, workArea);
+        // 展开流程持锁期间收纳被拒：回到「已展开、保留会话」的原状态
+        if (!started) useWindowStore.getState().setDock(edge, bounds, false);
+      })();
+    };
+    const onLeave = () => {
+      cancel();
+      timer = window.setTimeout(collapse, DOCK_LEAVE_COLLAPSE_MS);
+    };
+    root.addEventListener("mouseleave", onLeave);
+    root.addEventListener("mouseenter", cancel);
+    return () => {
+      cancel();
+      root.removeEventListener("mouseleave", onLeave);
+      root.removeEventListener("mouseenter", cancel);
+    };
+  }, [dockedEdge, docked]);
 
   // 选中项由列表派生：显式选中失效（删除 / 外部变更）时自动回落第一条，无需 effect 同步。
   // 提前到主题配置之前计算（主题需按 kindClass 注入主色）。
@@ -529,7 +739,7 @@ export default function App() {
     } as const;
   }, [darkGlass, kindClass]);
 
-  if (docked) return <DockBar />;
+  if (docked && !collapsing) return <DockBar />;
 
   // 新建：弹出类型选择（备忘 / 提醒 / 待办），用户显式选择后创建
   const handleCreate = (): void => {
@@ -595,8 +805,17 @@ export default function App() {
       {/* 这里再嵌套一层 App：让 message 的承载节点落在动态主题的 ConfigProvider 内，
           暗色模式下提示也能跟随；component={false} 不额外产生包裹元素 */}
       <AntdApp component={false}>
+        {/* 展开时 <main> 是重新挂载的，dock-in-* 动画随挂载自动播放一次，不需要计时器清理 */}
         <main
-          className={`app-shell kind-${kindClass} relative`}
+          className={`app-shell kind-${kindClass} relative${
+            collapsing && dockedEdge
+              ? ` dock-out-${dockedEdge}`
+              : dockedEdge
+                ? ` dock-in-${dockedEdge}`
+                : slideFromEdge
+                  ? ` dock-in-${slideFromEdge}`
+                  : ""
+          }`}
           data-tauri-drag-region="deep"
           style={
             {

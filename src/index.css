@@ -1826,7 +1826,14 @@ button.note-list-row {
 @media (prefers-reduced-motion: reduce) {
   .entry-view-enter,
   .wall-note,
-  .wall-detail-drawer {
+  .wall-detail-drawer,
+  .dock-strip,
+  .app-shell.dock-in-left,
+  .app-shell.dock-in-right,
+  .app-shell.dock-in-top,
+  .app-shell.dock-out-left,
+  .app-shell.dock-out-right,
+  .app-shell.dock-out-top {
     animation: none;
     transition: none;
   }
@@ -3982,31 +3989,172 @@ button.note-list-row {
 /* 收纳窄条（左右边为纵向，上边为横向） */
 .dock-strip {
   display: flex;
-  align-items: center;
-  justify-content: center;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 6px;
+  padding: 8px 0;
   width: 100%;
-  height: 100%;
-  background: rgba(var(--panel-soft-rgb), var(--chrome-alpha));
+  /* height: 100%; */
+  overflow: hidden;
+  /* 无整条背景：胶囊直接浮在桌面上（对齐参考样式），窗口本身全透明 */
   color: var(--text-muted);
   cursor: pointer;
+  /* 收缩时窗口边界一步到位，观感上的过渡由这一层淡入补足 */
+  animation: dock-strip-in 0.18s ease-out;
   transition:
-    background 0.2s,
     color 0.2s;
 }
 
-.dock-strip.vertical {
-  flex-direction: column;
+/* 上边缘收纳：窄条横放，胶囊横向排列 */
+.dock-strip.horizontal {
+  flex-direction: row;
+  align-items: center;
+}
+
+/* 展开时窗口先变大、主界面还没换上来：窄条按原厚度贴回原边缘，其余区域保持透明。
+   不这样做的话，100%×100% 的底色会把放大后的整窗刷成一片浅色，看着就是「白屏一下」 */
+.dock-strip.is-expanding {
+  position: absolute;
+  width: auto;
+  height: auto;
+}
+
+.dock-strip.is-expanding.edge-left {
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: var(--dock-strip-thickness, 16px);
+}
+
+.dock-strip.is-expanding.edge-right {
+  top: 0;
+  bottom: 0;
+  right: 0;
+  width: var(--dock-strip-thickness, 16px);
+}
+
+.dock-strip.is-expanding.edge-top {
+  top: 0;
+  right: 0;
+  left: 0;
+  height: var(--dock-strip-thickness, 16px);
+}
+
+/* 展开第一步：窄条滑进所在边缘让位（随后窗口撑大、主界面从同侧滑出，drawer 式展开）。
+   滑完由 edgeDock 把它 visibility 隐藏——窗口撑大瞬间的上一帧必须全透明，
+   否则 WebView2 会把窄条拉伸成横贯窗口的色带（「小条闪一下」） */
+.dock-strip.is-receding {
+  transition:
+    transform 0.12s ease-in,
+    opacity 0.12s ease-in;
+  opacity: 0;
+}
+
+.dock-strip.is-receding.edge-left {
+  transform: translateX(-100%);
+}
+
+.dock-strip.is-receding.edge-right {
+  transform: translateX(100%);
+}
+
+.dock-strip.is-receding.edge-top {
+  transform: translateY(-100%);
 }
 
 .dock-strip:hover {
   color: var(--kind-accent);
-  background: rgba(var(--panel-soft-rgb), calc(var(--chrome-alpha) + 0.12));
 }
 
 .dock-strip-handle {
   display: flex;
+  flex: none;
   align-items: center;
   justify-content: center;
+  margin-top: auto;
+}
+
+.dock-strip.horizontal .dock-strip-handle {
+  margin-top: 0;
+  margin-left: auto;
+}
+
+@keyframes dock-strip-in {
+  from {
+    opacity: 0;
+  }
+}
+
+/* 展开时主界面从收纳的那一侧整体滑出（drawer 式）：窄条先收进边缘，窗口撑大后
+   主界面从同侧滑入。窄条态不渲染 <main>，展开即重新挂载，动画随之播放一次 */
+.app-shell.dock-in-left {
+  animation: dock-in-left 0.26s cubic-bezier(0.22, 0.61, 0.36, 1) both;
+}
+
+.app-shell.dock-in-right {
+  animation: dock-in-right 0.26s cubic-bezier(0.22, 0.61, 0.36, 1) both;
+}
+
+.app-shell.dock-in-top {
+  animation: dock-in-top 0.26s cubic-bezier(0.22, 0.61, 0.36, 1) both;
+}
+
+/* 从贴边侧整体滑入：起始位置整个在窗外，只看到面板边缘逐渐扫过桌面（抽屉效果）；
+   both 兜住首帧，避免动画起步前闪一帧最终位置 */
+@keyframes dock-in-left {
+  from {
+    transform: translate3d(-100%, 0, 0);
+  }
+}
+
+@keyframes dock-in-right {
+  from {
+    transform: translate3d(100%, 0, 0);
+  }
+}
+
+@keyframes dock-in-top {
+  from {
+    transform: translate3d(0, -100%, 0);
+  }
+}
+
+/* 收纳时主界面滑向贴边侧淡出（drawer 式收起，与 dock-in-* 对称）：
+   动画播完窗口才缩成窄条（edgeDock 的 DOCK_OUT_ANIM_MS 与此时长对齐），
+   随后 DockBar 的 dock-strip-in 淡入 */
+.app-shell.dock-out-left {
+  animation: dock-out-left 0.18s ease-in both;
+}
+
+.app-shell.dock-out-right {
+  animation: dock-out-right 0.18s ease-in both;
+}
+
+.app-shell.dock-out-top {
+  animation: dock-out-top 0.18s ease-in both;
+}
+
+/* 滑向贴边侧并淡出：to 帧由 both 兜住，缩窗前最后一刻保持全透明 */
+@keyframes dock-out-left {
+  to {
+    transform: translate3d(-100%, 0, 0);
+    opacity: 0;
+  }
+}
+
+@keyframes dock-out-right {
+  to {
+    transform: translate3d(100%, 0, 0);
+    opacity: 0;
+  }
+}
+
+@keyframes dock-out-top {
+  to {
+    transform: translate3d(0, -100%, 0);
+    opacity: 0;
+  }
 }
 
 /* 全局细滚动条：6px，半透明 thumb，悬浮加深（覆盖列表/编辑区/设置树等所有滚动区域） */

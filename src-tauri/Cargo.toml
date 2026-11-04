@@ -39,6 +39,15 @@ reqwest = { version = "0.13.5", default-features = false, features = [
 ] }
 futures-util = "0.3.34"
 
+# Windows 专用：原子下发窗口位置+尺寸（单个 SetWindowPos）。
+# 版本对齐依赖树中 tauri 已带的 0.62，离线构建不引入新下载；
+# hwnd() 返回值即该 crate 的 HWND，类型直接对上。
+[target."cfg(windows)".dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
 # 仅测试 / 示例使用（examples/search_probe.rs），不影响发布产物
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
