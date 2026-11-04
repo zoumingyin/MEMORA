@@ -57,13 +57,11 @@ struct AutostartSetPayload {
     enabled: bool,
 }
 
-/// 临时斗篷窗口（DWMWA_CLOAK，Win8+）：收纳时关投影会触发 tao 重写窗口样式并
-/// 强制非客户区重算（SWP_FRAMECHANGED + WM_NCCALCSIZE），客户区向外扩一圈不可见
-/// 边框，DWM 对重算后的边框按经典亮色绘一帧——表现为收纳时画面闪现白边。
-/// 斗篷期间 DWM 不合成该窗口，重算与缩窗全程不可见，揭开时即是最终窄条。
-#[tauri::command]
+/// DWM 斗篷开关：斗篷期间 DWM 不合成该窗口（比 hide/show 轻量——
+/// 不改 WS_VISIBLE、不丢焦点、不触发 WebView2 重绘问题）。
+/// 用于启动防白屏与收纳缩窗防白边两处。
 #[cfg(windows)]
-fn set_window_cloaked(window: tauri::WebviewWindow, cloaked: bool) -> Result<(), String> {
+fn apply_window_cloak(window: &tauri::WebviewWindow, cloaked: bool) -> Result<(), String> {
     use windows::core::BOOL;
     use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_CLOAK};
     let hwnd = window.hwnd().map_err(|error| error.to_string())?;
@@ -79,12 +77,15 @@ fn set_window_cloaked(window: tauri::WebviewWindow, cloaked: bool) -> Result<(),
     }
 }
 
-/// 非 Windows 平台无 DWM，直接成功
-#[tauri::command]
 #[cfg(not(windows))]
-fn set_window_cloaked(window: tauri::WebviewWindow, _cloaked: bool) -> Result<(), String> {
-    let _ = window;
+fn apply_window_cloak(_window: &tauri::WebviewWindow, _cloaked: bool) -> Result<(), String> {
     Ok(())
+}
+
+/// 前端调用：启动就绪后揭开窗口 / 收纳缩窗时临时斗篷
+#[tauri::command]
+fn set_window_cloaked(window: tauri::WebviewWindow, cloaked: bool) -> Result<(), String> {
+    apply_window_cloak(&window, cloaked)
 }
 
 /// 「显示主窗口」兜底：show() 对「可见但矩形落在工作区外」或「窄条/异常小窗」无能为力。
@@ -635,6 +636,21 @@ CREATE INDEX IF NOT EXISTS idx_entries_deleted ON entries(deleted_at);
         )
         .setup(|app| {
             build_tray(app)?;
+            // 启动防闪屏：无装饰+阴影窗口在 WebView2 首帧合成前，DWM 会按未初始化
+            // 表面绘出一帧白屏（Win11 上尤甚）；且窗口默认位置与前端恢复的保存位置
+            // 不同，直接显示会先白屏再跳位。这里创建后立即斗篷再显示——斗篷期间
+            // DWM 不合成窗口，前端恢复位置、完成首帧渲染后揭开（set_window_cloaked
+            // false），用户看到的就是最终位置上的完整界面，无白屏无跳变。
+            // 5 秒兜底自动揭开：前端资源异常/加载卡死时不至于永久不可见
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = apply_window_cloak(&window, true);
+                let _ = window.show();
+                let fallback_window = window.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_secs(5));
+                    let _ = apply_window_cloak(&fallback_window, false);
+                });
+            }
             // 主窗口在 tauri.conf.json 中配置为 skipTaskbar: true：
             // 任何方式启动（手动 / 开机自启）都正常显示窗口，但不显示任务栏图标，
             // 程序图标仅在系统托盘；通过托盘单击、托盘菜单或全局快捷键操作主窗口

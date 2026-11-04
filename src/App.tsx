@@ -21,6 +21,7 @@ import {
   UnorderedListOutlined,
 } from "@ant-design/icons";
 import { Sparkles } from "lucide-react";
+import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useEntryStore } from "./store/useEntryStore";
@@ -249,14 +250,22 @@ export default function App() {
     // （仅自由悬浮态；收纳窄条不恢复，避免被吸附坐标干扰）。
     // 透明窗口最大化渲染异常（任务栏有图标但界面空白）：
     // 若上次退出/双击拖拽区后窗口处于最大化，启动时统一还原为普通尺寸。
+    // Rust 启动时已斗篷窗口（防 WebView2 首帧前白屏）：这里等位置恢复、
+    // 最大化还原完成后再揭开——窗口出现时已在本该出现的位置且首帧就绪，
+    // 无白屏也无位置跳变；5 秒兜底由 Rust 侧负责
     if (isTauriRuntime()) {
-      const savedBounds = loadBoundsFromStorage();
-      if (savedBounds) void restoreBounds(savedBounds);
-      void getCurrentWindow()
-        .isMaximized()
-        .then((maximized) => {
-          if (maximized) void getCurrentWindow().unmaximize();
-        });
+      const ready = (async () => {
+        const savedBounds = loadBoundsFromStorage();
+        if (savedBounds) await restoreBounds(savedBounds);
+        const maximized = await getCurrentWindow()
+          .isMaximized()
+          .catch(() => false);
+        if (maximized) await getCurrentWindow().unmaximize();
+      })();
+      void ready
+        .catch(() => undefined)
+        .then(() => invoke("set_window_cloaked", { cloaked: false }))
+        .catch(() => undefined);
     }
 
     let disposed = false;
