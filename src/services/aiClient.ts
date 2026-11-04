@@ -30,7 +30,9 @@ const BROWSER_CONFIG_KEY = 'bianqian.assistant.ai.v2'
 /** 旧版单配置：读取时迁移为一条 v2 配置 */
 const LEGACY_CONFIG_KEY = 'bianqian.assistant.ai.v1'
 const DEFAULT_TEMPERATURE = 0.7
-const DEFAULT_MAX_TOKENS = 1200
+// 与 Rust 端 DEFAULT_MAX_TOKENS 保持一致：操作卡片嵌入整段 Markdown 正文，
+// 1200 tokens 容易在 </action> 闭合前截断导致卡片不渲染
+const DEFAULT_MAX_TOKENS = 2048
 
 interface BrowserProfile {
   id: string

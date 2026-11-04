@@ -2417,6 +2417,29 @@ button.note-list-row {
   padding: 0;
 }
 
+/* Markdown 表格（GFM 管道表）：块级横向滚动防撑破，边框/表头底色走主题令牌（light/dark 均生效） */
+.md-prose table {
+  border-collapse: collapse;
+  margin: 8px 0;
+  font-size: 12px;
+  max-width: 100%;
+  display: block;
+  overflow-x: auto;
+}
+
+.md-prose th,
+.md-prose td {
+  border: 1px solid var(--border);
+  padding: 3px 8px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.md-prose th {
+  background: var(--hover-fill);
+  font-weight: 600;
+}
+
 /* 链接仅作静态展示（插入/打开功能已移除），保留颜色便于识别 */
 .md-prose a {
   color: var(--kind-accent);

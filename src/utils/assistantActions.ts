@@ -46,9 +46,25 @@ export const ACTION_PROTOCOL = [
   '输出要求：不要声称已经执行成功，界面会展示确认卡片、由用户点击执行；不要用代码块包裹 <action>；删除、改标题、改时间等操作仍请提示用户手动完成。',
 ].join('\n')
 
-const ACTION_BLOCK = /<action>([\s\S]*?)<\/action>/gi
+const ACTION_BLOCK = /<action\b[^>]*>([\s\S]*?)<\/action>/gi
 /** 流式过程中可能只到达 <action> 的前缀，按前缀把尾巴整段丢弃 */
 const ACTION_TAIL = /<\s*a?\s*c?\s*t?\s*i?\s*o?\s*n?\s*>?$/i
+
+/**
+ * 宽容重试：模型常见的 JSON 小毛病——全角引号、尾逗号。
+ * 仅在原始 JSON.parse 失败时尝试，避免污染正常内容。
+ */
+function lenientJsonParse(body: string): unknown {
+  const cleaned = body
+    .replace(/[\u201c\u201d]/g, '"')
+    .replace(/[\u2018\u2019]/g, "'")
+    .replace(/,\s*([}\]])/g, '$1')
+  try {
+    return JSON.parse(cleaned)
+  } catch {
+    return null
+  }
+}
 
 function parseRemindAt(value: unknown): number | null {
   let ms: number
@@ -83,7 +99,8 @@ function parseAction(body: string): AssistantAction | null {
   try {
     data = JSON.parse(body.trim())
   } catch {
-    return null
+    data = lenientJsonParse(body)
+    if (data === null) return null
   }
   if (typeof data !== 'object' || data === null || Array.isArray(data)) return null
 
@@ -133,15 +150,26 @@ function parseAction(body: string): AssistantAction | null {
  * 把模型回答拆成「可展示文本 + 待确认操作」：
  * - 剔除完整的 <action> 块，避免把 JSON 当正文渲染
  * - 流式输出时操作块可能只到一半，从该处截断
+ * - 解析失败的完整块不再静默丢弃：计入 invalidCount 供界面提示
  */
 export function parseAssistantActions(raw: string): {
   text: string
   actions: AssistantAction[]
+  /** 完整出现但无法解析为有效操作的 <action> 块数量（格式异常 / 字段不合法） */
+  invalidCount: number
 } {
   const actions: AssistantAction[] = []
+  let invalidCount = 0
   let text = raw.replace(ACTION_BLOCK, (_match, body: string) => {
-    const action = actions.length < MAX_ACTIONS ? parseAction(body) : null
-    if (action) actions.push(action)
+    const action = parseAction(body)
+    if (action && actions.length < MAX_ACTIONS) {
+      actions.push(action)
+    } else if (!action) {
+      invalidCount += 1
+      if (import.meta.env.DEV) {
+        console.warn('[AI] 操作块解析失败（原始内容）：', body)
+      }
+    }
     return ''
   })
 
@@ -153,5 +181,5 @@ export function parseAssistantActions(raw: string): {
     if (tail) text = text.slice(0, tail.index)
   }
 
-  return { text: text.replace(/\n{3,}/g, '\n\n').trim(), actions }
+  return { text: text.replace(/\n{3,}/g, '\n\n').trim(), actions, invalidCount }
 }

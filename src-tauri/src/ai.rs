@@ -37,7 +37,9 @@ const BUILTIN_OPENCODE_KEY: &str = match option_env!("BIANQIAN_BUILTIN_OPENCODE_
 };
 
 const DEFAULT_TEMPERATURE: f32 = 0.7;
-const DEFAULT_MAX_TOKENS: u32 = 1200;
+// 操作卡片会把整段 Markdown 正文塞进 <action> JSON，1200 tokens 容易在
+// </action> 闭合前被截断（卡片静默消失），放宽到 2048
+const DEFAULT_MAX_TOKENS: u32 = 2048;
 
 /// 正在进行的请求：request_id 集合，ai_cancel 写入，ai_chat 在分块间检查后提前结束
 #[derive(Default)]
@@ -1169,6 +1171,25 @@ fn http_client() -> Result<reqwest::Client, String> {
     Ok(CLIENT.get_or_init(|| client).clone())
 }
 
+/// 流式对话专用客户端：不能设总时长超时——长回答叠加推理模型思考，
+/// 总耗时轻松超过几分钟，会被 reqwest 在流中途掐断（表现为回答生成一半自动停止）。
+/// 改用 read_timeout（相邻两次读到数据之间的最大空闲间隔）：
+/// 正常生成哪怕持续很久也不受限，只有上游彻底卡死/断流才提前失败。
+fn stream_http_client() -> Result<reqwest::Client, String> {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    if let Some(client) = CLIENT.get() {
+        return Ok(client.clone());
+    }
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .read_timeout(Duration::from_secs(120))
+        .tcp_nodelay(true)
+        .pool_idle_timeout(Duration::from_secs(90))
+        .build()
+        .map_err(|error| format!("初始化网络客户端失败：{error}"))?;
+    Ok(CLIENT.get_or_init(|| client).clone())
+}
+
 /// 把上游 HTTP 错误转换成稳定错误码 + 可操作的中文提示
 fn classify_http_error(status: u16, body: &str) -> (String, String) {
     let detail = extract_error_message(body);
@@ -1851,7 +1872,7 @@ pub async fn ai_chat(
         _ => {}
     }
 
-    let client = match http_client() {
+    let client = match stream_http_client() {
         Ok(client) => client,
         Err(message) => {
             let _ = send_event(
@@ -1926,11 +1947,19 @@ pub async fn ai_chat(
         let bytes = match chunk {
             Ok(bytes) => bytes,
             Err(error) => {
+                // 读空闲超时（上游长时间无新内容）与一般网络错误分开提示，
+                // 前者给「重试即可」的预期，避免用户以为是配置问题
+                let message = if error.is_timeout() {
+                    "回答传输中断：上游长时间没有返回新内容，连接已断开。请点击重试继续提问。"
+                        .to_string()
+                } else {
+                    network_error_message(&error)
+                };
                 let _ = send_event(
                     &on_event,
                     AiStreamEvent::Error {
                         code: "stream_error".to_string(),
-                        message: network_error_message(&error),
+                        message,
                     },
                 );
                 return Ok(());

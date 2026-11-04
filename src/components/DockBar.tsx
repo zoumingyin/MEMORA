@@ -1,4 +1,3 @@
-import { DownOutlined, LeftOutlined, RightOutlined } from '@ant-design/icons'
 import { useEffect, useRef } from 'react'
 import { useEntryStore } from '../store/useEntryStore'
 import { useWindowStore } from '../store/useWindowStore'
@@ -68,8 +67,6 @@ export function DockBar() {
 
   const edge: DockEdge = dockedEdge ?? 'right'
   const vertical = edge !== 'top'
-  const Icon =
-    edge === 'left' ? RightOutlined : edge === 'right' ? LeftOutlined : DownOutlined
   const chips = entries.slice(0, MAX_CHIPS)
 
   // 窄条高度（上边缘为宽度）按内容自适应：收纳缩窗用的是按条目数的估算初值，

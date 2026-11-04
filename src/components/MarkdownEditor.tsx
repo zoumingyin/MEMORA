@@ -4,6 +4,12 @@ import { useEditor, EditorContent } from "@tiptap/react";
 import { Extension } from "@tiptap/core";
 import { Plugin } from "@tiptap/pm/state";
 import StarterKit from "@tiptap/starter-kit";
+import {
+  Table,
+  TableRow,
+  TableCell,
+  TableHeader,
+} from "@tiptap/extension-table";
 import Underline from "@tiptap/extension-underline";
 import { TextStyle } from "@tiptap/extension-text-style";
 import Color from "@tiptap/extension-color";
@@ -16,6 +22,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { cursorPosition, getCurrentWindow } from "@tauri-apps/api/window";
 import { isTauriRuntime } from "../repository";
 import { markdownToHtml } from "../utils/markdown";
+import { openExternal } from "../utils/openExternal";
 import { readClipboardText, writeClipboardText } from "../utils/clipboard";
 import { currentWorkArea, type WorkArea } from "../window/tauriWindow";
 import {
@@ -35,6 +42,7 @@ import {
   PictureOutlined,
   RedoOutlined,
   StrikethroughOutlined,
+  TableOutlined,
   UnderlineOutlined,
   UndoOutlined,
   UnorderedListOutlined,
@@ -167,6 +175,48 @@ const PasteImage = Extension.create({
   },
 });
 
+/** 表格 DOM → GFM 管道表格文本：单元格内容递归 turndown（保留行内代码/加粗等），竖线转义、换行转 <br> */
+function tableToMarkdown(
+  table: HTMLTableElement,
+  turndown: TurndownService
+): string {
+  const rows = Array.from(table.rows).map((row) => Array.from(row.cells));
+  if (!rows.length) return "";
+  const cellText = (cell: HTMLTableCellElement): string =>
+    turndown
+      .turndown(cell.innerHTML)
+      .replace(/\s*\n\s*/g, "<br>")
+      .replace(/\|/g, "\\|")
+      .trim();
+  const line = (cells: HTMLTableCellElement[]): string =>
+    `| ${cells.map(cellText).join(" | ")} |`;
+  const [header, ...body] = rows;
+  const separator = `| ${header.map(() => "---").join(" | ")} |`;
+  return [line(header), separator, ...body.map(line)].join("\n") + "\n\n";
+}
+
+/** 粘贴 Markdown：剪贴板纯文本命中 Markdown 语法特征时，先解析为 HTML 再插入成真实节点（标题/列表/代码块/表格等） */
+const PasteMarkdown = Extension.create({
+  name: "pasteMarkdown",
+  addProseMirrorPlugins() {
+    const editor = this.editor;
+    return [
+      new Plugin({
+        props: {
+          handlePaste(_view, event) {
+            const text = event.clipboardData?.getData("text/plain") ?? "";
+            if (!text || !looksLikeMarkdown(text)) return false;
+            const html = markdownToHtml(text);
+            if (!html) return false;
+            editor.chain().focus().insertContent(html).run();
+            return true;
+          },
+        },
+      }),
+    ];
+  },
+});
+
 /** HTML → markdown：turndown；带内联样式 span 与下划线转为内嵌 HTML 保留 */
 function createTurndown(): TurndownService {
   const turndown = new TurndownService({
@@ -184,7 +234,41 @@ function createTurndown(): TurndownService {
       return style ? `<span style="${style}">${content}</span>` : content;
     },
   });
+  turndown.addRule("gfmTable", {
+    filter: "table",
+    replacement: (_content, node) =>
+      tableToMarkdown(node as HTMLTableElement, turndown),
+  });
   return turndown;
+}
+
+/**
+ * 判断剪贴板文本是否"看起来是 Markdown"：命中任一块级语法
+ * （标题/列表/引用/代码围栏/表格/分隔线）或行内语法（**加粗**、`行内代码`）即认为可转换。
+ * 仅作粘贴识别用，宁可少判不误判：纯普通文本一律走原样插入。
+ */
+function looksLikeMarkdown(text: string): boolean {
+  const lines = text.replace(/\r\n?/g, "\n").split("\n");
+  const isTableSeparator = (line: string): boolean =>
+    /^\s*\|?[\s:|-]*-[\s:|-]*\|?\s*$/.test(line);
+  for (const line of lines) {
+    const t = line.trim();
+    if (!t) continue;
+    if (/^#{1,6}\s+\S/.test(t)) return true; // 标题
+    if (/^([-*+]|\d{1,3}[.)])\s+\S/.test(t)) return true; // 无序/有序列表
+    if (/^>\s?\S/.test(t)) return true; // 引用
+    if (/^(```|~~~)/.test(t)) return true; // 代码围栏
+    if (/^\s*([-*_]\s*){3,}$/.test(t)) return true; // 分隔线 ---
+    if (
+      /\|/.test(t) &&
+      /^\s*\|.*\|\s*$/.test(t) &&
+      lines.some(isTableSeparator)
+    )
+      return true; // 表格（需同时存在分隔行）
+    if (/\*\*[^*\n]+\*\*/.test(t) || /(^|[\s(])`[^`\n]+`/.test(t))
+      return true; // 行内加粗 / 行内代码
+  }
+  return false;
 }
 
 /**
@@ -267,9 +351,19 @@ export function MarkdownEditor({
     }
   };
 
-  /** 正文点击：拦截图片（独立预览窗口）；链接功能已移除，<a> 仅作静态展示 */
+  /** 正文点击：图片开独立预览；超链接走系统浏览器打开（阻止默认行为，避免 WebView2 整窗导航/opener 权限报错） */
   const handleBodyClick = (event: React.MouseEvent): void => {
     const target = event.target as HTMLElement;
+    const linkEl = target.closest("a");
+    if (linkEl) {
+      const href = linkEl.getAttribute("href") ?? "";
+      if (/^https?:\/\//i.test(href)) {
+        event.preventDefault();
+        event.stopPropagation();
+        void openExternal(href);
+      }
+      return;
+    }
     const imgEl = target.closest("img");
     if (imgEl) {
       event.preventDefault();
@@ -582,8 +676,14 @@ export function MarkdownEditor({
       }),
       Link.configure({ openOnClick: false }),
       Image.configure({ allowBase64: true }),
+      // GFM 表格：Markdown 管道表 ↔ 编辑器表格节点（列宽拖拽关闭，保持便签轻量）
+      Table.configure({ resizable: false, allowTableNodeSelection: true }),
+      TableRow,
+      TableCell,
+      TableHeader,
       TextDrag,
       PasteImage,
+      PasteMarkdown,
     ],
     content: markdownToHtml(value),
     onUpdate: ({ editor: current }) => {
@@ -693,7 +793,13 @@ export function MarkdownEditor({
   /** 粘贴：读取剪贴板文本并插入光标处（Tauri 走剪贴板插件，网页预览兜底 Clipboard API） */
   const pasteFromClipboard = async (): Promise<void> => {
     const text = await readClipboardText();
-    if (text) editor?.chain().focus().insertContent(text).run();
+    if (!text) return;
+    // Markdown 文本 → 先解析为 HTML 再插入，落成真实节点（直接 insertContent 会被当纯文本，星号井号原样显示）
+    if (looksLikeMarkdown(text)) {
+      editor?.chain().focus().insertContent(markdownToHtml(text)).run();
+      return;
+    }
+    editor?.chain().focus().insertContent(text).run();
   };
 
   const onImageFile = (event: React.ChangeEvent<HTMLInputElement>): void => {
@@ -842,6 +948,20 @@ export function MarkdownEditor({
       label: <CodeOutlined />,
       active: toolActive("codeBlock"),
       onClick: () => run(() => editor?.chain().focus().toggleCodeBlock().run()),
+    },
+    {
+      key: "table",
+      title: "插入表格",
+      label: <TableOutlined />,
+      active: toolActive("table"),
+      onClick: () =>
+        run(() =>
+          editor
+            ?.chain()
+            .focus()
+            .insertTable({ rows: 3, cols: 3, withHeaderRow: true })
+            .run()
+        ),
     },
     {
       key: "emoji",

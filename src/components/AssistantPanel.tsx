@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { App as AntdApp, Button, Dropdown, Flex, Popconfirm, Select, Tooltip } from 'antd'
 import dayjs from 'dayjs'
+import { openExternal } from '../utils/openExternal'
 import {
   ArrowUp,
   Bell,
@@ -428,7 +429,7 @@ function MessageBubble({
     () =>
       message.role === 'assistant'
         ? parseAssistantActions(message.content)
-        : { text: '', actions: [] as AssistantAction[] },
+        : { text: '', actions: [] as AssistantAction[], invalidCount: 0 },
     [message.role, message.content],
   )
   const html = useMemo(
@@ -439,6 +440,16 @@ function MessageBubble({
   const createdActions = Array.isArray(message.createdActions)
     ? message.createdActions
     : []
+  /** 回复里的超链接：走系统浏览器打开（阻止默认行为，避免 WebView2 整窗导航/opener 权限报错） */
+  const handleLinkClick = (event: React.MouseEvent<HTMLDivElement>): void => {
+    const link = (event.target as HTMLElement).closest('a')
+    if (!link) return
+    const href = link.getAttribute('href') ?? ''
+    if (/^https?:\/\//i.test(href)) {
+      event.preventDefault()
+      void openExternal(href)
+    }
+  }
 
   if (message.role === 'user') {
     return (
@@ -489,6 +500,7 @@ function MessageBubble({
             {parsed.text && (
               <div
                 className="note-md assistant-md"
+                onClick={handleLinkClick}
                 dangerouslySetInnerHTML={{ __html: html }}
               />
             )}
@@ -498,6 +510,20 @@ function MessageBubble({
             {message.stopped && (
               <div className="mt-1 text-[11px] text-[var(--text-muted)]">已停止生成</div>
             )}
+            {message.truncated && message.status !== 'streaming' && (
+              <div className="mt-1 text-[11px] leading-snug text-[var(--text-muted)]">
+                回答因长度限制被截断，操作卡片可能不完整，可回复「继续」让 AI 重新生成。
+              </div>
+            )}
+          </div>
+        )}
+        {message.status !== 'streaming' && parsed.invalidCount > 0 && (
+          <div className="mt-2 flex items-start gap-1 text-[11px] leading-snug text-[var(--text-muted)]">
+            <TriangleAlert size={11} className="mt-[2px] shrink-0" />
+            <span>
+              有 {parsed.invalidCount} 个操作卡片解析失败（格式异常或被截断），可让
+              AI 重新生成。
+            </span>
           </div>
         )}
         {message.status !== 'streaming' && parsed.actions.length > 0 && (

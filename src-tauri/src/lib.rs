@@ -815,12 +815,11 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
         ],
     )?;
 
+    // 托盘走独立位图：窗口图标在 16px 任务栏上细节会糊
+    let tray_icon = tauri::image::Image::from_bytes(include_bytes!("../icons/tray.png"))
+        .expect("读取托盘图标失败");
     let _tray = TrayIconBuilder::with_id("main-tray")
-        .icon(app.default_window_icon().cloned().unwrap_or_else(|| {
-            // 兜底：直接嵌入打包图标（正常情况 default_window_icon 已存在）
-            tauri::image::Image::from_bytes(include_bytes!("../icons/32x32.png"))
-                .expect("读取托盘图标失败")
-        }))
+        .icon(tray_icon)
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {

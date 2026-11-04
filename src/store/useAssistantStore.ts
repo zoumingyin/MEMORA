@@ -346,6 +346,9 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
                     ...message,
                     status: 'done',
                     stopped: finishReason === 'cancelled' ? true : message.stopped,
+                    // 长度截断：操作卡片 JSON 很可能没写完，界面给出「继续」提示
+                    truncated:
+                      finishReason === 'length' ? true : message.truncated,
                   }
                 : message,
             ),

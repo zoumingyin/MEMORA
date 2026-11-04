@@ -33,7 +33,11 @@
     "dialog:allow-open",
     {
       "identifier": "opener:allow-open-url",
-      "allow": [{ "url": "https://gitee.com/zoumingyin/*" }]
+      "allow": [
+        { "url": "https://*" },
+        { "url": "http://*" },
+        { "url": "https://gitee.com/zoumingyin/*" }
+      ]
     }
   ]
 }
