@@ -6,13 +6,19 @@ import {
   EditOutlined,
   FileTextOutlined,
 } from "@ant-design/icons";
+import Draggable, {
+  type DraggableBounds,
+  type DraggableEventHandler,
+} from "react-draggable";
 import {
+  cloneElement,
   useEffect,
   useRef,
   useState,
   type CSSProperties,
-  type PointerEvent as ReactPointerEvent,
+  type ReactElement,
   type ReactNode,
+  type Ref,
 } from "react";
 import { useEntryStore } from "../store/useEntryStore";
 import { useUiStore } from "../store/useUiStore";
@@ -205,7 +211,7 @@ function formatCopyTime(ms: number): string {
   const date = new Date(ms);
   const pad = (value: number): string => String(value).padStart(2, "0");
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(
-    date.getDate(),
+    date.getDate()
   )} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
@@ -213,7 +219,7 @@ function escapeHtml(value: string): string {
   return value.replace(
     /[&<>"]/g,
     (char) =>
-      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[char] ?? char,
+      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[char] ?? char
   );
 }
 
@@ -221,7 +227,7 @@ function escapeHtml(value: string): string {
 function clipboardTextFromMarkdown(md: string): string {
   return md
     .replace(/!\[([^\]]*)\]\(\s*data:[^)]*\)/gi, (_, alt: string) =>
-      alt ? `[图片：${alt}]` : "[图片]",
+      alt ? `[图片：${alt}]` : "[图片]"
     )
     .replace(/<img\b[^>]*>/gi, "[图片]")
     .trim();
@@ -257,14 +263,14 @@ function buildClipboardPayload(entry: Entry): ClipboardPayload {
         `<ul style="list-style:none;padding-left:0">${entry.items
           .map(
             (item) =>
-              `<li>${item.done ? "☑" : "☐"} ${escapeHtml(item.text)}</li>`,
+              `<li>${item.done ? "☑" : "☐"} ${escapeHtml(item.text)}</li>`
           )
-          .join("")}</ul>`,
+          .join("")}</ul>`
       );
       textParts.push(
         entry.items
           .map((item) => `- [${item.done ? "x" : " "}] ${item.text}`)
-          .join("\n"),
+          .join("\n")
       );
     }
     appendContent(entry.content);
@@ -274,22 +280,24 @@ function buildClipboardPayload(entry: Entry): ClipboardPayload {
         (alarm) =>
           `${formatCopyTime(alarm.remindAt)} · ${ALARM_MODE_LABEL[alarm.mode]}${
             alarm.notified ? " · 已提醒" : ""
-          }`,
+          }`
       );
-      htmlParts.push(`<ul>${lines.map((line) => `<li>${line}</li>`).join("")}</ul>`);
+      htmlParts.push(
+        `<ul>${lines.map((line) => `<li>${line}</li>`).join("")}</ul>`
+      );
       textParts.push(lines.map((line) => `- ${line}`).join("\n"));
     }
     appendContent(entry.content);
   } else if (entry.content) {
     htmlParts.push(
-      `<img src="${escapeHtml(entry.content)}" alt="${escapeHtml(title || "手写涂鸦")}">`,
+      `<img src="${escapeHtml(entry.content)}" alt="${escapeHtml(title || "手写涂鸦")}">`
     );
     textParts.push("[手写涂鸦图片]");
   }
 
   if (entry.tags.length > 0) {
     htmlParts.push(
-      `<p>${entry.tags.map((tag) => `#${escapeHtml(tag)}`).join(" ")}</p>`,
+      `<p>${entry.tags.map((tag) => `#${escapeHtml(tag)}`).join(" ")}</p>`
     );
     textParts.push(entry.tags.map((tag) => `#${tag}`).join(" "));
   }
@@ -342,6 +350,34 @@ function formatMonthDay(ms: number): string {
   return `${d.getMonth() + 1}/${d.getDate()}`;
 }
 
+/** 贴纸墙卡片拖拽包装：react-draggable 的 React 19 适配层。
+ *  React 19 移除了 findDOMNode，必须为每张卡片提供显式 nodeRef——
+ *  由本组件内部 useRef 持有并挂到卡片节点，避免在渲染期访问 ref（React Compiler 规则） */
+function WallCardDraggable(props: {
+  position: { x: number; y: number };
+  bounds: DraggableBounds;
+  onStart: DraggableEventHandler;
+  onDrag: DraggableEventHandler;
+  onStop: DraggableEventHandler;
+  /** 显式声明 ref 槽位：React 19 类型下 cloneElement 的 Partial<P> 才接受 ref */
+  children: ReactElement<{ ref?: Ref<HTMLDivElement> }>;
+}) {
+  const nodeRef = useRef<HTMLDivElement>(null);
+  return (
+    <Draggable
+      nodeRef={nodeRef}
+      position={props.position}
+      bounds={props.bounds}
+      cancel=".wall-note-tool"
+      onStart={props.onStart}
+      onDrag={props.onDrag}
+      onStop={props.onStop}
+    >
+      {cloneElement(props.children, { ref: nodeRef })}
+    </Draggable>
+  );
+}
+
 /** 贴纸墙卡片尺寸与间距（与 index.css 的 --wall-card-w/h 保持一致） */
 const WALL_CARD_W = 264;
 const WALL_CARD_H = 228;
@@ -358,16 +394,7 @@ function wallDecoration(id: string, pinned: boolean): string {
   if (pinned) return "wall-deco-pin";
   let hash = 0;
   for (const char of id) hash = (hash * 31 + char.charCodeAt(0)) | 0;
-  return ["wall-deco-tape-left", "wall-deco-tape-right"][
-    Math.abs(hash) % 2
-  ];
-}
-
-/** 自由拖拽时临时覆盖的坐标 */
-interface DragState {
-  id: string;
-  x: number;
-  y: number;
+  return ["wall-deco-tape-left", "wall-deco-tape-right"][Math.abs(hash) % 2];
 }
 
 /** 三种展示模式：贴纸墙（宽屏固定）/ 网格 / 列表（窄屏可切换） */
@@ -430,13 +457,15 @@ export function EntryList({ onSelect, mode }: EntryListProps) {
       if (rows.length === 0) return;
       event.preventDefault();
       if (event.key === "Enter") {
-        const current = rows.find((entry) => entry.id === selectedIdRef.current);
+        const current = rows.find(
+          (entry) => entry.id === selectedIdRef.current
+        );
         const next = current ?? rows[0];
         if (next) onSelectRef.current(next.id);
         return;
       }
       const currentIndex = rows.findIndex(
-        (entry) => entry.id === selectedIdRef.current,
+        (entry) => entry.id === selectedIdRef.current
       );
       const delta = event.key === "ArrowDown" ? 1 : -1;
       const nextIndex =
@@ -468,8 +497,7 @@ export function EntryList({ onSelect, mode }: EntryListProps) {
     mode === "list"
       ? activeRows
       : [...activeRows].sort(
-          (a, b) =>
-            Number(pinnedSet.has(b.id)) - Number(pinnedSet.has(a.id))
+          (a, b) => Number(pinnedSet.has(b.id)) - Number(pinnedSet.has(a.id))
         );
   // 搜索框 ↑/↓ 只遍历实际展示的条目（已完成分组默认折叠，跳进去会看不到高亮）
   useEffect(() => {
@@ -482,7 +510,13 @@ export function EntryList({ onSelect, mode }: EntryListProps) {
   // 自由摆放：测量画布宽度以计算默认网格列数与拖拽边界
   const boardRef = useRef<HTMLDivElement>(null);
   const [boardWidth, setBoardWidth] = useState(0);
-  const [dragPos, setDragPos] = useState<DragState | null>(null);
+  // 拖拽中卡片的 id：仅标记样式用，坐标更新由 react-draggable 直接改 DOM transform，
+  // 拖拽过程不触发列表重渲染（旧实现每个 pointermove setState 导致整体卡顿）
+  const [draggingId, setDraggingId] = useState<string | null>(null);
+  // 拖拽起始坐标（画布口径）：onStop 对比位移，判定是否真正拖动过
+  const dragStartRef = useRef({ x: 0, y: 0 });
+  // 本次按压是否已超过 3px 位移阈值（超过才视为拖动，单击不闪现拖拽样式）
+  const dragMovedRef = useRef(false);
   // 拖拽结束时浏览器仍会补发 click，用标记吞掉这一次，避免误打开详情
   const suppressClickRef = useRef(false);
   const hasBoard = mode === "wall" && cardRows.length > 0;
@@ -526,50 +560,12 @@ export function EntryList({ onSelect, mode }: EntryListProps) {
   });
   const wallBoardHeight = Math.max(wallBottom + WALL_BOTTOM_ROOM, 320);
 
-  /** 按住卡片自由拖拽：超过 3px 才视为拖动，松手后保存坐标 */
-  const startWallDrag = (
-    event: ReactPointerEvent<HTMLDivElement>,
-    entry: Entry
-  ): void => {
-    if (event.button !== 0) return;
-    if ((event.target as HTMLElement).closest(".wall-note-tool")) return;
-    const board = boardRef.current;
-    if (!board) return;
-    suppressClickRef.current = false;
-    const boardRect = board.getBoundingClientRect();
-    const cardRect = event.currentTarget.getBoundingClientRect();
-    const origin = wallLayout.get(entry.id) ?? {
-      x: cardRect.left - boardRect.left,
-      y: cardRect.top - boardRect.top,
-    };
-    const startX = event.clientX;
-    const startY = event.clientY;
-    let moved = false;
-    let next = origin;
-    const onMove = (moveEvent: PointerEvent): void => {
-      const dx = moveEvent.clientX - startX;
-      const dy = moveEvent.clientY - startY;
-      if (!moved && Math.hypot(dx, dy) > 3) moved = true;
-      if (!moved) return;
-      next = {
-        x: clamp(origin.x + dx, 0, Math.max(0, board.clientWidth - WALL_CARD_W)),
-        y: clamp(origin.y + dy, 0, Math.max(0, board.clientHeight - WALL_CARD_H)),
-      };
-      setDragPos({ id: entry.id, ...next });
-    };
-    const finish = (): void => {
-      window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", finish);
-      window.removeEventListener("pointercancel", finish);
-      setDragPos(null);
-      if (moved) {
-        suppressClickRef.current = true;
-        setWallPosition(entry.id, next);
-      }
-    };
-    window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", finish);
-    window.addEventListener("pointercancel", finish);
+  /** react-draggable 拖拽边界（画布客户区口径）：与旧实现的 clamp 范围一致 */
+  const wallBounds = {
+    left: 0,
+    top: 0,
+    right: Math.max(0, wallWidth - WALL_CARD_W),
+    bottom: Math.max(0, wallBoardHeight - WALL_CARD_H),
   };
 
   const openEntry = (entry: Entry): void => {
@@ -743,14 +739,14 @@ export function EntryList({ onSelect, mode }: EntryListProps) {
     const reminder = entry.kind === "reminder" ? reminderStatus(entry) : null;
     const nextAlarm =
       entry.kind === "reminder"
-        ? entry.alarms.find((alarm) => !alarm.notified) ?? entry.alarms[0]
+        ? (entry.alarms.find((alarm) => !alarm.notified) ?? entry.alarms[0])
         : undefined;
 
-    const isDragging = dragPos?.id === entry.id;
-    const pos = positioned ? (isDragging ? dragPos : wallLayout.get(entry.id)) : undefined;
+    const isDragging = draggingId === entry.id;
+    const pos = positioned ? wallLayout.get(entry.id) : undefined;
     const isPinned = pinnedSet.has(entry.id);
 
-    return (
+    const card = (
       <div
         key={entry.id}
         data-entry-id={entry.id}
@@ -759,13 +755,7 @@ export function EntryList({ onSelect, mode }: EntryListProps) {
         style={
           {
             ...(tintHex ? { "--card-tint": tintHex } : null),
-            ...(pos ? { left: pos.x, top: pos.y } : null),
           } as CSSProperties
-        }
-        onPointerDown={
-          positioned && !isDone
-            ? (event) => startWallDrag(event, entry)
-            : undefined
         }
         onClick={() => openEntry(entry)}
       >
@@ -843,9 +833,44 @@ export function EntryList({ onSelect, mode }: EntryListProps) {
           <span className="wall-note-tags">
             <EntryTags tags={entry.tags} />
           </span>
-          <span className="wall-note-date">{formatMonthDay(entry.updatedAt)}</span>
+          <span className="wall-note-date">
+            {formatMonthDay(entry.updatedAt)}
+          </span>
         </div>
       </div>
+    );
+
+    // 已完成卡片回到文档流不可拖；其余贴纸墙卡片交给 react-draggable 自由摆放
+    if (!positioned || isDone || !pos) return card;
+    return (
+      <WallCardDraggable
+        key={entry.id}
+        position={{ x: pos.x, y: pos.y }}
+        bounds={wallBounds}
+        onStart={(_event, data) => {
+          dragMovedRef.current = false;
+          dragStartRef.current = { x: data.x, y: data.y };
+        }}
+        onDrag={(_event, data) => {
+          // 超过 3px 才切到拖拽样式：单击不闪现放大/阴影效果（与旧实现一致）
+          if (dragMovedRef.current) return;
+          const { x, y } = dragStartRef.current;
+          if (Math.hypot(data.x - x, data.y - y) > 3) {
+            dragMovedRef.current = true;
+            setDraggingId(entry.id);
+          }
+        }}
+        onStop={(_event, data) => {
+          if (!dragMovedRef.current) return;
+          dragMovedRef.current = false;
+          setDraggingId(null);
+          // 拖拽结束时浏览器仍会补发 click，吞掉这一次，避免误打开详情
+          suppressClickRef.current = true;
+          setWallPosition(entry.id, { x: data.x, y: data.y });
+        }}
+      >
+        {card}
+      </WallCardDraggable>
     );
   };
 
@@ -887,7 +912,9 @@ export function EntryList({ onSelect, mode }: EntryListProps) {
             </span>
           )}
         </span>
-        <span className={`row-meta shrink-0 max-w-[45%] text-right ${meta.overdue ? "overdue" : ""}`}>
+        <span
+          className={`row-meta shrink-0 max-w-[45%] text-right ${meta.overdue ? "overdue" : ""}`}
+        >
           {meta.text}
         </span>
       </button>
