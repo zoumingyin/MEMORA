@@ -1737,8 +1737,26 @@ button.note-list-row {
   animation: entry-view-in 0.22s ease both;
 }
 
+/* 电脑 / 手机模式切换（窗口跨 620px 断点）的内容过渡：淡入 + 轻微上移，
+   双击标题栏切换或手动拖拽跨过断点时给布局变化一个柔和的落定感 */
+@keyframes view-mode-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.view-mode-enter {
+  animation: view-mode-in 0.26s cubic-bezier(0.22, 0.61, 0.36, 1) both;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .entry-view-enter,
+  .view-mode-enter,
   .wall-note,
   .wall-detail-drawer,
   .dock-strip,

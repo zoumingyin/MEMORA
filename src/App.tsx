@@ -1,6 +1,7 @@
 import {
   useEffect,
   useMemo,
+  useRef,
   useState,
   type CSSProperties,
 } from "react";
@@ -56,6 +57,7 @@ import {
   unpinStrip,
 } from "./window/edgeDock";
 import { prewarmCtxMenuWindow } from "./window/ctxMenuWindow";
+import { isPseudoMaximized } from "./window/maximize";
 import { toMinuteStart } from "./utils/format";
 import { ENTRY_KIND_COLOR, ENTRY_KIND_LABEL } from "./utils/entryLabels";
 import { startReminderScheduler } from "./reminder/scheduler";
@@ -165,6 +167,16 @@ export default function App() {
   const clearWallPositions = useUiStore((state) => state.clearWallPositions);
   // 响应式视口：窄窗口（<620px）切换单栏（列表 ↔ 详情）
   const { isNarrow } = useViewport();
+  // 电脑 / 手机模式切换（窗口跨 620px 断点）的内容过渡：
+  // 变更 key 让内容层重挂载并播放一次淡入动画（view-mode-enter），
+  // 首次挂载（animKey=0）不加动画类，不影响启动 / 收纳展开的既有动效
+  const [modeAnimKey, setModeAnimKey] = useState(0);
+  const prevNarrowRef = useRef(isNarrow);
+  useEffect(() => {
+    if (prevNarrowRef.current === isNarrow) return;
+    prevNarrowRef.current = isNarrow;
+    setModeAnimKey((key) => key + 1);
+  }, [isNarrow]);
   // 窄窗口单栏模式：是否正在查看详情（true 时列表页被详情替换）
   // 详情视图迁移到 useUiStore：AI 便签引用跳转需要同时置位 selectedId 与 detailView
   const detailView = useUiStore((state) => state.detailView);
@@ -530,9 +542,14 @@ export default function App() {
 
     // 移动：贴边收纳判定 + 保存边界（供下次启动恢复）；收纳窄条态不覆盖保存的位置。
     // 最小化时 Windows 会把窗口矩形挪到屏幕外（-25600）并缩成窄条，这类脏边界既不落盘也不收纳。
-    void onWindowMoved((bounds) => {
+    // 双击标题栏的伪最大化（程序化撑满工作区）也不落盘：保持最大化前的矩形，
+    // 否则下次启动会恢复成撑满工作区的大窗口
+    void onWindowMoved(async (bounds) => {
       if (!isStorableBounds(bounds)) return;
-      if (!useWindowStore.getState().docked) saveBoundsToStorage(bounds);
+      const area = await currentWorkArea();
+      if (!area || !isPseudoMaximized(bounds, area)) {
+        if (!useWindowStore.getState().docked) saveBoundsToStorage(bounds);
+      }
       scheduleDock();
     }).then((detach) => {
       detachMoved = detach;
@@ -574,7 +591,14 @@ export default function App() {
       if (!isStorableBounds(bounds)) return;
       if (useWindowStore.getState().docked) return;
       const maximized = await isMaximized();
-      if (!maximized) saveBoundsToStorage(bounds);
+      // 伪最大化（程序化撑满工作区）同样不落盘，理由同上：保住最大化前的矩形
+      const area = await currentWorkArea();
+      if (
+        !maximized &&
+        (!area || !isPseudoMaximized(bounds, area))
+      ) {
+        saveBoundsToStorage(bounds);
+      }
     }).then((detach) => {
       detachResized = detach;
     });
@@ -836,7 +860,12 @@ export default function App() {
           }
         >
           <TitleBar quickOpen={quickOpen} setQuickOpen={setQuickOpen} />
-          <div className={`app-body${isNarrow ? " app-body-narrow" : ""}`}>
+          <div
+            key={modeAnimKey}
+            className={`app-body${isNarrow ? " app-body-narrow" : ""}${
+              modeAnimKey > 0 ? " view-mode-enter" : ""
+            }`}
+          >
             {isNarrow ? (
               detailView ? (
                 <DetailPane

@@ -6,6 +6,7 @@ import { useEntryStore } from "../store/useEntryStore";
 import { useAssistantStore } from "../store/useAssistantStore";
 import { useUiStore } from "../store/useUiStore";
 import { closeWindow } from "../window/tauriWindow";
+import { toggleMaximize } from "../window/maximize";
 import { SettingsDialog } from "./SettingsDialog";
 import { QuickCapture } from "./QuickCapture";
 import { PomodoroDialog } from "./PomodoroDialog";
@@ -74,6 +75,33 @@ export function TitleBar({ quickOpen, setQuickOpen }: TitleBarProps) {
     document.addEventListener("mousedown", onMouseDown);
     return () => document.removeEventListener("mousedown", onMouseDown);
   }, [searchOpen]);
+
+  // 双击标题栏空白拖拽区：最大化 / 还原。
+  // 本应用 tauri.conf.json 配置 maximizable:false（透明窗口 OS 最大化态渲染空白），
+  // Tauri 原生双击最大化因此静默无反应；这里在捕获阶段拦截双击，改走
+  // 程序化撑满工作区的伪最大化（见 window/maximize.ts），观感一致且避开渲染 bug。
+  // 只拦 detail===2 的双击：单击拖拽（detail===1）与按钮/输入框的单击交互不受影响。
+  useEffect(() => {
+    const onCaptureMouseDown = (event: MouseEvent) => {
+      if (event.button !== 0 || event.detail !== 2) return;
+      const target = event.target as HTMLElement | null;
+      if (!target || typeof target.closest !== "function") return;
+      if (!target.closest(".titlebar")) return;
+      if (
+        target.closest(
+          'button, input, textarea, [data-tauri-drag-region="false"]'
+        )
+      ) {
+        return;
+      }
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      void toggleMaximize();
+    };
+    window.addEventListener("mousedown", onCaptureMouseDown, true);
+    return () =>
+      window.removeEventListener("mousedown", onCaptureMouseDown, true);
+  }, []);
 
   return (
     <header className="titlebar" data-tauri-drag-region="deep">
