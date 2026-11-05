@@ -166,7 +166,9 @@ export default function App() {
   // 响应式视口：窄窗口（<620px）切换单栏（列表 ↔ 详情）
   const { isNarrow } = useViewport();
   // 窄窗口单栏模式：是否正在查看详情（true 时列表页被详情替换）
-  const [detailView, setDetailView] = useState(false);
+  // 详情视图迁移到 useUiStore：AI 便签引用跳转需要同时置位 selectedId 与 detailView
+  const detailView = useUiStore((state) => state.detailView);
+  const setDetailView = useUiStore((state) => state.setDetailView);
   // 快速记录弹窗（全局快捷键 Ctrl+Shift+N / 标题栏闪电按钮）
   const [quickOpen, setQuickOpen] = useState(false);
   // 「+ 新建」的类型选择弹窗

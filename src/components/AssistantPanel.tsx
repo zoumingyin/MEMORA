@@ -15,6 +15,7 @@ import {
   Pencil,
   Plus,
   RotateCcw,
+  Search,
   Settings2,
   ShieldCheck,
   ShieldOff,
@@ -84,6 +85,38 @@ const ERROR_TITLE: Record<string, string> = {
 
 function errorTitle(code: string): string {
   return ERROR_TITLE[code] ?? '生成失败'
+}
+
+/** 便签引用提取：消毒前把 <note-ref> 换成占位符，消毒后由前端注入真实 <a>（属性不被 DOMPurify 处理） */
+function escapeHtmlAttr(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+}
+
+function escapeHtmlText(value: string): string {
+  return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
+/** 把回答文本中的 note-ref 标记替换为占位符（[[NR0]]），登记引用清单供消毒后回填 */
+function extractNoteRefs(text: string): {
+  tokenized: string
+  refs: { id: string; title: string }[]
+} {
+  const refs: { id: string; title: string }[] = []
+  const tokenized = text.replace(
+    /<note-ref\b([^>]*)>([\s\S]*?)<\/note-ref>/gi,
+    (_match: string, attrs: string, inner: string) => {
+      const idMatch = /(?:data-id|\bid)\s*=\s*["']([^"']+)["']/i.exec(attrs)
+      if (!idMatch) return inner
+      const title = inner.replace(/<[^>]+>/g, '').trim() || '查看便签'
+      refs.push({ id: idMatch[1].trim(), title })
+      return `[[NR${refs.length - 1}]]`
+    },
+  )
+  return { tokenized, refs }
 }
 
 function TypingDots() {
@@ -249,16 +282,44 @@ function ActionCard({
       ? `新建${meta.label}`
       : op === 'complete-todo'
         ? '勾选待办子任务'
-        : '追加备忘内容'
+        : op === 'delete'
+          ? '删除便签'
+          : '追加备忘内容'
   const doneLabel =
-    op === 'create' ? '已创建' : op === 'complete-todo' ? '已勾选' : '已追加'
+    op === 'create'
+      ? '已创建'
+      : op === 'complete-todo'
+        ? '已勾选'
+        : op === 'delete'
+          ? '已删除'
+          : '已追加'
   const confirmLabel =
-    op === 'create' ? `创建${meta.label}` : op === 'complete-todo' ? '勾选' : '追加'
+    op === 'create'
+      ? `创建${meta.label}`
+      : op === 'complete-todo'
+        ? '勾选'
+        : op === 'delete'
+          ? '删除'
+          : '追加'
 
   const handleApply = async (): Promise<void> => {
     if (created || status !== 'idle') return
     setStatus('creating')
     const state = useEntryStore.getState()
+
+    // 删除：移入废纸篓（可恢复），由用户点击确认后才执行
+    if (op === 'delete') {
+      if (!action.targetId) {
+        setStatus('idle')
+        antdMessage.error('找不到要删除的便签')
+        return
+      }
+      await state.moveToTrash(action.targetId)
+      onCreated()
+      antdMessage.success('已移入废纸篓')
+      setStatus('idle')
+      return
+    }
 
     if (op === 'create') {
       const entry = await state.addEntry(
@@ -375,6 +436,10 @@ function ActionCard({
             </>
           )}
         </>
+      ) : op === 'delete' ? (
+        <p className="mt-1 text-[12px] leading-relaxed text-[var(--text-muted)]">
+          将移入废纸篓，可在废纸篓中恢复。确认后才会真正删除。
+        </p>
       ) : (
         <>
           <div className="mt-1 break-words text-[12.5px] font-semibold leading-snug text-[var(--text)]">
@@ -407,7 +472,16 @@ function ActionCard({
           <Button
             size="small"
             type="primary"
-            icon={op === 'create' ? <Plus size={12} /> : <Check size={12} />}
+            danger={op === 'delete'}
+            icon={
+              op === 'create' ? (
+                <Plus size={12} />
+              ) : op === 'delete' ? (
+                <X size={12} />
+              ) : (
+                <Check size={12} />
+              )
+            }
             loading={status === 'creating'}
             onClick={() => void handleApply()}
           >
@@ -436,16 +510,44 @@ function MessageBubble({
         : { text: '', actions: [] as AssistantAction[], invalidCount: 0 },
     [message.role, message.content],
   )
-  const html = useMemo(
-    () => (message.role === 'assistant' ? markdownToHtml(parsed.text) : ''),
-    [message.role, parsed.text],
-  )
+  // 两阶段渲染：消毒前摘出 note-ref → markdown → 消毒 → 回填真实 <a>（点击跳转便签）
+  const html = useMemo(() => {
+    if (message.role !== 'assistant') return ''
+    const { tokenized, refs } = extractNoteRefs(parsed.text)
+    let result = markdownToHtml(tokenized)
+    refs.forEach((ref, index) => {
+      result = result.split(`[[NR${index}]]`).join(
+        `<a class="note-ref-link" data-id="${escapeHtmlAttr(ref.id)}">${escapeHtmlText(ref.title)}</a>`,
+      )
+    })
+    return result
+  }, [message.role, parsed.text])
   const markActionCreated = useAssistantStore((state) => state.markActionCreated)
+  const markToolActionDone = useAssistantStore((state) => state.markToolActionDone)
   const createdActions = Array.isArray(message.createdActions)
     ? message.createdActions
     : []
-  /** 回复里的超链接：走系统浏览器打开（阻止默认行为，避免 WebView2 整窗导航/opener 权限报错） */
+  /** 回复里的交互元素：便签引用胶囊（.note-ref-link，消毒后由前端注入）点击跳转选中对应便签；
+   * 超链接走系统浏览器打开（阻止默认行为，避免 WebView2 整窗导航/opener 权限报错） */
   const handleLinkClick = (event: React.MouseEvent<HTMLDivElement>): void => {
+    const noteRef = (event.target as HTMLElement).closest(
+      '.note-ref-link, note-ref'
+    )
+    if (noteRef) {
+      const id =
+        noteRef.getAttribute('data-id') ?? noteRef.getAttribute('id') ?? ''
+      if (id) {
+        event.preventDefault()
+        if (import.meta.env.DEV) {
+          console.info(`[AI] 便签引用跳转：${id}`)
+        }
+        useEntryStore.getState().setSelectedId(id)
+        // 桌面端详情是贴纸墙 Modal（由 uiStore.detailView 控制），必须一并置位才会弹详情
+        useUiStore.getState().setDetailView(true)
+        useAssistantStore.getState().closePanel()
+      }
+      return
+    }
     const link = (event.target as HTMLElement).closest('a')
     if (!link) return
     const href = link.getAttribute('href') ?? ''
@@ -457,9 +559,12 @@ function MessageBubble({
 
   if (message.role === 'user') {
     return (
-      <div className="flex justify-end">
+      <div className="group flex flex-col items-end gap-0.5">
         <div className="max-w-[86%] whitespace-pre-wrap break-words rounded-[12px] border border-[var(--card-active-border)] bg-[var(--card-active-bg)] px-3 py-2 text-[13px] leading-relaxed text-[var(--text)]">
           {message.content}
+        </div>
+        <div className="opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+          <CopyReplyButton text={message.content} />
         </div>
       </div>
     )
@@ -478,6 +583,11 @@ function MessageBubble({
         : webSearch?.status === 'failed'
           ? `联网搜索失败：${webSearch.error ?? '未知原因'}`
           : null
+  // agent 工具提示：回答前自动检索过便签数据（function calling 只读工具）
+  const toolHint =
+    (message.toolRounds ?? 0) > 0
+      ? `已自动检索便签 ${message.toolRounds} 次`
+      : null
 
   return (
     <div className="group flex items-start gap-2">
@@ -499,6 +609,12 @@ function MessageBubble({
               <div className="mb-1 flex items-center gap-1 text-[10.5px] leading-snug text-[var(--text-muted)]">
                 <Globe size={10} />
                 <span>{searchHint}</span>
+              </div>
+            )}
+            {toolHint && (
+              <div className="mb-1 flex items-center gap-1 text-[10.5px] leading-snug text-[var(--text-muted)]">
+                <Search size={10} />
+                <span>{toolHint}</span>
               </div>
             )}
             {parsed.text && (
@@ -538,6 +654,18 @@ function MessageBubble({
                 action={action}
                 created={createdActions.includes(index)}
                 onCreated={() => markActionCreated(message.id, index)}
+              />
+            ))}
+          </div>
+        )}
+        {message.status !== 'streaming' && (message.toolActions ?? []).length > 0 && (
+          <div className="mt-2 flex flex-col gap-2">
+            {(message.toolActions ?? []).map((action, index) => (
+              <ActionCard
+                key={`${message.id}:tool:${index}`}
+                action={action}
+                created={(message.toolActionsDone ?? []).includes(index)}
+                onCreated={() => markToolActionDone(message.id, index)}
               />
             ))}
           </div>

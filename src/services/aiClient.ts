@@ -17,6 +17,8 @@ import type {
   AiProfileStatus,
   AiStatus,
   AiStreamEvent,
+  AiToolCall,
+  AiToolDefinition,
   ReasoningEffort,
 } from '../types/ai'
 
@@ -397,7 +399,15 @@ function browserNetworkMessage(error: unknown): string {
 }
 
 interface BrowserStreamChoice {
-  delta?: { content?: string | null }
+  delta?: {
+    content?: string | null
+    /** function calling 增量分片：按 index 聚合 arguments */
+    tool_calls?: {
+      index?: number
+      id?: string | null
+      function?: { name?: string | null; arguments?: string | null } | null
+    }[]
+  }
   finish_reason?: string | null
 }
 
@@ -415,6 +425,8 @@ interface BrowserModelsResponse {
 
 export interface ChatStreamHandlers {
   onDelta: (text: string) => void
+  /** 模型请求执行工具（已聚合完整参数）；先于 onDone 触发 */
+  onToolCalls?: (calls: AiToolCall[]) => void
   onDone: (finishReason: string | null) => void
   onError: (error: AiErrorInfo) => void
 }
@@ -447,6 +459,7 @@ async function browserStreamChat(
   profileId: string | null,
   messages: AiChatMessage[],
   handlers: ChatStreamHandlers,
+  tools?: AiToolDefinition[],
 ): Promise<void> {
   const store = readBrowserStore()
   const target =
@@ -507,6 +520,7 @@ async function browserStreamChat(
           temperature: target.temperature,
           max_tokens: target.maxTokens,
           stream: true,
+          ...(tools && tools.length > 0 ? { tools } : {}),
           ...reasoningPayload(target.reasoning),
         }),
         signal: controller.signal,
@@ -546,6 +560,8 @@ async function browserStreamChat(
     let buffer = ''
     let emitted = false
     let finishReason: string | null = null
+    /** function calling 增量聚合：index → {id, name, arguments}（arguments 跨 chunk 拼接） */
+    const toolBuf = new Map<number, { id: string; name: string; arguments: string }>()
 
     const handleFrame = (frame: string): boolean => {
       for (const line of frame.split('\n')) {
@@ -562,6 +578,14 @@ async function browserStreamChat(
         }
         for (const choice of parsed.choices ?? []) {
           if (choice.finish_reason) finishReason = choice.finish_reason
+          for (const delta of choice.delta?.tool_calls ?? []) {
+            const index = typeof delta.index === 'number' ? delta.index : 0
+            const entry = toolBuf.get(index) ?? { id: '', name: '', arguments: '' }
+            if (delta.id) entry.id += delta.id
+            if (delta.function?.name) entry.name += delta.function.name
+            if (delta.function?.arguments) entry.arguments += delta.function.arguments
+            toolBuf.set(index, entry)
+          }
           const text = choice.delta?.content
           if (text) {
             emitted = true
@@ -591,7 +615,7 @@ async function browserStreamChat(
     }
     if (!done && buffer.trim()) handleFrame(buffer)
 
-    if (!emitted && !finishReason) {
+    if (!emitted && !finishReason && toolBuf.size === 0) {
       settle(() =>
         handlers.onError({
           code: 'empty_response',
@@ -599,6 +623,18 @@ async function browserStreamChat(
         }),
       )
       return
+    }
+    // 先于 onDone 下发聚合完成的工具调用（先收调用、再收结束事件）
+    if (toolBuf.size > 0) {
+      const calls: AiToolCall[] = [...toolBuf.entries()]
+        .sort(([a], [b]) => a - b)
+        .map(([, entry]): AiToolCall => ({
+          id: entry.id,
+          type: 'function',
+          function: { name: entry.name, arguments: entry.arguments },
+        }))
+        .filter((call) => call.id && call.function.name)
+      if (calls.length > 0) handlers.onToolCalls?.(calls)
     }
     settle(() => handlers.onDone(finishReason))
   } catch (error) {
@@ -623,9 +659,10 @@ export async function streamChat(
   profileId: string | null,
   messages: AiChatMessage[],
   handlers: ChatStreamHandlers,
+  tools?: AiToolDefinition[],
 ): Promise<void> {
   if (!isTauriRuntime()) {
-    await browserStreamChat(requestId, profileId, messages, handlers)
+    await browserStreamChat(requestId, profileId, messages, handlers, tools)
     return
   }
 
@@ -641,6 +678,11 @@ export async function streamChat(
       if (!settled) handlers.onDelta(event.text)
       return
     }
+    if (event.type === 'toolCalls') {
+      // function calling：先于 Done 收到，转交 agent loop 执行后回传
+      if (!settled) handlers.onToolCalls?.(event.calls)
+      return
+    }
     if (settled) return
     settled = true
     if (event.type === 'done') {
@@ -652,7 +694,12 @@ export async function streamChat(
 
   try {
     await invoke('ai_chat', {
-      request: { requestId, profileId, messages },
+      request: {
+        requestId,
+        profileId,
+        messages,
+        ...(tools && tools.length > 0 ? { tools } : {}),
+      },
       onEvent: channel,
     })
     // 兜底：命令正常返回但未收到终止事件（例如上游直接关闭连接）

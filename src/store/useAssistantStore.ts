@@ -1,11 +1,25 @@
 import { create } from 'zustand'
 import { buildAssistantContext } from '../services/assistantContext'
+import {
+  AGENT_TOOLS,
+  AGENT_TOOL_PROMPT,
+  executeAgentTool,
+} from '../services/agentTools'
 import { cancelChat, streamChat } from '../services/aiClient'
 import { formatWebResults, searchWeb } from '../services/webSearch'
-import { parseAssistantActions } from '../utils/assistantActions'
+import {
+  parseAssistantActions,
+  type AssistantAction,
+} from '../utils/assistantActions'
 import { useAiProfileStore } from './useAiProfileStore'
 import { useEntryStore } from './useEntryStore'
-import type { AiChatMessage, AiErrorInfo, AssistantMessage } from '../types/ai'
+import type {
+  AiChatMessage,
+  AiErrorInfo,
+  AiToolCall,
+  AiToolDefinition,
+  AssistantMessage,
+} from '../types/ai'
 
 /** 对话持久化：仅保留最近若干条，避免 localStorage 无限增长 */
 const STORAGE_KEY = 'bianqian.assistant.v1'
@@ -16,6 +30,11 @@ const MAX_MESSAGE_CHARS = 2000
 const MAX_HISTORY_CHARS = 8000
 /** 流式增量合并刷新间隔：逐 token setState 会导致整个消息列表高频重渲染 */
 const FLUSH_INTERVAL_MS = 50
+/** agent loop 工具轮数上限：防止模型连环调用不收敛（超限后按普通回答收尾）；
+ * 批量编排（检索 1 轮 + 每轮可并行多个写入）8 轮足够覆盖常见整理任务 */
+const MAX_TOOL_ROUNDS = 8
+/** 这些错误码出现在「带 tools 的首次请求且无任何输出」时，按不支持工具降级重试 */
+const TOOL_UNSUPPORTED_CODES = new Set(['http_error', 'endpoint_not_found', 'server_error'])
 
 interface PersistedAssistant {
   messages: AssistantMessage[]
@@ -124,6 +143,8 @@ interface AssistantState {
   clear: () => void
   /** 记录某条回答里的操作已创建，避免重复写入 */
   markActionCreated: (messageId: string, index: number) => void
+  /** 记录某条回答里工具产生的待确认操作已执行，避免重复执行 */
+  markToolActionDone: (messageId: string, index: number) => void
 }
 
 const initial = loadPersisted()
@@ -309,64 +330,195 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
         // 搜索期间用户可能已点停止：丢弃结果，不再发起对话
         if (isStale()) return
       }
-      const apiMessages: AiChatMessage[] = [
-        {
-          role: 'system',
-          content: webBlock
-            ? `${context.systemPrompt}\n\n${webBlock}`
-            : context.systemPrompt,
-        },
+
+      // agent 只读工具：仅在用户允许读取便签时提供（隐私不变量：
+      // contextEnabled 关闭时不下发任何工具，模型无法触达便签数据）
+      const toolsAvailable = state.contextEnabled ? AGENT_TOOLS : null
+
+      const systemContent = [
+        context.systemPrompt,
+        // 工具可用时附上使用说明（与请求体的 tools 参数配套）
+        toolsAvailable ? AGENT_TOOL_PROMPT : null,
+        webBlock,
+      ]
+        .filter((part): part is string => Boolean(part))
+        .join('\n\n')
+
+      /**
+       * 单轮流式请求：把回调 Promise 化供 agent loop 驱动；
+       * delta 实时进入气泡缓冲（跨轮共用同一缓冲），toolCalls 先于 done 返回
+       */
+      let turnText = ''
+      const runAttempt = (
+        msgs: AiChatMessage[],
+        useTools: AiToolDefinition[] | null,
+      ): Promise<
+        | { outcome: 'done'; finishReason: string | null }
+        | { outcome: 'toolCalls'; calls: AiToolCall[] }
+        | { outcome: 'error'; error: AiErrorInfo; received: boolean }
+      > =>
+        new Promise((resolve) => {
+          let collectedCalls: AiToolCall[] | null = null
+          let receivedAnyDelta = false
+          turnText = ''
+          void streamChat(
+            requestId,
+            profileId,
+            msgs,
+            {
+              onDelta: (delta) => {
+                if (isStale()) return
+                receivedAnyDelta = true
+                turnText += delta
+                if (devTiming) {
+                  devTiming.chunks += 1
+                  devTiming.chars += delta.length
+                  if (devTiming.firstDeltaAt === null) {
+                    devTiming.firstDeltaAt = performance.now()
+                    console.info(
+                      `[AI] 首字：${Math.round(devTiming.firstDeltaAt - devTiming.startedAt)}ms`,
+                    )
+                  }
+                }
+                pending += delta
+                scheduleFlush()
+              },
+              onToolCalls: (calls) => {
+                if (isStale()) return
+                collectedCalls = calls
+              },
+              onDone: (finishReason) => {
+                if (collectedCalls && collectedCalls.length > 0) {
+                  resolve({ outcome: 'toolCalls', calls: collectedCalls })
+                  return
+                }
+                resolve({ outcome: 'done', finishReason })
+              },
+              onError: (error: AiErrorInfo) => {
+                resolve({ outcome: 'error', error, received: receivedAnyDelta })
+              },
+            },
+            useTools ?? undefined,
+          )
+        })
+
+      // agent loop：带工具发起请求 → 模型请求调用 → 执行只读工具 → 结果回传续问，
+      // 直到模型给出最终回答 / 轮数用尽 / 出错。写操作不在此列（仍走 <action> 确认卡）。
+      let apiMessages: AiChatMessage[] = [
+        { role: 'system', content: systemContent },
         ...history,
       ]
+      let toolsEnabled = toolsAvailable != null
+      let toolsDegraded = false
+      let toolRounds = 0
 
-      await streamChat(requestId, profileId, apiMessages, {
-        onDelta: (delta) => {
-          if (isStale()) return
-          if (devTiming) {
-            devTiming.chunks += 1
-            devTiming.chars += delta.length
-            if (devTiming.firstDeltaAt === null) {
-              devTiming.firstDeltaAt = performance.now()
+      for (;;) {
+        const attempt = await runAttempt(apiMessages, toolsEnabled ? AGENT_TOOLS : null)
+
+        // 降级重试：模型/网关不支持 function calling（首次带 tools 且无任何输出就报错）
+        // 时，去掉工具原样重问一次，行为与旧版完全一致
+        if (attempt.outcome === 'error') {
+          if (
+            toolsEnabled &&
+            !toolsDegraded &&
+            !attempt.received &&
+            TOOL_UNSUPPORTED_CODES.has(attempt.error.code)
+          ) {
+            toolsDegraded = true
+            toolsEnabled = false
+            if (import.meta.env.DEV) {
               console.info(
-                `[AI] 首字：${Math.round(devTiming.firstDeltaAt - devTiming.startedAt)}ms`,
+                `[AI] 当前模型可能不支持工具调用，已降级为普通对话重试：${attempt.error.message}`,
               )
             }
+            continue
           }
-          pending += delta
-          scheduleFlush()
-        },
-        onDone: (finishReason) => {
-          if (isStale()) return
-          reportTiming(finishReason === 'cancelled' ? '已停止' : '完成')
+          reportTiming(`失败 ${attempt.error.code}`)
           finalize((current) => ({
             sending: false,
             messages: current.messages.map((message) =>
               message.id === assistantId
-                ? {
-                    ...message,
-                    status: 'done',
-                    stopped: finishReason === 'cancelled' ? true : message.stopped,
-                    // 长度截断：操作卡片 JSON 很可能没写完，界面给出「继续」提示
-                    truncated:
-                      finishReason === 'length' ? true : message.truncated,
-                  }
+                ? { ...message, status: 'error', error: attempt.error }
                 : message,
             ),
           }))
-        },
-        onError: (error: AiErrorInfo) => {
-          if (isStale()) return
-          reportTiming(`失败 ${error.code}`)
-          finalize((current) => ({
-            sending: false,
+          return
+        }
+
+        if (isStale()) return
+
+        // 工具轮：执行工具并把结果回传，继续下一轮。
+        // 只读与写入（create/update）自动生效；delete 只生成确认卡片，由用户点击执行
+        if (attempt.outcome === 'toolCalls' && toolRounds < MAX_TOOL_ROUNDS) {
+          toolRounds += 1
+          set((current) => ({
             messages: current.messages.map((message) =>
-              message.id === assistantId
-                ? { ...message, status: 'error', error }
-                : message,
+              message.id === assistantId ? { ...message, toolRounds } : message,
             ),
           }))
-        },
-      })
+          const toolMessages: AiChatMessage[] = []
+          const confirmCards: AssistantAction[] = []
+          for (const call of attempt.calls) {
+            const outcome = await executeAgentTool(call)
+            if (outcome.confirmAction) confirmCards.push(outcome.confirmAction)
+            toolMessages.push({
+              role: 'tool',
+              tool_call_id: call.id,
+              content: outcome.result,
+            })
+          }
+          if (confirmCards.length > 0) {
+            set((current) => ({
+              messages: current.messages.map((message) =>
+                message.id === assistantId
+                  ? {
+                      ...message,
+                      toolActions: [...(message.toolActions ?? []), ...confirmCards],
+                    }
+                  : message,
+              ),
+            }))
+          }
+          apiMessages = [
+            ...apiMessages,
+            {
+              role: 'assistant',
+              content: turnText,
+              tool_calls: attempt.calls.map((call) => ({
+                id: call.id,
+                type: 'function' as const,
+                function: {
+                  name: call.function.name,
+                  arguments: call.function.arguments,
+                },
+              })),
+            },
+            ...toolMessages,
+          ]
+          continue
+        }
+
+        // 最终回答（或轮数用尽 / 用户停止）
+        const finishReason = attempt.outcome === 'done' ? attempt.finishReason : null
+        reportTiming(finishReason === 'cancelled' ? '已停止' : '完成')
+        finalize((current) => ({
+          sending: false,
+          messages: current.messages.map((message) =>
+            message.id === assistantId
+              ? {
+                  ...message,
+                  status: 'done',
+                  stopped: finishReason === 'cancelled' ? true : message.stopped,
+                  // 长度截断：操作卡片 JSON 很可能没写完，界面给出「继续」提示
+                  truncated:
+                    finishReason === 'length' ? true : message.truncated,
+                  toolRounds: toolRounds > 0 ? toolRounds : message.toolRounds,
+                }
+              : message,
+          ),
+        }))
+        return
+      }
     } finally {
       // 兜底：正常路径已在 onDone/onError 收尾；此处防止异常导致永久「生成中」
       if (active?.requestId === requestId) {
@@ -436,6 +588,22 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
               ...message,
               createdActions: Array.from(
                 new Set([...(message.createdActions ?? []), index]),
+              ),
+            }
+          : message,
+      ),
+    }))
+    persistSnapshot(get().messages, get().contextEnabled, get().webSearch)
+  },
+
+  markToolActionDone: (messageId, index) => {
+    set((state) => ({
+      messages: state.messages.map((message) =>
+        message.id === messageId
+          ? {
+              ...message,
+              toolActionsDone: Array.from(
+                new Set([...(message.toolActionsDone ?? []), index]),
               ),
             }
           : message,

@@ -211,10 +211,21 @@ pub struct AiStatus {
 }
 
 /// 对话消息（与 OpenAI/DeepSeek 等一致）
+///
+/// function calling 扩展：assistant 消息可携带 tool_calls（回传给上游继续对话），
+/// tool 角色消息携带 tool_call_id 与执行结果。字段缺省时保持与旧版完全一致的序列化。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub role: String,
+    /// content 允许为空（assistant 发起 tool_calls 时上游要求省略该字段）
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub content: String,
+    /// assistant 发起的工具调用，OpenAI 格式原样透传
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<serde_json::Value>>,
+    /// tool 角色消息对应的调用 id
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -225,6 +236,9 @@ pub struct AiChatRequest {
     /// 使用哪条配置；缺省时用当前选中项
     pub profile_id: Option<String>,
     pub messages: Vec<ChatMessage>,
+    /// function calling 工具定义（OpenAI 格式，原样透传；缺省不带该字段）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<serde_json::Value>>,
 }
 
 /// 流式事件：delta 增量文本 / done 结束 / error 错误（均带 type 标记）
@@ -232,6 +246,8 @@ pub struct AiChatRequest {
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum AiStreamEvent {
     Delta { text: String },
+    /// function calling：上游请求执行工具（已把增量分片聚合为完整参数，每轮至多发送一次）
+    ToolCalls { calls: Vec<serde_json::Value> },
     Done { finish_reason: Option<String> },
     Error { code: String, message: String },
     /// 仅开发环境：诊断信息，前端只打印到控制台，不进入消息内容
@@ -1711,6 +1727,79 @@ struct StreamDelta {
     /// 推理模型（豆包 Seed、DeepSeek R1 等）的思考过程：只统计，不展示
     #[serde(default)]
     reasoning_content: Option<String>,
+    /// function calling 的增量分片：同一调用的 arguments 可能拆在多个 chunk（按 index 聚合）
+    #[serde(default)]
+    tool_calls: Option<Vec<StreamToolCallDelta>>,
+}
+
+#[derive(Deserialize)]
+struct StreamToolCallDelta {
+    #[serde(default)]
+    index: usize,
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    function: Option<StreamFunctionDelta>,
+}
+
+#[derive(Deserialize, Default)]
+struct StreamFunctionDelta {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    arguments: Option<String>,
+}
+
+/// tool_calls 增量聚合器：流式期间按 index 拼接 id / name / arguments，
+/// 流结束后输出 OpenAI 格式的完整调用（供前端执行后回传 tool 结果）
+#[derive(Default)]
+struct ToolCallAggregator {
+    calls: std::collections::BTreeMap<usize, PartialToolCall>,
+}
+
+#[derive(Default)]
+struct PartialToolCall {
+    id: String,
+    name: String,
+    arguments: String,
+}
+
+impl ToolCallAggregator {
+    fn absorb(&mut self, deltas: &[StreamToolCallDelta]) {
+        for delta in deltas {
+            let entry = self.calls.entry(delta.index).or_default();
+            if let Some(id) = delta.id.as_deref() {
+                if !id.is_empty() {
+                    entry.id.push_str(id);
+                }
+            }
+            if let Some(function) = &delta.function {
+                if let Some(name) = function.name.as_deref() {
+                    if !name.is_empty() {
+                        entry.name.push_str(name);
+                    }
+                }
+                if let Some(arguments) = function.arguments.as_deref() {
+                    entry.arguments.push_str(arguments);
+                }
+            }
+        }
+    }
+
+    /// 聚合结果转 OpenAI 完整调用格式；id 缺失的残片直接丢弃
+    fn into_calls(self) -> Vec<serde_json::Value> {
+        self.calls
+            .into_values()
+            .filter(|call| !call.id.is_empty() && !call.name.is_empty())
+            .map(|call| {
+                serde_json::json!({
+                    "id": call.id,
+                    "type": "function",
+                    "function": { "name": call.name, "arguments": call.arguments },
+                })
+            })
+            .collect()
+    }
 }
 
 /// 流式统计：仅开发环境用于诊断「上游在思考还是在输出」
@@ -1757,6 +1846,7 @@ fn process_sse_frame(
     finish_reason: &mut Option<String>,
     emitted: &mut bool,
     stats: &mut StreamStats,
+    tool_calls: &mut ToolCallAggregator,
 ) -> SseOutcome {
     for line in frame.lines() {
         let Some(data) = line.strip_prefix("data:") else {
@@ -1783,6 +1873,11 @@ fn process_sse_frame(
                 if !reasoning.is_empty() {
                     stats.reasoning_frames += 1;
                     stats.reasoning_chars += reasoning.chars().count();
+                }
+            }
+            if let Some(deltas) = choice.delta.tool_calls {
+                if !deltas.is_empty() {
+                    tool_calls.absorb(&deltas);
                 }
             }
             if let Some(text) = choice.delta.content {
@@ -1871,6 +1966,12 @@ pub async fn ai_chat(
         }
         _ => {}
     }
+    // function calling：工具定义原样透传（tool_choice 缺省即 auto，不显式下发以兼容网关）
+    if let Some(tools) = request.tools.as_ref() {
+        if !tools.is_empty() {
+            payload["tools"] = serde_json::json!(tools);
+        }
+    }
 
     let client = match stream_http_client() {
         Ok(client) => client,
@@ -1938,6 +2039,7 @@ pub async fn ai_chat(
     let mut emitted = false;
     let mut cancelled = false;
     let mut stats = StreamStats::default();
+    let mut tool_calls = ToolCallAggregator::default();
 
     'outer: while let Some(chunk) = stream.next().await {
         if is_cancelled(&state, &request_id) {
@@ -1981,6 +2083,7 @@ pub async fn ai_chat(
                 &mut finish_reason,
                 &mut emitted,
                 &mut stats,
+                &mut tool_calls,
             ) {
                 SseOutcome::Continue => {}
                 SseOutcome::Done => break 'outer,
@@ -2029,6 +2132,7 @@ pub async fn ai_chat(
             &mut finish_reason,
             &mut emitted,
             &mut stats,
+            &mut tool_calls,
         ) {
             cancelled = true;
         }
@@ -2049,6 +2153,19 @@ pub async fn ai_chat(
             },
         );
         return Ok(());
+    }
+
+    // function calling：流式期间聚合的 tool_calls 已完整，先于 Done 下发（前端据此回传结果续问）
+    let collected_tool_calls = tool_calls.into_calls();
+    if !collected_tool_calls.is_empty() {
+        // 只有工具调用没有文本时也算有效响应，避免误报 empty_response
+        emitted = true;
+        let _ = send_event(
+            &on_event,
+            AiStreamEvent::ToolCalls {
+                calls: collected_tool_calls,
+            },
+        );
     }
 
     if !emitted && finish_reason.is_none() {

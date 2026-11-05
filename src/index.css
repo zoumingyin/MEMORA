@@ -4863,4 +4863,28 @@ body.img-viewer-window .ant-image-preview {
 .assistant-md > :last-child {
   margin-bottom: 0;
 }
+/* AI 回答中的便签引用胶囊：消毒后由前端注入的 <a class="note-ref-link">（兼容旧 note-ref 标签），
+   点击跳转选中对应便签（AssistantPanel 拦截点击），此为渲染 HTML 内容，需原生选择器 */
+.assistant-md note-ref,
+.assistant-md .note-ref-link {
+  display: inline-block;
+  padding: 0 6px;
+  margin: 0 1px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--hover-fill);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 18px;
+  text-decoration: none;
+  cursor: pointer;
+  transition:
+    border-color 0.15s,
+    color 0.15s;
+}
+.assistant-md note-ref:hover,
+.assistant-md .note-ref-link:hover {
+  border-color: var(--kind-accent);
+  color: var(--kind-accent);
+}
 

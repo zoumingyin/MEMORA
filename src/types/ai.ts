@@ -105,15 +105,52 @@ export interface AiErrorInfo {
   message: string
 }
 
-/** 发送给模型的单条消息（OpenAI Chat Completions 规范） */
+/** 发送给模型的单条消息（OpenAI Chat Completions 规范）
+ *
+ * 字段名与 Rust 端 ChatMessage 对应（snake_case 原样透传）：
+ * - assistant 消息可携带 tool_calls（agent loop 把调用回传给上游）
+ * - tool 消息携带 tool_call_id 与执行结果（字符串 JSON）
+ */
+export interface AiChatToolCallPayload {
+  id: string
+  type: 'function'
+  function: { name: string; arguments: string }
+}
+
 export interface AiChatMessage {
-  role: 'system' | 'user' | 'assistant'
+  role: 'system' | 'user' | 'assistant' | 'tool'
   content: string
+  /** assistant 消息发起的工具调用（OpenAI 格式原样透传） */
+  tool_calls?: AiChatToolCallPayload[]
+  /** tool 角色消息对应的调用 id */
+  tool_call_id?: string
+}
+
+/** OpenAI tools 参数中的单个工具定义（function calling） */
+export interface AiToolDefinition {
+  type: 'function'
+  function: {
+    name: string
+    description: string
+    parameters: {
+      type: 'object'
+      properties: Record<string, unknown>
+      required?: string[]
+    }
+  }
+}
+
+/** 模型发起的单个工具调用（后端已把流式增量聚合为完整参数） */
+export interface AiToolCall {
+  id: string
+  type: 'function'
+  function: { name: string; arguments: string }
 }
 
 /** 后端流式事件（serde tag = "type"） */
 export type AiStreamEvent =
   | { type: 'delta'; text: string }
+  | { type: 'toolCalls'; calls: AiToolCall[] }
   | { type: 'done'; finishReason?: string | null }
   | { type: 'error'; code: string; message: string }
   /** 仅开发环境：后端诊断信息，前端只打印到控制台 */
@@ -152,4 +189,10 @@ export interface AssistantMessage {
     count?: number
     error?: string
   }
+  /** agent 自动执行的只读工具调用轮数（function calling），随消息持久化用于展示提示 */
+  toolRounds?: number
+  /** agent 工具产生的待确认操作（目前只有 delete_entry），随消息持久化渲染确认卡片 */
+  toolActions?: import('../utils/assistantActions').AssistantAction[]
+  /** 已确认执行的 toolActions 下标（随消息持久化，避免重复执行） */
+  toolActionsDone?: number[]
 }

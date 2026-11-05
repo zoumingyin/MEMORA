@@ -8,8 +8,8 @@ const MAX_CONTENT_CHARS = 4000
 const MAX_ITEM_CHARS = 200
 const MAX_ITEMS = 20
 
-/** 操作类型：create 新建便签；complete-todo 勾选已有待办的子任务；append-note 向已有备忘追加内容 */
-export type AssistantActionOp = 'create' | 'complete-todo' | 'append-note'
+/** 操作类型：create 新建便签；complete-todo 勾选已有待办的子任务；append-note 向已有备忘追加内容；delete 删除便签（进废纸篓，可恢复） */
+export type AssistantActionOp = 'create' | 'complete-todo' | 'append-note' | 'delete'
 
 /** AI 提议的一条操作（用户确认前不会写入仓储） */
 export interface AssistantAction {
@@ -43,7 +43,9 @@ export const ACTION_PROTOCOL = [
   '- items：要勾选的子任务文本，必须与待办中现有子任务文本一致',
   '向已有备忘追加内容（targetId 同样取自 <notes>）：',
   '<action>{"op":"append-note","targetId":"<notes 中的 id>","content":"追加的文本"}</action>',
-  '输出要求：不要声称已经执行成功，界面会展示确认卡片、由用户点击执行；不要用代码块包裹 <action>；删除、改标题、改时间等操作仍请提示用户手动完成。',
+  '输出要求：不要声称已经执行成功，界面会展示确认卡片、由用户点击执行；不要用代码块包裹 <action>；改标题、改提醒时间等操作仍请提示用户手动完成。',
+  '删除已有便签（targetId 取自 <notes>；进入废纸篓，用户确认后才会真正删除）：',
+  '<action>{"op":"delete","targetId":"<notes 中的 id>"}</action>',
 ].join('\n')
 
 const ACTION_BLOCK = /<action\b[^>]*>([\s\S]*?)<\/action>/gi
@@ -106,7 +108,9 @@ function parseAction(body: string): AssistantAction | null {
 
   const item = data as Record<string, unknown>
   const opValue =
-    item.op === 'complete-todo' || item.op === 'append-note' ? item.op : 'create'
+    item.op === 'complete-todo' || item.op === 'append-note' || item.op === 'delete'
+      ? item.op
+      : 'create'
   const targetId =
     typeof item.targetId === 'string' ? item.targetId.trim() : ''
 
@@ -123,6 +127,11 @@ function parseAction(body: string): AssistantAction | null {
         : ''
     if (!targetId || !content) return null
     return { op: opValue, kind: 'note', title: '', content, targetId }
+  }
+  // 删除：只需目标 id，标题 / 类型由客户端按 id 解析；进废纸篓可恢复
+  if (opValue === 'delete') {
+    if (!targetId) return null
+    return { op: opValue, kind: 'note', title: '', content: '', targetId }
   }
 
   const kind = item.kind

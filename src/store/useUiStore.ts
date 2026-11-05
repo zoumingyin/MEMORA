@@ -83,6 +83,8 @@ interface UiState {
   settingsOpen: boolean
   /** 打开设置时定位的叶子节点 key（如 'ai-config'） */
   settingsSection: string | null
+  /** 详情视图开关：窄屏整页详情 / 宽屏贴纸墙详情 Modal 共用（AI 便签引用跳转也会置位） */
+  detailView: boolean
   /** 窄屏列表展示模式（持久化，宽屏切回窄屏时恢复用户选择） */
   entryView: EntryViewMode
   /** 贴纸墙自由摆放坐标；无记录 = 按默认网格铺开 */
@@ -91,6 +93,7 @@ interface UiState {
   pinnedIds: string[]
   openSettings: (section?: string) => void
   closeSettings: () => void
+  setDetailView: (open: boolean) => void
   setEntryView: (view: EntryViewMode) => void
   setWallPosition: (id: string, position: WallPosition) => void
   clearWallPosition: (id: string) => void
@@ -101,11 +104,13 @@ interface UiState {
 export const useUiStore = create<UiState>((set) => ({
   settingsOpen: false,
   settingsSection: null,
+  detailView: false,
   entryView: loadEntryView(),
   wallPositions: loadWallPositions(),
   pinnedIds: loadPinnedIds(),
   openSettings: (section) => set({ settingsOpen: true, settingsSection: section ?? null }),
   closeSettings: () => set({ settingsOpen: false, settingsSection: null }),
+  setDetailView: (open) => set({ detailView: open }),
   setEntryView: (view) => {
     set({ entryView: view })
     persistEntryView(view)
