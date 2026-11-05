@@ -1,6 +1,6 @@
 [package]
 name = "bianqian"
-version = "0.1.0"
+version = "0.2.0"
 description = "桌面便签工具：备忘、提醒、待办"
 edition = "2021"
 
