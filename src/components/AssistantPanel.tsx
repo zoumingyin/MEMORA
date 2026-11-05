@@ -36,9 +36,13 @@ import { useUiStore } from '../store/useUiStore'
 import {
   isNonTextModality,
   type AssistantMessage,
+  type AiProfileStatus,
   type ReasoningEffort,
 } from '../types/ai'
 import type { EntryKind } from '../types/entry'
+
+/** 模块级空数组兜底：避免 aiStatus 未就绪时每次渲染都新建 [] 导致 useMemo 失效 */
+const EMPTY_PROFILES: AiProfileStatus[] = []
 
 /** 空态引导问题：覆盖检索、统计、日程与整理四类常见诉求 */
 const SUGGESTIONS = [
@@ -573,7 +577,7 @@ function AssistantPanelBody() {
   const aiActivate = useAiProfileStore((state) => state.activate)
   const aiSync = useAiProfileStore((state) => state.sync)
   const [reasoningBusy, setReasoningBusy] = useState(false)
-  const aiProfiles = aiStatus?.profiles ?? []
+  const aiProfiles = aiStatus?.profiles ?? EMPTY_PROFILES
   const activeProfile =
     aiProfiles.find((profile) => profile.id === aiStatus?.activeId) ?? null
   const openSettings = useUiStore((state) => state.openSettings)
