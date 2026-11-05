@@ -36,6 +36,7 @@ import {
   isMaximized,
   isMinimized,
   isProgrammaticMoveRecent,
+  isCursorInsideWindow,
   isStorableBounds,
   loadBoundsFromStorage,
   onWindowMoved,
@@ -619,6 +620,10 @@ export default function App() {
         if (!workArea || latest.docked || latest.dockedEdge !== edge) return;
         // 收纳出场动画进行中（另一条路径已在收）：不重入
         if (latest.collapsing) return;
+        // 伪移出校验：右键菜单等独立子窗口显示在光标处盖住主窗口时，
+        // 主窗口也会收到 mouseleave，但光标其实还在窗口矩形内——
+        // 此时不收纳（右键菜单操作不影响展开态）；真正把指针移出窗口才收回
+        if (await isCursorInsideWindow()) return;
         const started = await collapseToStripAnimated(edge, bounds, workArea);
         // 展开流程持锁期间收纳被拒：回到「已展开、保留会话」的原状态
         if (!started) useWindowStore.getState().setDock(edge, bounds, false);

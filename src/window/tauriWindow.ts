@@ -1,5 +1,6 @@
 import {
   currentMonitor,
+  cursorPosition,
   getCurrentWindow,
   type Window as TauriWindow,
 } from '@tauri-apps/api/window'
@@ -348,6 +349,29 @@ export function isStorableBounds(bounds: Bounds): boolean {
     bounds.x > -10_000 &&
     bounds.y > -10_000
   )
+}
+
+/**
+ * 系统光标是否位于主窗口可见矩形内（物理坐标比对）。
+ * 独立子窗口（如 Markdown 右键菜单）显示在光标处并盖住主窗口时，主窗口会收到
+ * mouseleave，但光标坐标其实仍在主窗口矩形内——据此区分「伪移出」（弹层覆盖）
+ * 与「真移出」（指针离开窗口），收纳判定只认后者。读数失败时按在窗口内处理
+ * （宁可不收纳，也不能因一次误判把展开的界面收走）。
+ */
+export async function isCursorInsideWindow(): Promise<boolean> {
+  if (!isTauriRuntime()) return true
+  try {
+    const [cursor, bounds] = await Promise.all([cursorPosition(), getBounds()])
+    if (!cursor || !bounds) return true
+    return (
+      cursor.x >= bounds.x &&
+      cursor.x <= bounds.x + bounds.width &&
+      cursor.y >= bounds.y &&
+      cursor.y <= bounds.y + bounds.height
+    )
+  } catch {
+    return true
+  }
 }
 
 /**
