@@ -43,6 +43,16 @@ import {
   testAiConnection,
 } from "../services/aiClient";
 import type { Entry } from "../types/entry";
+import {
+  readSummaryLastRun,
+  readSummarySettings,
+  runSummary,
+  WEEKDAY_LABELS,
+  writeSummarySettings,
+  type SummaryLastRun,
+  type SummaryMode,
+  type SummarySettings,
+} from "../services/dailySummary";
 import { currentWorkArea, getBounds } from "../window/tauriWindow";
 import { collapseToStripAnimated, detectDockEdge } from "../window/edgeDock";
 import { openExternal } from "../utils/openExternal";
@@ -183,6 +193,11 @@ const SETTING_TREE: SettingGroup[] = [
         label: "上下文与隐私",
         hint: "控制 AI 可读取的便签内容",
       },
+      {
+        key: "ai-summary",
+        label: "日 / 周总结",
+        hint: "定时用 AI 生成总结便签",
+      },
     ],
   },
   {
@@ -250,6 +265,13 @@ const SETTING_TREE_DATA: TreeDataNode[] = SETTING_TREE.map((group) => ({
 const SETTING_LEAF_KEYS = new Set(
   SETTING_TREE.flatMap((group) => group.children.map((node) => node.key))
 );
+
+/** 总结生成时间候选：每 30 分钟一档 */
+const SUMMARY_TIME_OPTIONS = Array.from({ length: 48 }, (_, index) => {
+  const h = `${Math.floor(index / 2)}`.padStart(2, "0");
+  const m = index % 2 === 0 ? "00" : "30";
+  return { value: `${h}:${m}`, label: `${h}:${m}` };
+});
 
 /** 导出文件格式：版本 + 导出时间 + 全量条目 */
 interface ExportFile {
@@ -342,6 +364,44 @@ export function SettingsDialog({
     (state) => state.setContextEnabled
   );
   const entryCount = useEntryStore((state) => state.entries.length);
+  const [summarySettings, setSummarySettings] = useState<SummarySettings>(() =>
+    readSummarySettings()
+  );
+  const [summaryLastRun, setSummaryLastRun] = useState<SummaryLastRun>(() =>
+    readSummaryLastRun()
+  );
+  const [summaryBusy, setSummaryBusy] = useState<SummaryMode | null>(null);
+  const [summaryMessage, setSummaryMessage] = useState("");
+  // TitleBar 用 key 控制开关重挂载：useState 初始化器每次打开都会重读本地值，
+  // 无需再写 open effect；手动生成后由 handleManualSummary 刷新 last-run。
+
+  /** 更新总结设置并立即落盘（调度器每轮直接读 localStorage） */
+  const updateSummarySettings = (patch: Partial<SummarySettings>) => {
+    setSummarySettings((prev) => {
+      const next = { ...prev, ...patch };
+      writeSummarySettings(next);
+      return next;
+    });
+  };
+
+  /** 手动生成一次总结；去重逻辑与服务端一致（同日/同周只生成一次） */
+  const handleManualSummary = async (mode: SummaryMode) => {
+    setSummaryBusy(mode);
+    setSummaryMessage("");
+    try {
+      await runSummary(mode);
+      setSummaryLastRun(readSummaryLastRun());
+      setSummaryMessage(
+        mode === "daily" ? "日总结已生成，可在便签列表查看。" : "周总结已生成，可在便签列表查看。"
+      );
+    } catch (error) {
+      setSummaryMessage(
+        error instanceof Error ? error.message : "生成失败，请稍后重试。"
+      );
+    } finally {
+      setSummaryBusy(null);
+    }
+  };
 
   const aiProfiles = aiStatus?.profiles ?? [];
   const editingProfile = aiEditingId
@@ -1327,6 +1387,110 @@ export function SettingsDialog({
             </div>
           </div>
         );
+      case "ai-summary": {
+        return (
+          <div className="flex flex-col gap-3">
+            <div className="settings-item grid">
+              <div className="settings-item-main">
+                <span className="settings-item-label">每日总结</span>
+                <span className="settings-item-hint">
+                  每天在指定时间用 AI 总结当天的便签、待办与提醒
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <Select
+                  size="small"
+                  style={{ width: 88 }}
+                  value={summarySettings.dailyTime}
+                  options={SUMMARY_TIME_OPTIONS}
+                  disabled={!summarySettings.dailyEnabled}
+                  onChange={(value) => updateSummarySettings({ dailyTime: value })}
+                />
+                <Switch
+                  size="small"
+                  checked={summarySettings.dailyEnabled}
+                  onChange={(value) => updateSummarySettings({ dailyEnabled: value })}
+                />
+              </div>
+            </div>
+            <div className="settings-item grid">
+              <div className="settings-item-main">
+                <span className="settings-item-label">每周总结</span>
+                <span className="settings-item-hint">
+                  每周在指定时间用 AI 总结最近 7 天的记录
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <Select
+                  size="small"
+                  style={{ width: 72 }}
+                  value={summarySettings.weeklyWeekday}
+                  options={WEEKDAY_LABELS.map((label, index) => ({
+                    value: index,
+                    label,
+                  }))}
+                  disabled={!summarySettings.weeklyEnabled}
+                  onChange={(value) => updateSummarySettings({ weeklyWeekday: value })}
+                />
+                <Select
+                  size="small"
+                  style={{ width: 88 }}
+                  value={summarySettings.weeklyTime}
+                  options={SUMMARY_TIME_OPTIONS}
+                  disabled={!summarySettings.weeklyEnabled}
+                  onChange={(value) => updateSummarySettings({ weeklyTime: value })}
+                />
+                <Switch
+                  size="small"
+                  checked={summarySettings.weeklyEnabled}
+                  onChange={(value) => updateSummarySettings({ weeklyEnabled: value })}
+                />
+              </div>
+            </div>
+            <div className="settings-item grid">
+              <div className="settings-item-main">
+                <span className="settings-item-label">立即生成</span>
+                <span className="settings-item-hint">
+                  手动触发一次；同一角度当天/当周只生成一篇
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button
+                  size="small"
+                  loading={summaryBusy === "daily"}
+                  disabled={summaryBusy !== null}
+                  onClick={() => void handleManualSummary("daily")}
+                >
+                  日总结
+                </Button>
+                <Button
+                  size="small"
+                  loading={summaryBusy === "weekly"}
+                  disabled={summaryBusy !== null}
+                  onClick={() => void handleManualSummary("weekly")}
+                >
+                  周总结
+                </Button>
+              </div>
+            </div>
+            {summaryMessage && (
+              <div className="rounded-[8px] bg-[var(--hover-fill)] p-2.5 text-[11px] leading-relaxed text-[var(--text)]">
+                {summaryMessage}
+              </div>
+            )}
+            <div className="rounded-[8px] bg-[var(--hover-fill)] p-2.5 text-[11px] leading-relaxed text-[var(--text-muted)]">
+              <p className="m-0">
+                上次生成：日总结 {summaryLastRun.daily ?? "从未生成"} · 周总结{" "}
+                {summaryLastRun.weekly ?? "从未生成"}。
+              </p>
+              <p className="m-0 mt-1">
+                总结以「AI 总结」标签保存为普通便签，可编辑或删除；生成会读取便签内容，
+                需开启「上下文与隐私」且模型可用；自动生成失败后会暂停 10 分钟再重试。
+              </p>
+            </div>
+          </div>
+        );
+      }
       case "about-info":
         return (
           <div className="flex flex-col gap-2.5">

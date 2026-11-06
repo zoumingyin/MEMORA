@@ -61,6 +61,7 @@ import { isPseudoMaximized } from "./window/maximize";
 import { toMinuteStart } from "./utils/format";
 import { ENTRY_KIND_COLOR, ENTRY_KIND_LABEL } from "./utils/entryLabels";
 import { startReminderScheduler } from "./reminder/scheduler";
+import { startSummaryScheduler } from "./services/dailySummary";
 import { isTauriRuntime } from "./repository";
 import type { EntryKind, NewEntryInput } from "./types/entry";
 import { TitleBar } from "./components/TitleBar";
@@ -259,6 +260,8 @@ export default function App() {
     void useEntryStore.getState().loadTrash();
     // 启动到期提醒轮询，返回的清理函数随组件卸载执行
     const stopScheduler = startReminderScheduler();
+    // 启动 AI 日/周总结调度器（内部 30s 轮询，未开启时每轮空转）
+    const stopSummary = startSummaryScheduler();
     // 恢复上次保存的置顶状态；背景透明度由 CSS 变量直接生效
     void applyAlwaysOnTop(useWindowStore.getState().alwaysOnTop);
     // 首次启动按配置默认尺寸（422×540）打开；之后每次启动恢复上次会话保存的尺寸/位置
@@ -606,6 +609,7 @@ export default function App() {
     return () => {
       disposed = true;
       stopScheduler();
+      stopSummary();
       window.clearTimeout(dockTimer);
       window.removeEventListener("keydown", onKeyDown);
       detachMoved();
