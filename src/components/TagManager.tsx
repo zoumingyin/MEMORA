@@ -2,11 +2,8 @@ import { useMemo, useState } from 'react'
 import { Button, Input, Popconfirm, Select } from 'antd'
 import { DeleteOutlined, EditOutlined, SwapOutlined } from '@ant-design/icons'
 import { useEntryStore } from '../store/useEntryStore'
-
-interface TagCount {
-  tag: string
-  count: number
-}
+import { collectTagCounts, rewriteTag } from '../services/tagOps'
+import type { TagCount } from '../services/tagOps'
 
 /**
  * 标签管理：列出全部标签及使用计数，支持重命名、合并到其他标签、删除。
@@ -20,38 +17,7 @@ export function TagManager() {
   const [mergeTarget, setMergeTarget] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
-  const tags = useMemo<TagCount[]>(() => {
-    const counts = new Map<string, number>()
-    for (const entry of entries) {
-      for (const tag of entry.tags) {
-        counts.set(tag, (counts.get(tag) ?? 0) + 1)
-      }
-    }
-    return [...counts.entries()]
-      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'zh'))
-      .map(([tag, count]) => ({ tag, count }))
-  }, [entries])
-
-  /** 把 source 标签批量改写为 target；target 为 null 时移除 */
-  const rewriteTag = async (source: string, target: string | null): Promise<void> => {
-    setBusy(true)
-    try {
-      const state = useEntryStore.getState()
-      const affected = state.entries.filter((entry) => entry.tags.includes(source))
-      for (const entry of affected) {
-        const nextTags = target
-          ? [...new Set(entry.tags.map((tag) => (tag === source ? target : tag)))]
-          : entry.tags.filter((tag) => tag !== source)
-        await state.updateEntry(entry.id, { tags: nextTags })
-      }
-      // 当前筛选指向被改写的标签时同步到新值（删除则回到全部标签）
-      if (useEntryStore.getState().tagFilter === source) {
-        useEntryStore.getState().setTagFilter(target)
-      }
-    } finally {
-      setBusy(false)
-    }
-  }
+  const tags = useMemo<TagCount[]>(() => collectTagCounts(entries), [entries])
 
   const startRename = (tag: string): void => {
     setEditing(tag)
@@ -67,7 +33,12 @@ export function TagManager() {
       setEditing(null)
       return
     }
-    await rewriteTag(editing, target)
+    setBusy(true)
+    try {
+      await rewriteTag(editing, target)
+    } finally {
+      setBusy(false)
+    }
     setEditing(null)
   }
 
@@ -79,7 +50,12 @@ export function TagManager() {
 
   const commitMerge = async (): Promise<void> => {
     if (!merging || !mergeTarget) return
-    await rewriteTag(merging, mergeTarget)
+    setBusy(true)
+    try {
+      await rewriteTag(merging, mergeTarget)
+    } finally {
+      setBusy(false)
+    }
     setMerging(null)
     setMergeTarget(null)
   }
@@ -186,7 +162,10 @@ export function TagManager() {
                     description="只移除标签，不会删除便签"
                     okText="删除"
                     cancelText="取消"
-                    onConfirm={() => void rewriteTag(tag, null)}
+                    onConfirm={() => {
+                      setBusy(true)
+                      void rewriteTag(tag, null).finally(() => setBusy(false))
+                    }}
                   >
                     <Button
                       size="small"
