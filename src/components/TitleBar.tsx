@@ -94,6 +94,14 @@ export function TitleBar({ quickOpen, setQuickOpen }: TitleBarProps) {
       ) {
         return;
       }
+      // 收纳出场动画进行中不动窗口：缩窗流程已持锁并置 docked=true，
+      // 此刻双击撑满会与缩窗互相抢矩形（窄条落地后又被撑满，状态错乱）
+      const winState = useWindowStore.getState();
+      if (winState.docked || winState.collapsing) return;
+      // 双击最大/还原即退出贴边收纳：先结束收纳会话（dockedEdge/restoredBounds
+      // 清空，此后移出窗口不再自动收回窄条），再切换伪最大化——顺序反过来，
+      // 切换期间会留下 mouseleave 收回窄条的竞态窗口
+      winState.clearDock();
       event.preventDefault();
       event.stopImmediatePropagation();
       void toggleMaximize();
