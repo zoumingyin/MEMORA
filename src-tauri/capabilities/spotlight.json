@@ -1,0 +1,14 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "spotlight",
+  "description": "全局快捷搜索（Spotlight）常驻窗口能力：显示/隐藏/聚焦/定位自身窗口，事件通信（接收打开快照、回报就绪、回传跳转指令）",
+  "windows": ["spotlight"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-show",
+    "core:window:allow-hide",
+    "core:window:allow-set-focus",
+    "core:window:allow-set-position",
+    "core:window:allow-scale-factor"
+  ]
+}

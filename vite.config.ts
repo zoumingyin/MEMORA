@@ -28,12 +28,13 @@ export default defineConfig({
   clearScreen: false,
   build: {
     rollupOptions: {
-      // 多页入口：图片预览 / 闹钟 / 右键菜单弹窗使用独立轻量入口，避免加载主应用全量 bundle 白屏
+      // 多页入口：图片预览 / 闹钟 / 右键菜单 / 快捷搜索使用独立轻量入口，避免加载主应用全量 bundle 白屏
       input: {
         main: fileURLToPath(new URL('./index.html', import.meta.url)),
         imagePreview: fileURLToPath(new URL('./imagePreview.html', import.meta.url)),
         alarm: fileURLToPath(new URL('./alarm.html', import.meta.url)),
         ctxmenu: fileURLToPath(new URL('./ctxmenu.html', import.meta.url)),
+        spotlight: fileURLToPath(new URL('./spotlight.html', import.meta.url)),
       },
     },
   },

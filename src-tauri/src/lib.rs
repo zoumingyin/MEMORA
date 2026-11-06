@@ -612,6 +612,12 @@ CREATE INDEX IF NOT EXISTS idx_entries_deleted ON entries(deleted_at);
                         }
                         let _ = app.emit("global:quick-capture", ());
                     } else if shortcut
+                        .matches(Modifiers::CONTROL | Modifiers::SHIFT, Code::KeyF)
+                    {
+                        // 全局快捷搜索（Spotlight）：主窗口常驻托盘，由前端监听该事件
+                        // 负责搜索窗口的显示/隐藏切换与数据快照下发
+                        let _ = app.emit("global:spotlight", ());
+                    } else if shortcut
                         .matches(Modifiers::CONTROL | Modifiers::SHIFT, Code::Space)
                     {
                         if let Some(window) = app.get_webview_window("main") {
@@ -683,6 +689,11 @@ CREATE INDEX IF NOT EXISTS idx_entries_deleted ON entries(deleted_at);
                     Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyN);
                 if let Err(error) = app.global_shortcut().register(shortcut) {
                     eprintln!("注册全局快捷键失败: {error}");
+                }
+                // Ctrl+Shift+F：全局快捷搜索（Spotlight 式小窗）
+                let search = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyF);
+                if let Err(error) = app.global_shortcut().register(search) {
+                    eprintln!("注册全局快捷搜索快捷键失败: {error}");
                 }
                 // Ctrl+Shift+Space：显示 / 隐藏主窗口
                 let toggle =

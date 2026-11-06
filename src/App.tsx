@@ -57,6 +57,12 @@ import {
   unpinStrip,
 } from "./window/edgeDock";
 import { prewarmCtxMenuWindow } from "./window/ctxMenuWindow";
+import {
+  SPOTLIGHT_JUMP_EVENT,
+  hideSpotlightWindow,
+  prewarmSpotlightWindow,
+  toggleSpotlightWindow,
+} from "./window/spotlightWindow";
 import { isPseudoMaximized } from "./window/maximize";
 import { toMinuteStart } from "./utils/format";
 import { ENTRY_KIND_COLOR, ENTRY_KIND_LABEL } from "./utils/entryLabels";
@@ -246,12 +252,16 @@ export default function App() {
     );
   }, [selectedId, currentKind, entries]);
 
-  // 预热 Markdown 右键菜单窗口：启动稳定后隐藏创建一次，首次右键也无需等待窗口加载。
+  // 预热 Markdown 右键菜单 / 快捷搜索窗口：启动稳定后隐藏创建一次，首次唤起也无需等待窗口加载。
   // Rust 数据加载不依赖页面，故延时创建，避免与首屏渲染争抢资源。
   useEffect(() => {
     if (!isTauriRuntime()) return;
     const timer = window.setTimeout(prewarmCtxMenuWindow, 1200);
-    return () => window.clearTimeout(timer);
+    const timer2 = window.setTimeout(prewarmSpotlightWindow, 1800);
+    return () => {
+      window.clearTimeout(timer);
+      window.clearTimeout(timer2);
+    };
   }, []);
 
   useEffect(() => {
@@ -298,6 +308,8 @@ export default function App() {
     let detachQuickCapture: () => void = () => undefined;
     let detachToggleWindow: () => void = () => undefined;
     let detachWindowShown: () => void = () => undefined;
+    let detachSpotlight: () => void = () => undefined;
+    let detachSpotlightJump: () => void = () => undefined;
     let detachFocusShown: () => void = () => undefined;
 
     // 收纳窄条态不渲染列表与弹窗：托盘 / 提醒唤起前先展开回普通窗口。
@@ -477,6 +489,34 @@ export default function App() {
       quickPromise.then((detach) => {
         detachQuickCapture = detach;
       });
+      // 全局快捷键 Ctrl+Shift+F：Spotlight 式快捷搜索小窗的显示/隐藏切换
+      const spotlightPromise = listen("global:spotlight", () => {
+        void toggleSpotlightWindow();
+      });
+      spotlightPromise.then((detach) => {
+        detachSpotlight = detach;
+      });
+      // 搜索窗口回车/点击：跳转主窗口对应便签（切到该分类、清筛选、进详情）
+      const spotlightJumpPromise = listen<{ entryId: string }>(
+        SPOTLIGHT_JUMP_EVENT,
+        (event) => {
+          const { entryId } = event.payload;
+          const entryState = useEntryStore.getState();
+          const entry = entryState.entries.find((item) => item.id === entryId);
+          if (entry) {
+            entryState.setFilter(entry.kind);
+            entryState.setSearch("");
+            entryState.setTagFilter(null);
+            entryState.setSelectedId(entryId);
+          }
+          useUiStore.getState().setDetailView(true);
+          expandIfDocked();
+          void getCurrentWindow().setFocus();
+        }
+      );
+      spotlightJumpPromise.then((detach) => {
+        detachSpotlightJump = detach;
+      });
       // 全局快捷键 Ctrl+Shift+Space：窗口可见且聚焦时隐藏；收纳窄条态改为展开
       const togglePromise = listen("global:toggle-window", () => {
         const winState = useWindowStore.getState();
@@ -623,6 +663,9 @@ export default function App() {
       detachToggleWindow();
       detachWindowShown();
       detachFocusShown();
+      detachSpotlight();
+      detachSpotlightJump();
+      void hideSpotlightWindow();
     };
   }, []);
 
