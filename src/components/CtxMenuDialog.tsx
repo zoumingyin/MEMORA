@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { ConfigProvider, theme as antdTheme } from "antd";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { PhysicalPosition, PhysicalSize } from "@tauri-apps/api/dpi";
-import { emit, listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { emit, emitTo, listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { isTauriRuntime } from "../repository";
 import { readClipboardText, writeClipboardText } from "../utils/clipboard";
 import { currentWorkArea } from "../window/tauriWindow";
@@ -80,7 +80,14 @@ export function CtxMenuDialog() {
   const send = async (payload: CtxCommand): Promise<void> => {
     if (!isTauriRuntime()) return;
     try {
-      await emit(CTX_MENU_COMMAND_EVENT, payload);
+      // 定向回发起右键的窗口：主窗口详情页与便签小窗可同时挂载编辑器，
+      // 全局广播会让两份编辑器都执行命令（复制两次 / 格式误改）。
+      // 旧快照无 sourceLabel 时保持原来的全局广播兼容。
+      if (state?.sourceLabel) {
+        await emitTo(state.sourceLabel, CTX_MENU_COMMAND_EVENT, payload);
+      } else {
+        await emit(CTX_MENU_COMMAND_EVENT, payload);
+      }
     } catch (e) {
       console.error("右键菜单命令发送失败", e);
     }

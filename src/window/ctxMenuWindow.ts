@@ -42,6 +42,8 @@ export const CTX_PANEL_OFFSET = 240;
 
 /** 右键菜单窗口打开时主窗口快照的状态 */
 export interface CtxMenuState {
+  /** 发起右键的窗口标签：菜单命令定向回该窗口，避免多窗口同时开着编辑器时命令双份执行 */
+  sourceLabel?: string;
   /** 当前编辑器选区纯文本（复制/剪切用，剪切/粘贴在菜单窗口内完成剪贴板读写） */
   selectedText: string;
   bold: boolean;

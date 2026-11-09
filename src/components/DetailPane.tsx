@@ -75,11 +75,26 @@ function formatAlarmTime(ts: number): string {
 
 const SAVE_DEBOUNCE_MS = 400;
 
+/**
+ * 编辑网关：注入后 DetailPane 可运行在独立小窗等无主窗口 store 的环境——
+ * 存盘/读条目/标签池全部改走网关；不传时行为与原实现完全一致（直连 useEntryStore）。
+ */
+export interface DetailEditGateway {
+  /** 当前条目最新已同步数据（flush 时对比 patch 用，替代主窗口 store 查询） */
+  getEntry: (id: string) => Entry | null;
+  updateEntry: (id: string, patch: Partial<Entry>) => void;
+  toggleReminderDone: (id: string) => void;
+  /** 全部已知标签（标签 chips 候选池，替代从主窗口 entries 派生） */
+  knownTags: string[];
+}
+
 interface DetailPaneProps {
   entry: Entry | null;
   onRemove: (id: string) => void;
   /** 窄屏单栏模式下的返回回调；宽屏两栏时不传 */
   onBack?: () => void;
+  /** 编辑网关：独立小窗等环境注入；缺省直连主窗口 store */
+  gateway?: DetailEditGateway;
 }
 
 /** 右侧详情面板：未选中时显示提示，选中后进入可自动保存的编辑表单 */
@@ -87,6 +102,7 @@ export function DetailPane({
   entry,
   onRemove,
   onBack,
+  gateway,
 }: DetailPaneProps) {
   return (
     <div className="detail-pane" data-tauri-drag-region="false">
@@ -97,7 +113,12 @@ export function DetailPane({
         </button>
       )}
       {entry ? (
-        <DetailForm key={entry.id} entry={entry} onRemove={onRemove} />
+        <DetailForm
+          key={entry.id}
+          entry={entry}
+          onRemove={onRemove}
+          gateway={gateway}
+        />
       ) : (
         <div className="detail-empty flex-center flex-col gap-1">
           <FileTextOutlined />
@@ -112,12 +133,21 @@ export function DetailPane({
 interface DetailFormProps {
   entry: Entry;
   onRemove: (id: string) => void;
+  gateway?: DetailEditGateway;
 }
 
-function DetailForm({ entry, onRemove }: DetailFormProps) {
-  const updateEntry = useEntryStore((state) => state.updateEntry);
-  const toggleReminderDone = useEntryStore((state) => state.toggleReminderDone);
-  const entries = useEntryStore((state) => state.entries);
+function DetailForm({ entry, onRemove, gateway }: DetailFormProps) {
+  const storeUpdateEntry = useEntryStore((state) => state.updateEntry);
+  const storeToggleReminderDone = useEntryStore(
+    (state) => state.toggleReminderDone
+  );
+  const storeEntries = useEntryStore((state) => state.entries);
+  // 网关注入时走网关，否则与原实现一致直连 store（Hook 无条件调用，仅选择取值来源）
+  const updateEntry = gateway ? gateway.updateEntry : storeUpdateEntry;
+  const toggleReminderDone = gateway
+    ? gateway.toggleReminderDone
+    : storeToggleReminderDone;
+  const entries = gateway ? [] : storeEntries;
   const now = useNow();
 
   // 本地编辑态：随 entry.id 重挂载重新初始化，不与 store 双向同步，避免打断输入
@@ -136,14 +166,16 @@ function DetailForm({ entry, onRemove }: DetailFormProps) {
   const [color, setColor] = useState<PaperColor>(entry.color ?? "plain");
   const [paper, setPaper] = useState<PaperStyle>(entry.paper ?? "plain");
 
-  // 标签选择：全部已知标签（所有条目去重排序），数据变化（任意条目标签增删）时自动刷新
+  // 标签选择：全部已知标签（网关模式用注入的标签池，主窗口模式从 entries 派生），
+  // 数据变化（任意条目标签增删）时自动刷新
+  const tagPool = gateway ? gateway.knownTags : entries;
   const allTags = useMemo(() => {
     const set = new Set<string>();
-    for (const item of entries) {
+    for (const item of tagPool) {
       for (const tag of item.tags ?? []) set.add(tag);
     }
     return [...set].sort((a, b) => a.localeCompare(b, "zh-Hans-CN"));
-  }, [entries]);
+  }, [tagPool]);
   // 与当前条目 tags 求并集：新建的自定义标签在落盘前也能立即出现在 chips 里
   const chipTags = useMemo(() => {
     const set = new Set<string>(allTags);
@@ -171,9 +203,10 @@ function DetailForm({ entry, onRemove }: DetailFormProps) {
   const flushRef = useRef<() => void>(() => undefined);
   useEffect(() => {
     flushRef.current = () => {
-      const current = useEntryStore
-        .getState()
-        .entries.find((e) => e.id === entry.id);
+      // 网关模式读最近一次同步进来的条目数据，主窗口模式读 store
+      const current = gateway
+        ? gateway.getEntry(entry.id)
+        : useEntryStore.getState().entries.find((e) => e.id === entry.id);
       if (!current) return;
       const patch: Record<string, unknown> = {};
       // 未填标题时用分类名兜底：新建后直接离开也显示「待办 / 备忘 / 提醒 / 涂鸦」

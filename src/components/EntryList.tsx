@@ -29,6 +29,8 @@ import { paperTintHex } from "../utils/paper";
 import { markdownToHtml } from "../utils/markdown";
 import { exportEntryImage } from "../utils/exportEntryImage";
 import { EntryTags, EntryTools, TodoPreview } from "./EntryCardParts";
+import { EntryCardBody } from "./EntryCardBody";
+import { toggleNoteWindow } from "../window/noteWindow";
 
 const KIND_ICON: Record<EntryKind, ReactNode> = {
   note: <FileTextOutlined />,
@@ -51,8 +53,6 @@ const ALARM_MODE_LABEL: Record<AlarmMode, string> = {
 
 /** 卡片内最多预览的条目数（子任务 / 闹钟），超出的折叠为 +N */
 const PREVIEW_LIMIT = 3;
-/** 贴纸墙待办卡片内最多预览的子任务数（卡片高度固定，超出裁切） */
-const WALL_TODO_LIMIT = 4;
 
 /** 待办完成判定：有子任务且全部勾选 */
 function todoAllDone(entry: Entry): boolean {
@@ -613,6 +613,7 @@ export function EntryList({ onSelect, mode }: EntryListProps) {
       onCopy={copyEntry}
       onExport={exportEntry}
       onRemove={removeEntry}
+      onTogglePop={(target) => void toggleNoteWindow(target.id)}
     />
   );
 
@@ -724,23 +725,8 @@ export function EntryList({ onSelect, mode }: EntryListProps) {
   const renderWallCard = (entry: Entry, positioned: boolean) => {
     const isDone = entryDone(entry);
     const meta = rowMeta(entry, now);
-    const isNote = entry.kind === "note";
-    const noteHtml = isNote ? markdownToHtml(entry.content || "") : "";
     const tintHex = paperTintHex(entry.color);
     const paperActive = (entry.paper ?? "plain") !== "plain";
-    const todoTotal = entry.kind === "todo" ? entry.items.length : 0;
-    const todoDoneCount =
-      entry.kind === "todo"
-        ? entry.items.filter((item) => item.done).length
-        : 0;
-    const todoPct = todoTotal
-      ? Math.round((todoDoneCount / todoTotal) * 100)
-      : 0;
-    const reminder = entry.kind === "reminder" ? reminderStatus(entry) : null;
-    const nextAlarm =
-      entry.kind === "reminder"
-        ? (entry.alarms.find((alarm) => !alarm.notified) ?? entry.alarms[0])
-        : undefined;
 
     const isDragging = draggingId === entry.id;
     const pos = positioned ? wallLayout.get(entry.id) : undefined;
@@ -768,65 +754,7 @@ export function EntryList({ onSelect, mode }: EntryListProps) {
         </div>
 
         <div className="wall-note-body">
-          {isNote ? (
-            noteHtml ? (
-              <div
-                className="note-md wall-note-md"
-                dangerouslySetInnerHTML={{ __html: noteHtml }}
-              />
-            ) : (
-              <span className="wall-note-empty">（空白便签）</span>
-            )
-          ) : entry.kind === "draw" ? (
-            entry.content ? (
-              <img
-                src={entry.content}
-                alt=""
-                draggable={false}
-                className="wall-draw-img"
-              />
-            ) : (
-              <span className="wall-note-empty">（空白涂鸦）</span>
-            )
-          ) : entry.kind === "todo" ? (
-            <div className="flex flex-col gap-2">
-              <div className="wall-progress">
-                <span className="wall-progress-track">
-                  <span
-                    className="wall-progress-fill"
-                    style={{ width: `${todoPct}%` }}
-                  />
-                </span>
-                <span className="wall-progress-count">
-                  {todoDoneCount}/{todoTotal}
-                </span>
-              </div>
-              {todoTotal === 0 ? (
-                <span className="wall-note-empty">暂无子任务</span>
-              ) : (
-                <TodoPreview items={entry.items} limit={WALL_TODO_LIMIT} />
-              )}
-            </div>
-          ) : (
-            <div className="flex flex-col gap-1.5">
-              <span
-                className={`wall-reminder-main ${meta.overdue ? "overdue" : ""}`}
-              >
-                <BellOutlined />
-                {reminder?.allNotified
-                  ? "全部已提醒"
-                  : meta.overdue
-                    ? "已到期"
-                    : formatRelative(reminder?.at ?? now)}
-              </span>
-              <span className="wall-reminder-sub">
-                {nextAlarm
-                  ? `${formatShort(nextAlarm.remindAt)} · ${ALARM_MODE_LABEL[nextAlarm.mode]}`
-                  : "暂无闹钟"}
-                {entry.alarms.length > 0 && `　共 ${entry.alarms.length} 个`}
-              </span>
-            </div>
-          )}
+          <EntryCardBody entry={entry} now={now} />
         </div>
 
         <div className="wall-note-foot">

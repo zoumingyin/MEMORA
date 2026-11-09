@@ -4,10 +4,13 @@ import {
   DeleteOutlined,
   DownloadOutlined,
   EditOutlined,
+  LayoutFilled,
+  LayoutOutlined,
   PushpinFilled,
   PushpinOutlined,
 } from "@ant-design/icons";
 import type { Entry, TodoItem } from "../types/entry";
+import { useNoteWindowOpen } from "../window/noteWindow";
 
 interface EntryToolsProps {
   entry: Entry;
@@ -17,9 +20,11 @@ interface EntryToolsProps {
   onCopy: (entry: Entry) => void;
   onExport: (entry: Entry) => void;
   onRemove: (entry: Entry) => void;
+  /** 弹出 / 收回独立小窗 */
+  onTogglePop: (entry: Entry) => void;
 }
 
-/** 卡片工具条：置顶 / 编辑 / 复制 / 导出图片 / 删除（贴纸墙与窄屏网格卡片共用） */
+/** 卡片工具条：置顶 / 独立小窗 / 编辑 / 复制 / 导出图片 / 删除（贴纸墙与窄屏网格卡片共用） */
 export function EntryTools({
   entry,
   pinned,
@@ -28,7 +33,10 @@ export function EntryTools({
   onCopy,
   onExport,
   onRemove,
+  onTogglePop,
 }: EntryToolsProps) {
+  // 该便签是否已弹出独立小窗（组件内调 hook，按钮激活态随开关实时刷新）
+  const popped = useNoteWindowOpen(entry.id);
   return (
     // 工具条内的点击（含 Popconfirm 弹层，React 事件会沿组件树冒泡）一律不传给卡片
     <span
@@ -47,6 +55,19 @@ export function EntryTools({
         }}
       >
         {pinned ? <PushpinFilled /> : <PushpinOutlined />}
+      </button>
+      <button
+        type="button"
+        className={`wall-note-tool${popped ? " text-[var(--note)]" : ""}`}
+        title={popped ? "收回独立小窗" : "拖出独立小窗"}
+        aria-label={popped ? "收回独立小窗" : "拖出独立小窗"}
+        aria-pressed={popped}
+        onClick={(event) => {
+          event.stopPropagation();
+          onTogglePop(entry);
+        }}
+      >
+        {popped ? <LayoutFilled /> : <LayoutOutlined />}
       </button>
       <button
         type="button"
@@ -110,7 +131,7 @@ interface TodoPreviewProps {
   items: TodoItem[];
   /** 最多展示的子任务数，超出显示 +N */
   limit: number;
-}/** 待办子任务预览：贴纸墙与网格卡片共用同一套勾选样式 */
+} /** 待办子任务预览：贴纸墙与网格卡片共用同一套勾选样式 */
 export function TodoPreview({ items, limit }: TodoPreviewProps) {
   return (
     <div className="todo-preview">

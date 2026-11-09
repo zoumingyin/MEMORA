@@ -452,6 +452,8 @@ export function MarkdownEditor({
     }
 
     const snapshot: CtxMenuState = {
+      // 命令回传定向到本窗口（小窗编辑态与主窗口详情可能同时存在）
+      sourceLabel: getCurrentWindow().label,
       selectedText,
       bold,
       strike,

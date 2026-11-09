@@ -63,6 +63,14 @@ import {
   prewarmSpotlightWindow,
   toggleSpotlightWindow,
 } from "./window/spotlightWindow";
+import {
+  NOTE_WINDOW_PATCH_EVENT,
+  NOTE_WINDOW_REMOVE_EVENT,
+  closeNoteWindow,
+  getOpenNoteIds,
+  restoreNoteWindows,
+  syncNoteWindow,
+} from "./window/noteWindow";
 import { isPseudoMaximized } from "./window/maximize";
 import { toMinuteStart } from "./utils/format";
 import { ENTRY_KIND_COLOR, ENTRY_KIND_LABEL } from "./utils/entryLabels";
@@ -161,6 +169,7 @@ export default function App() {
   const filter = useEntryStore((state) => state.filter);
   const view = useEntryStore((state) => state.view);
   const entries = useEntryStore((state) => state.entries);
+  const initialized = useEntryStore((state) => state.initialized);
   const trash = useEntryStore((state) => state.trash);
   const moveToTrash = useEntryStore((state) => state.moveToTrash);
   const selectedId = useEntryStore((state) => state.selectedId);
@@ -264,6 +273,23 @@ export default function App() {
     };
   }, []);
 
+  // 便签小窗数据同步：entries 任意变化（含小窗自身补丁回写）即把对应条目
+  // 最新值推给已打开的小窗；条目消失（移入废纸篓 / 彻底删除）时销毁其小窗
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    for (const id of getOpenNoteIds()) {
+      const entry = entries.find((item) => item.id === id);
+      if (entry) void syncNoteWindow(entry);
+      else void closeNoteWindow(id);
+    }
+  }, [entries]);
+
+  // 启动数据加载完成后重开上次会话遗留的便签小窗（条目已删除的自动清理）
+  useEffect(() => {
+    if (!initialized || !isTauriRuntime()) return;
+    void restoreNoteWindows();
+  }, [initialized]);
+
   useEffect(() => {
     // 启动时加载本机条目 + 废纸篓计数（角标展示）
     void useEntryStore.getState().loadAll();
@@ -310,6 +336,8 @@ export default function App() {
     let detachWindowShown: () => void = () => undefined;
     let detachSpotlight: () => void = () => undefined;
     let detachSpotlightJump: () => void = () => undefined;
+    let detachNotePatch: () => void = () => undefined;
+    let detachNoteRemove: () => void = () => undefined;
     let detachFocusShown: () => void = () => undefined;
 
     // 收纳窄条态不渲染列表与弹窗：托盘 / 提醒唤起前先展开回普通窗口。
@@ -517,6 +545,27 @@ export default function App() {
       spotlightJumpPromise.then((detach) => {
         detachSpotlightJump = detach;
       });
+      // 便签小窗内编辑回传：DetailPane 网关回传任意 patch，走统一 updateEntry 落盘
+      const notePatchPromise = listen<{
+        id: string;
+        patch: Partial<Entry>;
+      }>(NOTE_WINDOW_PATCH_EVENT, (event) => {
+        const { id, patch } = event.payload;
+        void useEntryStore.getState().updateEntry(id, patch);
+      });
+      notePatchPromise.then((detach) => {
+        detachNotePatch = detach;
+      });
+      // 便签小窗内发起删除：主窗口移入废纸篓，entries 同步联动关闭小窗
+      const noteRemovePromise = listen<{ id: string }>(
+        NOTE_WINDOW_REMOVE_EVENT,
+        (event) => {
+          void useEntryStore.getState().moveToTrash(event.payload.id);
+        }
+      );
+      noteRemovePromise.then((detach) => {
+        detachNoteRemove = detach;
+      });
       // 全局快捷键 Ctrl+Shift+Space：窗口可见且聚焦时隐藏；收纳窄条态改为展开
       const togglePromise = listen("global:toggle-window", () => {
         const winState = useWindowStore.getState();
@@ -665,6 +714,8 @@ export default function App() {
       detachFocusShown();
       detachSpotlight();
       detachSpotlightJump();
+      detachNotePatch();
+      detachNoteRemove();
       void hideSpotlightWindow();
     };
   }, []);

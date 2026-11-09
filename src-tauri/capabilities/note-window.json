@@ -1,0 +1,18 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "note-window",
+  "description": "便签独立小窗能力：显示/隐藏/聚焦/定位/关闭自身窗口，事件通信（接收条目快照与同步、回报就绪、回传编辑补丁）",
+  "windows": ["note-*"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-show",
+    "core:window:allow-hide",
+    "core:window:allow-set-focus",
+    "core:window:allow-set-position",
+    "core:window:allow-scale-factor",
+    "core:window:allow-close",
+    "core:window:allow-start-dragging",
+    "clipboard-manager:allow-read-text",
+    "clipboard-manager:allow-write-text"
+  ]
+}
