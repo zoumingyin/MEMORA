@@ -58,6 +58,9 @@ export function collectKnownTags(): string[] {
 /** 小窗尺寸（CSS px）＝贴纸墙卡片 264×228 + 内边距（顶部 14 / 其余 8），可调大小 */
 export const NOTE_WIN_W = 280;
 export const NOTE_WIN_H = 250;
+/** 编辑态展开尺寸（CSS px）：DetailPane 的完整表单需要足够宽高，避免挤压 / 工具栏换行 */
+export const NOTE_EDIT_W = 350;
+export const NOTE_EDIT_H = 550;
 
 /** 打开状态持久化键 */
 const NOTE_WINDOWS_KEY = "bianqian.noteWindows.v1";
@@ -110,7 +113,7 @@ export function useNoteWindowOpen(id: string): boolean {
   return useSyncExternalStore(
     subscribeNoteWindows,
     () => openIds.has(id),
-    () => false,
+    () => false
   );
 }
 
@@ -171,7 +174,7 @@ function requestReady(id: string): Promise<boolean> {
       }
       unlisten = un;
       await emitTo(labelFor(id), NOTE_WINDOW_PING_EVENT, { id }).catch(
-        () => undefined,
+        () => undefined
       );
     });
   });
@@ -314,13 +317,13 @@ export async function toggleNoteWindow(id: string): Promise<void> {
 /** 把条目最新数据同步给已打开的小窗（entries 变化时由 App 逐条调用） */
 export async function syncNoteWindow(entry: Entry): Promise<void> {
   if (!openIds.has(entry.id)) return;
-    try {
-      await emitTo(labelFor(entry.id), NOTE_WINDOW_SYNC_EVENT, {
-        id: entry.id,
-        entry,
-        knownTags: collectKnownTags(),
-      });
-    } catch {
+  try {
+    await emitTo(labelFor(entry.id), NOTE_WINDOW_SYNC_EVENT, {
+      id: entry.id,
+      entry,
+      knownTags: collectKnownTags(),
+    });
+  } catch {
     // 窗口可能正在关闭，忽略
   }
 }
