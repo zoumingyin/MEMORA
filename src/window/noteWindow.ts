@@ -55,8 +55,9 @@ export function collectKnownTags(): string[] {
   }
   return [...set].sort((a, b) => a.localeCompare(b, "zh-Hans-CN"));
 }
-export const NOTE_WIN_W = 320;
-export const NOTE_WIN_H = 380;
+/** 小窗尺寸（CSS px）＝贴纸墙卡片 264×228 + 内边距（顶部 14 / 其余 8），可调大小 */
+export const NOTE_WIN_W = 280;
+export const NOTE_WIN_H = 250;
 
 /** 打开状态持久化键 */
 const NOTE_WINDOWS_KEY = "bianqian.noteWindows.v1";

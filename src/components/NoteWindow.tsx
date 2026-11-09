@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { emitTo, listen } from "@tauri-apps/api/event";
 import { CloseOutlined, EditOutlined } from "@ant-design/icons";
@@ -13,6 +13,7 @@ import {
   type NoteWindowSnapshot,
 } from "../window/noteWindow";
 import { useNow } from "../hooks/useNow";
+import { paperTintHex } from "../utils/paper";
 import { EntryCardBody } from "./EntryCardBody";
 import { DetailPane } from "./DetailPane";
 import { EntryTags } from "./EntryCardParts";
@@ -176,12 +177,17 @@ export function NoteWindow() {
           ? Boolean(entry.done)
           : entry.alarms.every((alarm) => alarm.notified)
         : false;
+  // 纸张外观：底色染色 + 纹理（与贴纸墙卡片同一套 data-paper / --card-tint 通道）
+  const tintHex = paperTintHex(entry.color);
+  const paperActive = (entry.paper ?? "plain") !== "plain";
 
   return (
     <div className="h-full w-full pb-[8px] pl-[8px] pr-[8px] pt-[14px]">
       {/* 展示态：与贴纸墙卡片同一套结构/样式，点卡片进入编辑（同墙上点卡片开详情） */}
       <div
         className={`note-row wall-note wall-note-flow kind-${kind} ${wallDecoration(entry.id, pinned)} w-full! h-full! [rotate:0deg]! cursor-pointer! hover:[translate:none]! hover:[box-shadow:var(--wall-card-shadow)]! ${isDone ? "is-done" : ""}`}
+        data-paper={paperActive ? entry.paper : undefined}
+        style={tintHex ? ({ "--card-tint": tintHex } as CSSProperties) : undefined}
         onClick={() => setMode("edit")}
       >
         {/* 头部 = 拖拽区：图标 + 标题 + 工具（编辑 / 关闭） */}
