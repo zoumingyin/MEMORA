@@ -72,18 +72,6 @@ export function EntryTools({
       <button
         type="button"
         className="wall-note-tool"
-        title="编辑便签"
-        aria-label="编辑便签"
-        onClick={(event) => {
-          event.stopPropagation();
-          onEdit(entry);
-        }}
-      >
-        <EditOutlined />
-      </button>
-      <button
-        type="button"
-        className="wall-note-tool"
         title="复制内容"
         aria-label="复制内容"
         onClick={(event) => {
