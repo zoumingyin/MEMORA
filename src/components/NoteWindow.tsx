@@ -215,9 +215,9 @@ export function NoteWindow() {
         style={tintHex ? ({ "--card-tint": tintHex } as CSSProperties) : undefined}
         onClick={() => setMode("edit")}
       >
-        {/* 头部 = 拖拽区：图标 + 标题 + 工具（编辑 / 关闭） */}
+        {/* 头部 = 拖拽区：图标 + 标题 + 工具（编辑 / 关闭），整行按住可拖动小窗 */}
         <div className="wall-note-head" data-tauri-drag-region>
-          <span className="wall-note-kind" aria-hidden="true">
+          <span className="wall-note-kind" aria-hidden="true" data-tauri-drag-region>
             {KIND_ICON[kind]}
           </span>
           <span className="wall-note-title" data-tauri-drag-region>
