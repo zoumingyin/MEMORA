@@ -172,7 +172,12 @@ function DetailForm({ entry, onRemove, gateway }: DetailFormProps) {
   const allTags = useMemo(() => {
     const set = new Set<string>();
     for (const item of tagPool) {
-      for (const tag of item.tags ?? []) set.add(tag);
+      // 网关模式下 tagPool 是标签字符串池，主窗口模式下是条目列表
+      if (typeof item === "string") {
+        set.add(item);
+      } else {
+        for (const tag of item.tags) set.add(tag);
+      }
     }
     return [...set].sort((a, b) => a.localeCompare(b, "zh-Hans-CN"));
   }, [tagPool]);

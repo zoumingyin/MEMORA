@@ -224,6 +224,8 @@ export async function openNoteWindow(id: string): Promise<boolean> {
         url: "note.html",
         width: NOTE_WIN_W,
         height: NOTE_WIN_H,
+        minWidth: 200,
+        minHeight: 160,
         center: false,
         decorations: false,
         transparent: true,

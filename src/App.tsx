@@ -77,7 +77,7 @@ import { ENTRY_KIND_COLOR, ENTRY_KIND_LABEL } from "./utils/entryLabels";
 import { startReminderScheduler } from "./reminder/scheduler";
 import { startSummaryScheduler } from "./services/dailySummary";
 import { isTauriRuntime } from "./repository";
-import type { EntryKind, NewEntryInput } from "./types/entry";
+import type { Entry, EntryKind, NewEntryInput } from "./types/entry";
 import { TitleBar } from "./components/TitleBar";
 import { CategoryTabs } from "./components/CategoryTabs";
 import { SearchBar } from "./components/SearchBar";

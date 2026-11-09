@@ -25,6 +25,28 @@ function entryIdFromLabel(): string {
   return getCurrentWindow().label.slice(NOTE_WINDOW_PREFIX.length);
 }
 
+/** 右下角缩放手柄：拖拽调用原生 resize（SouthEast 方向），展示态/编辑态均可用 */
+function ResizeHandle() {
+  return (
+    <div
+      className="absolute right-[2px] bottom-[2px] z-10 h-[18px] w-[18px] cursor-[nwse-resize] rounded-[4px]"
+      style={{
+        background:
+          "repeating-linear-gradient(-45deg, transparent 0 2px, var(--border) 2px 3px)",
+      }}
+      title="拖拽调整大小"
+      onMouseDown={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        void getCurrentWindow()
+          .startResizeDragging("SouthEast")
+          .catch(() => undefined);
+      }}
+      onClick={(event) => event.stopPropagation()}
+    />
+  );
+}
+
 /**
  * 便签独立小窗（note.html 轻量入口），双模式：
  *
@@ -153,7 +175,7 @@ export function NoteWindow() {
   // 编辑态：DetailPane 本体（能力与主窗口详情完全一致）
   if (mode === "edit") {
     return (
-      <div className="h-full w-full p-[8px]">
+      <div className="relative h-full w-full p-[8px]">
         <DetailPane
           entry={entry}
           gateway={gateway}
@@ -164,6 +186,7 @@ export function NoteWindow() {
             );
           }}
         />
+        <ResizeHandle />
       </div>
     );
   }
@@ -182,7 +205,9 @@ export function NoteWindow() {
   const paperActive = (entry.paper ?? "plain") !== "plain";
 
   return (
-    <div className="h-full w-full pb-[8px] pl-[8px] pr-[8px] pt-[14px]">
+    <div className="relative h-full w-full pb-[8px] pl-[8px] pr-[8px] pt-[14px]">
+      {/* 右下角缩放手柄：拖拽自由调整窗口宽高（原生 resize，不经过卡片点击） */}
+      <ResizeHandle />
       {/* 展示态：与贴纸墙卡片同一套结构/样式，点卡片进入编辑（同墙上点卡片开详情） */}
       <div
         className={`note-row wall-note wall-note-flow kind-${kind} ${wallDecoration(entry.id, pinned)} w-full! h-full! [rotate:0deg]! cursor-pointer! hover:[translate:none]! hover:[box-shadow:var(--wall-card-shadow)]! ${isDone ? "is-done" : ""}`}
