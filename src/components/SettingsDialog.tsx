@@ -46,6 +46,7 @@ import type { Entry } from "../types/entry";
 import {
   readSummaryLastRun,
   readSummarySettings,
+  readSummaryStatus,
   runSummary,
   WEEKDAY_LABELS,
   writeSummarySettings,
@@ -56,6 +57,7 @@ import {
 import { currentWorkArea, getBounds } from "../window/tauriWindow";
 import { collapseToStripAnimated, detectDockEdge } from "../window/edgeDock";
 import { openExternal } from "../utils/openExternal";
+import { formatShort } from "../utils/format";
 
 interface SettingsDialogProps {
   open: boolean;
@@ -372,6 +374,7 @@ export function SettingsDialog({
   );
   const [summaryBusy, setSummaryBusy] = useState<SummaryMode | null>(null);
   const [summaryMessage, setSummaryMessage] = useState("");
+  const [summaryStatus, setSummaryStatus] = useState(() => readSummaryStatus());
   // TitleBar 用 key 控制开关重挂载：useState 初始化器每次打开都会重读本地值，
   // 无需再写 open effect；手动生成后由 handleManualSummary 刷新 last-run。
 
@@ -400,6 +403,7 @@ export function SettingsDialog({
       );
     } finally {
       setSummaryBusy(null);
+      setSummaryStatus(readSummaryStatus());
     }
   };
 
@@ -1390,6 +1394,21 @@ export function SettingsDialog({
       case "ai-summary": {
         return (
           <div className="flex flex-col gap-3">
+            {(summarySettings.dailyEnabled || summarySettings.weeklyEnabled) &&
+              !aiContextEnabled && (
+                <div className="flex items-center justify-between gap-2 rounded-[8px] bg-[var(--hover-fill)] p-2.5 text-[11px] leading-relaxed text-[var(--danger)]">
+                  <span className="flex-1">
+                    「读取便签作为上下文」已关闭，自动总结不会运行。
+                  </span>
+                  <Button
+                    size="small"
+                    className="shrink-0"
+                    onClick={() => setActiveKey("ai-privacy")}
+                  >
+                    去开启
+                  </Button>
+                </div>
+              )}
             <div className="settings-item grid">
               <div className="settings-item-main">
                 <span className="settings-item-label">每日总结</span>
@@ -1478,6 +1497,13 @@ export function SettingsDialog({
                 {summaryMessage}
               </div>
             )}
+            {aiContextEnabled && summaryStatus.problem && (
+              <div className="rounded-[8px] bg-[var(--hover-fill)] p-2.5 text-[11px] leading-relaxed text-[var(--danger)]">
+                自动运行未完成
+                {summaryStatus.at ? `（${formatShort(summaryStatus.at)}）` : ""}：
+                {summaryStatus.problem}
+              </div>
+            )}
             <div className="rounded-[8px] bg-[var(--hover-fill)] p-2.5 text-[11px] leading-relaxed text-[var(--text-muted)]">
               <p className="m-0">
                 上次生成：日总结 {summaryLastRun.daily ?? "从未生成"} · 周总结{" "}
@@ -1485,7 +1511,7 @@ export function SettingsDialog({
               </p>
               <p className="m-0 mt-1">
                 总结以「AI 总结」标签保存为普通便签，可编辑或删除；生成会读取便签内容，
-                需开启「上下文与隐私」且模型可用；自动生成失败后会暂停 10 分钟再重试。
+                需开启「上下文与隐私」且模型可用；请求失败后会暂停 10 分钟再重试。
               </p>
             </div>
           </div>
@@ -1547,7 +1573,10 @@ export function SettingsDialog({
             selectedKeys={[activeKey]}
             onSelect={(keys) => {
               const key = keys[0] as string | undefined;
-              if (key && SETTING_LEAF_KEYS.has(key)) setActiveKey(key);
+              if (!key || !SETTING_LEAF_KEYS.has(key)) return;
+              setActiveKey(key);
+              // 心跳每 30s 判定一次，切到总结页时重读阻塞/失败原因
+              if (key === "ai-summary") setSummaryStatus(readSummaryStatus());
             }}
             treeData={SETTING_TREE_DATA}
           />

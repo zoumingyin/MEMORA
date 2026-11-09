@@ -1,6 +1,6 @@
 import type { AiChatMessage } from '../types/ai'
 import type { Entry, NoteEntry, ReminderEntry, TodoEntry } from '../types/entry'
-import { streamChat } from './aiClient'
+import { cancelChat, streamChat } from './aiClient'
 import { parseAssistantActions } from '../utils/assistantActions'
 import { useAssistantStore } from '../store/useAssistantStore'
 import { useEntryStore } from '../store/useEntryStore'
@@ -10,8 +10,10 @@ import { useEntryStore } from '../store/useEntryStore'
  * 生成一篇 Markdown 总结并以「AI 总结」标签存为新便签。
  * - 走与对话相同的 streamChat 通道，但不下发任何工具（纯文本模型也能用）；
  * - 隐私不变量：上下文开关（contextEnabled）关闭时不读取、不生成；
- * - 调度在前端 30s 轮询，配合 localStorage 的 last-run 记录去重，
- *   生成失败后进入冷却，避免反复请求。
+ * - 调度由 Worker 心跳驱动（30s），配合 localStorage 的 last-run 记录去重，
+ *   生成失败后进入冷却，避免反复请求；
+ * - 没生成成功的原因（素材为空 / 模型报错 / 超时）持久化后在设置页展示；
+ *   上下文开关关闭由设置页按开关实时提示，不算故障。
  */
 
 export type SummaryMode = 'daily' | 'weekly'
@@ -33,11 +35,24 @@ export interface SummaryLastRun {
   weekly: string | null
 }
 
+/** 最近一次「没生成成功」的原因，供设置页展示；生成成功后清空 */
+export interface SummaryStatus {
+  /** 发现该原因的时间戳（ms） */
+  at: number | null
+  /** 面向用户的原因文案；null 表示无异常 */
+  problem: string | null
+}
+
 const SETTINGS_KEY = 'bianqian.aiSummary.v1'
 const LAST_RUN_KEY = 'bianqian.aiSummary.lastRun.v1'
+const STATUS_KEY = 'bianqian.aiSummary.status.v1'
 const SUMMARY_TAG = 'AI 总结'
 /** 生成失败后的冷却时间：30s 轮询下避免反复打失败请求 */
 const FAILURE_COOLDOWN_MS = 10 * 60 * 1000
+/** 调度判定间隔：Worker 心跳与页面兜底定时器同频 */
+const TICK_INTERVAL_MS = 30_000
+/** 单次生成的总时限：上游持续发空帧时 read_timeout 不会到点，需前端兜底取消 */
+const STREAM_TIMEOUT_MS = 180_000
 /** 上下文体积兜底：各段落最多收集条数 */
 const MAX_NOTES = 40
 const MAX_TODOS = 60
@@ -97,6 +112,26 @@ export function readSummaryLastRun(): SummaryLastRun {
 
 function writeSummaryLastRun(next: SummaryLastRun): void {
   localStorage.setItem(LAST_RUN_KEY, JSON.stringify(next))
+}
+
+export function readSummaryStatus(): SummaryStatus {
+  try {
+    const raw = localStorage.getItem(STATUS_KEY)
+    if (!raw) return { at: null, problem: null }
+    const parsed = JSON.parse(raw) as Partial<SummaryStatus>
+    return {
+      at: typeof parsed.at === 'number' ? parsed.at : null,
+      problem: typeof parsed.problem === 'string' ? parsed.problem : null,
+    }
+  } catch {
+    return { at: null, problem: null }
+  }
+}
+
+/** 原因未变化时不重复写盘：心跳每 30s 一轮，长期阻塞会反复命中同一原因 */
+function recordProblem(problem: string | null): void {
+  if (readSummaryStatus().problem === problem) return
+  localStorage.setItem(STATUS_KEY, JSON.stringify({ at: problem ? Date.now() : null, problem }))
 }
 
 function isValidTime(value: unknown): value is string {
@@ -262,16 +297,25 @@ function summaryTitle(mode: SummaryMode): string {
   return `AI 周总结 · ${weekStartKey(now)} ~ ${dateKey(now)}`
 }
 
-/** 把 streamChat 包成 Promise：收集增量文本，错误转异常 */
+/** 把 streamChat 包成 Promise：收集增量文本，错误转异常，超总时限则取消请求 */
 function streamOnce(messages: AiChatMessage[]): Promise<string> {
+  const requestId = `summary-${Date.now().toString(36)}`
   return new Promise<string>((resolve, reject) => {
     let text = ''
-    void streamChat(`summary-${Date.now().toString(36)}`, null, messages, {
+    const timer = window.setTimeout(() => {
+      cancelChat(requestId)
+      reject(new Error('生成超时（3 分钟未完成），已取消本次请求。'))
+    }, STREAM_TIMEOUT_MS)
+    const settle = (finish: () => void): void => {
+      window.clearTimeout(timer)
+      finish()
+    }
+    void streamChat(requestId, null, messages, {
       onDelta: (delta) => {
         text += delta
       },
-      onDone: () => resolve(text),
-      onError: (error) => reject(new Error(error.message)),
+      onDone: () => settle(() => resolve(text)),
+      onError: (error) => settle(() => reject(new Error(error.message))),
     })
   })
 }
@@ -285,6 +329,9 @@ function hasExistingSummary(mode: SummaryMode): boolean {
         !entry.deletedAt && entry.tags.includes(SUMMARY_TAG) && entry.title === title,
     )
 }
+
+/** 窗口内没有可总结的素材：不是故障，调度器据此跳过失败冷却，下一轮再看 */
+class NoMaterialError extends Error {}
 
 export interface RunSummaryOptions {
   /** 手动触发：跳过去重与冷却（仍尊重上下文隐私开关） */
@@ -322,7 +369,9 @@ export async function runSummary(
     context.todosPending.length === 0 &&
     context.remindersUpcoming.length === 0
   if (empty) {
-    throw new Error(mode === 'daily' ? '今天还没有可总结的记录。' : '最近一周没有可总结的记录。')
+    throw new NoMaterialError(
+      mode === 'daily' ? '今天还没有可总结的记录。' : '最近一周没有可总结的记录。',
+    )
   }
 
   const raw = await streamOnce(buildMessages(context))
@@ -349,6 +398,7 @@ export async function runSummary(
     ...lastRun,
     [mode]: mode === 'daily' ? dateKey(new Date()) : weekStartKey(new Date()),
   })
+  recordProblem(null)
   return entry.id
 }
 
@@ -356,15 +406,21 @@ let failureAt = 0
 
 interface SchedulerState {
   timer: number | null
+  worker: Worker | null
   busy: boolean
 }
 
-const scheduler: SchedulerState = { timer: null, busy: false }
+const scheduler: SchedulerState = { timer: null, worker: null, busy: false }
 
 /** 调度器心跳：检查设置与上次运行记录，到点触发生成 */
 async function tick(): Promise<void> {
   const settings = readSummarySettings()
-  if (!settings.dailyEnabled && !settings.weeklyEnabled) return
+  if (!settings.dailyEnabled && !settings.weeklyEnabled) {
+    recordProblem(null)
+    return
+  }
+  // 上下文关闭是用户主动设置的隐私状态，不算故障：设置页按开关实时给出提示与「去开启」入口，
+  // 不写入 problem，避免开关打开后仍显示过期原因
   if (!useAssistantStore.getState().contextEnabled) return
   if (scheduler.busy) return
   // 距上次失败仍在冷却期内：跳过本轮，避免反复请求
@@ -394,37 +450,56 @@ async function tick(): Promise<void> {
   for (const mode of due) {
     scheduler.busy = true
     try {
-      await runSummary(mode)
+      const id = await runSummary(mode)
+      console.info(`[AI 总结] 已自动生成${mode === 'daily' ? '日' : '周'}总结：${id}`)
     } catch (error) {
-      failureAt = Date.now()
-      if (import.meta.env.DEV) {
-        console.warn('[AI 总结] 自动生成失败：', error)
-      }
+      // 素材为空不进冷却：用户随后新增记录时，下一轮心跳即可生成
+      if (!(error instanceof NoMaterialError)) failureAt = Date.now()
+      const message = error instanceof Error ? error.message : String(error)
+      recordProblem(message)
+      console.warn('[AI 总结] 自动生成未完成：', message)
     } finally {
       scheduler.busy = false
     }
   }
 }
 
-/** 启动总结调度器（30s 轮询），返回清理函数 */
+/** 启动总结调度器（Worker 心跳 30s），返回清理函数 */
 export function startSummaryScheduler(): () => void {
   if (scheduler.timer !== null) return () => undefined
   // 启动即先判定一次：重启后「到点未跑」的任务无需等第一个 30s 才补上
   void tick()
-  // 窗口最小化/隐藏时页面定时器会被 WebView 节流到分钟级；
   // 回到前台立即补一次判定，缩小漏检窗口
   const onVisible = (): void => {
     if (!document.hidden) void tick()
   }
   document.addEventListener('visibilitychange', onVisible)
+  // 页面兜底定时器：窗口隐藏 / 收纳成窄条时会被 WebView 节流，
+  // 准时触发由 Worker 心跳承担（与闹钟调度同一套做法）
   scheduler.timer = window.setInterval(() => {
     void tick()
-  }, 30_000)
+  }, TICK_INTERVAL_MS)
+  try {
+    const worker = new Worker(new URL('./summaryTickWorker.ts', import.meta.url), {
+      type: 'module',
+    })
+    worker.onmessage = () => {
+      void tick()
+    }
+    worker.onerror = (error) => {
+      console.error('[AI 总结] 调度心跳 Worker 异常', error)
+    }
+    scheduler.worker = worker
+  } catch (error) {
+    console.error('[AI 总结] 创建调度心跳 Worker 失败，仅使用页面定时器兜底', error)
+  }
   return () => {
     if (scheduler.timer !== null) {
       window.clearInterval(scheduler.timer)
       scheduler.timer = null
     }
+    scheduler.worker?.terminate()
+    scheduler.worker = null
     document.removeEventListener('visibilitychange', onVisible)
   }
 }
