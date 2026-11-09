@@ -3,7 +3,6 @@ import {
   CopyOutlined,
   DeleteOutlined,
   DownloadOutlined,
-  EditOutlined,
   LayoutFilled,
   LayoutOutlined,
   PushpinFilled,
@@ -15,7 +14,6 @@ import { useNoteWindowOpen } from "../window/noteWindow";
 interface EntryToolsProps {
   entry: Entry;
   pinned: boolean;
-  onEdit: (entry: Entry) => void;
   onTogglePin: (entry: Entry) => void;
   onCopy: (entry: Entry) => void;
   onExport: (entry: Entry) => void;
@@ -24,11 +22,10 @@ interface EntryToolsProps {
   onTogglePop: (entry: Entry) => void;
 }
 
-/** 卡片工具条：置顶 / 独立小窗 / 编辑 / 复制 / 导出图片 / 删除（贴纸墙与窄屏网格卡片共用） */
+/** 卡片工具条：置顶 / 独立小窗 / 复制 / 导出图片 / 删除（贴纸墙与窄屏网格卡片共用）；点卡片即进详情编辑 */
 export function EntryTools({
   entry,
   pinned,
-  onEdit,
   onTogglePin,
   onCopy,
   onExport,
@@ -68,18 +65,6 @@ export function EntryTools({
         }}
       >
         {popped ? <LayoutFilled /> : <LayoutOutlined />}
-      </button>
-      <button
-        type="button"
-        className="wall-note-tool"
-        title="编辑便签"
-        aria-label="编辑便签"
-        onClick={(event) => {
-          event.stopPropagation();
-          onEdit(entry);
-        }}
-      >
-        <EditOutlined />
       </button>
       <button
         type="button"

@@ -608,7 +608,6 @@ export function EntryList({ onSelect, mode }: EntryListProps) {
     <EntryTools
       entry={entry}
       pinned={pinnedSet.has(entry.id)}
-      onEdit={(target) => onSelect(target.id)}
       onTogglePin={toggleWallPin}
       onCopy={copyEntry}
       onExport={exportEntry}
