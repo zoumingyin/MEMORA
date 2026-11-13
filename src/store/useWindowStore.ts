@@ -4,15 +4,12 @@ import { applyAlwaysOnTop, type Bounds } from "../window/tauriWindow";
 const STORAGE_KEY = "bianqian.window.v1";
 
 export type DockEdge = "left" | "right" | "top";
-export type AppTheme = "light" | "dark";
 
 interface PersistedSettings {
   alwaysOnTop: boolean;
   /** 面板背景不透明度 0 ~ 1；仅作用于背景，文字保持不透明 */
   opacity: number;
   edgeDocking: boolean;
-  /** 界面主题：亮色 / 暗色（独立于透明度，透明度只调透明程度） */
-  theme: AppTheme;
 }
 
 interface WindowState extends PersistedSettings {
@@ -31,7 +28,6 @@ interface WindowState extends PersistedSettings {
   setAlwaysOnTop: (enabled: boolean) => Promise<void>;
   setOpacity: (value: number) => void;
   setEdgeDocking: (enabled: boolean) => void;
-  setTheme: (theme: AppTheme) => void;
   setDock: (edge: DockEdge, restored: Bounds, docked: boolean) => void;
   setCollapsing: (value: boolean) => void;
   clearDock: () => void;
@@ -44,18 +40,16 @@ function loadPersisted(): PersistedSettings {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw) as Partial<PersistedSettings>;
-      // 兼容旧版本数据：theme 缺省为亮色
       return {
         alwaysOnTop: parsed.alwaysOnTop ?? true,
         opacity: parsed.opacity ?? 1,
         edgeDocking: parsed.edgeDocking ?? true,
-        theme: parsed.theme ?? "light",
       };
     }
   } catch {
     // 损坏时回落到默认值
   }
-  return { alwaysOnTop: true, opacity: 1, edgeDocking: true, theme: "light" };
+  return { alwaysOnTop: true, opacity: 1, edgeDocking: true };
 }
 
 function persist(settings: PersistedSettings): void {
@@ -68,7 +62,6 @@ export const useWindowStore = create<WindowState>((set, get) => ({
   alwaysOnTop: initial.alwaysOnTop,
   opacity: initial.opacity,
   edgeDocking: initial.edgeDocking,
-  theme: initial.theme,
   dockedEdge: null,
   docked: false,
   collapsing: false,
@@ -82,7 +75,6 @@ export const useWindowStore = create<WindowState>((set, get) => ({
       alwaysOnTop: enabled,
       opacity: get().opacity,
       edgeDocking: get().edgeDocking,
-      theme: get().theme,
     });
   },
 
@@ -93,7 +85,6 @@ export const useWindowStore = create<WindowState>((set, get) => ({
       alwaysOnTop: get().alwaysOnTop,
       opacity: clamped,
       edgeDocking: get().edgeDocking,
-      theme: get().theme,
     });
   },
 
@@ -103,17 +94,6 @@ export const useWindowStore = create<WindowState>((set, get) => ({
       alwaysOnTop: get().alwaysOnTop,
       opacity: get().opacity,
       edgeDocking: enabled,
-      theme: get().theme,
-    });
-  },
-
-  setTheme: (theme) => {
-    set({ theme });
-    persist({
-      alwaysOnTop: get().alwaysOnTop,
-      opacity: get().opacity,
-      edgeDocking: get().edgeDocking,
-      theme,
     });
   },
 

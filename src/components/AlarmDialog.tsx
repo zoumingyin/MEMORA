@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Button, ConfigProvider, theme as antdTheme } from 'antd'
+import { Button } from 'antd'
 import { BellOutlined } from '@ant-design/icons'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { emit } from '@tauri-apps/api/event'
@@ -18,7 +18,7 @@ const MODE_LABEL: Record<AlarmMode, string> = {
   workday: '（工作日）',
 }
 
-/** 从弹窗窗口 URL 参数读取提醒条目与具体闹钟（含主题标记） */
+/** 从弹窗窗口 URL 参数读取提醒条目与具体闹钟（主题由全局 ThemeProvider 统一解析） */
 function readParams(): {
   id: string
   alarm: string
@@ -27,7 +27,6 @@ function readParams(): {
   time: number
   mode: AlarmMode
   method: AlarmMethod
-  isDark: boolean
 } {
   const query = new URLSearchParams(location.search)
   const mode = query.get('mode') as AlarmMode | null
@@ -42,7 +41,6 @@ function readParams(): {
       ? (mode as AlarmMode)
       : 'once',
     method: method === 'notification' || method === 'sound' ? method : 'dialog',
-    isDark: query.get('dark') === '1',
   }
 }
 
@@ -130,29 +128,9 @@ function playBeep(): void {
   }
 }
 
-/** 暗色模式下的 CSS 变量（和 App.tsx / ImagePreviewDialog 保持一致） */
-const DARK_TOKENS = {
-  '--panel-rgb': '32, 34, 40',
-  '--panel-soft-rgb': '42, 45, 52',
-  '--field-rgb': '46, 49, 56',
-  '--text': '#ffffff',
-  '--text-muted': '#e0dcd3',
-  '--border': 'rgba(236, 230, 220, 0.2)',
-  '--control-border': 'rgba(236, 230, 220, 0.35)',
-  '--hover-fill': 'rgba(255, 255, 255, 0.1)',
-  '--text-halo': 'none',
-  '--glass-edge': 'rgba(236, 230, 220, 0.12)',
-  '--glass-highlight': 'rgba(236, 230, 220, 0.06)',
-}
-
-/** 亮色模式下需要恢复的变量 */
-const LIGHT_TOKENS = {
-  '--hover-fill': 'rgba(0, 0, 0, 0.06)',
-}
-
 /**
  * 闹钟弹窗：独立置顶透明窗口，仅浮出提醒卡片本身（无标题栏 / 无背景遮罩 / 无窗口边框）。
- * 交互参考图片预览弹窗：从 URL 读参、跟随暗亮主题、确认即关窗口。
+ * 交互参考图片预览弹窗：从 URL 读参、跟随全局主题、确认即关窗口。
  * 卡片显示模拟表盘与当前时间，确认后标记闹钟已通知并关闭；声音方式挂载时播放提示音。
  */
 export function AlarmDialog() {
@@ -160,25 +138,6 @@ export function AlarmDialog() {
   const [confirmed, setConfirmed] = useState(false)
   const confirmedRef = useRef(false)
   const now = useNow(1000)
-
-  // 应用主题：读取到 isDark 后设置 CSS 变量与 dark-glass 类
-  useEffect(() => {
-    const rootStyle = document.documentElement.style
-    if (params.isDark) {
-      document.documentElement.classList.add('dark-glass')
-      for (const [key, value] of Object.entries(DARK_TOKENS)) {
-        rootStyle.setProperty(key, value)
-      }
-    } else {
-      document.documentElement.classList.remove('dark-glass')
-      for (const key of Object.keys(DARK_TOKENS)) {
-        rootStyle.removeProperty(key)
-      }
-      for (const [key, value] of Object.entries(LIGHT_TOKENS)) {
-        rootStyle.setProperty(key, value)
-      }
-    }
-  }, [params.isDark])
 
   // 声音提醒方式：挂载时播放提示音
   useEffect(() => {
@@ -264,71 +223,69 @@ export function AlarmDialog() {
   const cd = new Date(now)
 
   return (
-    <ConfigProvider theme={params.isDark ? { algorithm: antdTheme.darkAlgorithm } : undefined}>
-      <div className="alarm-dialog">
-        <div className="alarm-body">
-          <section className="reminder-card" role="alertdialog" aria-label="闹钟提醒">
-            <header className="reminder-card-head">
-              <BellOutlined />
-              弹窗提醒
-            </header>
+    <div className="alarm-dialog">
+      <div className="alarm-body">
+        <section className="reminder-card" role="alertdialog" aria-label="闹钟提醒">
+          <header className="reminder-card-head">
+            <BellOutlined />
+            弹窗提醒
+          </header>
 
-            <div className="reminder-clock-wrap">
-              <AnalogClock now={now} />
-              <p className="reminder-current-time">
-                当前时间 {pad2(cd.getHours())}:{pad2(cd.getMinutes())}:{pad2(cd.getSeconds())}
-              </p>
-            </div>
-
-            <p className="reminder-time-line">
-              <span className="reminder-time-label">提醒时间：</span>
-              <span className="reminder-time-value">
-                {at.getMonth() + 1}月{at.getDate()}日 {pad2(at.getHours())}:{pad2(at.getMinutes())}
-                {MODE_LABEL[params.mode]}
-              </span>
+          <div className="reminder-clock-wrap">
+            <AnalogClock now={now} />
+            <p className="reminder-current-time">
+              当前时间 {pad2(cd.getHours())}:{pad2(cd.getMinutes())}:{pad2(cd.getSeconds())}
             </p>
+          </div>
 
-            <h2 className="reminder-title">{params.title || '提醒'}</h2>
-            {params.content && <p className="reminder-content">{params.content}</p>}
+          <p className="reminder-time-line">
+            <span className="reminder-time-label">提醒时间：</span>
+            <span className="reminder-time-value">
+              {at.getMonth() + 1}月{at.getDate()}日 {pad2(at.getHours())}:{pad2(at.getMinutes())}
+              {MODE_LABEL[params.mode]}
+            </span>
+          </p>
 
-            <button
-              type="button"
-              className="reminder-enter"
-              title="打开便签并查看这条提醒"
-              onClick={() => void handleEnter()}
-            >
-              <span>进入便签</span>
-              <span>&gt;&gt;&gt;</span>
-            </button>
+          <h2 className="reminder-title">{params.title || '提醒'}</h2>
+          {params.content && <p className="reminder-content">{params.content}</p>}
 
-            <div className="mt-1 flex w-full items-center justify-center gap-1.5">
-              <span className="whitespace-nowrap text-[12px] text-[var(--text-muted)]">
-                稍后提醒
-              </span>
-              {SNOOZE_MINUTES.map((minutes) => (
-                <Button
-                  key={minutes}
-                  size="small"
-                  disabled={confirmed}
-                  onClick={() => void handleSnooze(minutes)}
-                >
-                  {minutes} 分钟
-                </Button>
-              ))}
-            </div>
+          <button
+            type="button"
+            className="reminder-enter"
+            title="打开便签并查看这条提醒"
+            onClick={() => void handleEnter()}
+          >
+            <span>进入便签</span>
+            <span>&gt;&gt;&gt;</span>
+          </button>
 
-            <Button
-              type="primary"
-              size="large"
-              block
-              className="reminder-confirm"
-              onClick={() => void handleConfirm()}
-            >
-              我知道了
-            </Button>
-          </section>
-        </div>
+          <div className="mt-1 flex w-full items-center justify-center gap-1.5">
+            <span className="whitespace-nowrap text-[12px] text-[var(--text-muted)]">
+              稍后提醒
+            </span>
+            {SNOOZE_MINUTES.map((minutes) => (
+              <Button
+                key={minutes}
+                size="small"
+                disabled={confirmed}
+                onClick={() => void handleSnooze(minutes)}
+              >
+                {minutes} 分钟
+              </Button>
+            ))}
+          </div>
+
+          <Button
+            type="primary"
+            size="large"
+            block
+            className="reminder-confirm"
+            onClick={() => void handleConfirm()}
+          >
+            我知道了
+          </Button>
+        </section>
       </div>
-    </ConfigProvider>
+    </div>
   )
 }

@@ -35,12 +35,9 @@ export const NOTE_WINDOW_PATCH_EVENT = "note-window:patch";
 /** 小窗 → 主窗口：小窗内删除便签（移入废纸篓），主窗口执行后联动关闭小窗 */
 export const NOTE_WINDOW_REMOVE_EVENT = "note-window:remove";
 
-/** 主窗口 → 小窗的打开快照 */
+/** 主窗口 → 小窗的打开快照（主题由全局 ThemeProvider 解析，不再随快照下发） */
 export interface NoteWindowSnapshot {
   entry: Entry;
-  isDark: boolean;
-  /** 主窗口当前主题的 CSS 变量快照，注入本窗口保持视觉一致 */
-  cssVars: Record<string, string>;
   /** 全部已知标签（DetailPane 编辑网关的标签候选池） */
   knownTags: string[];
   /** 主窗口侧是否置顶（小窗按同款哈希生成胶带/图钉装饰） */
@@ -127,25 +124,6 @@ async function findWindow(id: string): Promise<WebviewWindow | null> {
   } catch {
     return null;
   }
-}
-
-/** 快照主窗口当前主题 CSS 变量（与右键菜单/搜索窗同一组） */
-function buildNoteCssVars(): Record<string, string> {
-  const cssVars: Record<string, string> = {};
-  for (const key of [
-    "--field-rgb",
-    "--border",
-    "--text",
-    "--text-muted",
-    "--hover-fill",
-    "--kind-accent",
-    "--note",
-  ]) {
-    cssVars[key] = getComputedStyle(document.documentElement)
-      .getPropertyValue(key)
-      .trim();
-  }
-  return cssVars;
 }
 
 /** 等待指定小窗回报就绪（超时视为窗口失效） */
@@ -288,8 +266,6 @@ export async function openNoteWindow(id: string): Promise<boolean> {
     await emitTo(labelFor(id), NOTE_WINDOW_OPEN_EVENT, {
       id,
       entry,
-      cssVars: buildNoteCssVars(),
-      isDark: document.documentElement.classList.contains("dark-glass"),
       knownTags: collectKnownTags(),
       pinned: useUiStore.getState().pinnedIds.includes(id),
     });

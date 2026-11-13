@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "便签",
+  "productName": "MEMORA",
   "version": "0.2.0",
   "identifier": "com.bianqian.desktop",
   "build": {
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "便签",
+        "title": "MEMORA",
         "width": 422,
         "height": 540,
         "minWidth": 422,
@@ -26,6 +26,23 @@
         "shadow": false,
         "skipTaskbar": true,
         "visible": false
+      },
+      {
+        "label": "splash",
+        "title": "MEMORA",
+        "url": "splash.html",
+        "width": 560,
+        "height": 520,
+        "resizable": false,
+        "maximizable": false,
+        "minimizable": false,
+        "center": true,
+        "transparent": true,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "shadow": false,
+        "skipTaskbar": true,
+        "visible": true
       }
     ],
     "security": {

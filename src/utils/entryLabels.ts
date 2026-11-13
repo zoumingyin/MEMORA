@@ -8,10 +8,13 @@ export const ENTRY_KIND_LABEL: Record<EntryKind, string> = {
   draw: "涂鸦",
 };
 
-/** 分类主题色：antd 主色 / --kind-accent / 收纳窄条胶囊点缀共用（备忘蓝/提醒珊瑚红/待办绿/涂鸦紫） */
+/** 分类强调色：--kind-accent / 收纳窄条胶囊点缀共用，取自 MEMORA 品牌语义色
+ *  （备忘=主色蓝 / 提醒=危险珊瑚 / 待办=成功绿 / 涂鸦=AI 紫）；
+ *  引用 CSS 变量而非固定 hex，深色下自动换成更亮的主色档；
+ *  antd 主色不再跟随分类，统一为品牌主色，见 theme/antdTheme.ts */
 export const ENTRY_KIND_COLOR: Record<EntryKind, string> = {
-  note: "#2563eb",
-  reminder: "#d9686b",
-  todo: "#57a878",
-  draw: "#8b5cf6",
+  note: "var(--note)",
+  reminder: "var(--reminder)",
+  todo: "var(--todo)",
+  draw: "var(--draw)",
 };

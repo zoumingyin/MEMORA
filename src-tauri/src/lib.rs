@@ -1,4 +1,6 @@
-use tauri::menu::{CheckMenuItem, CheckMenuItemBuilder, Menu, MenuItemBuilder, PredefinedMenuItem};
+use tauri::menu::{
+    CheckMenuItem, CheckMenuItemBuilder, Menu, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder,
+};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Listener, Manager, WindowEvent};
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
@@ -12,6 +14,16 @@ pub mod web_search;
 /// 托盘菜单中的「开机自启动」勾选项：事件回调里通过 state 同步勾选状态
 /// （TrayIcon 没有读取菜单的 API，只能保存引用后 set_checked）
 struct TrayMenuState(std::sync::Mutex<Option<CheckMenuItem<tauri::Wry>>>);
+
+/// 托盘「主题」子菜单的三个勾选项：单选语义靠互斥 set_checked 实现，
+/// 状态由前端广播的 theme:changed 回灌（前端是主题唯一真源）。
+struct TrayThemeState(std::sync::Mutex<Vec<(String, CheckMenuItem<tauri::Wry>)>>);
+
+/// 前端 theme:changed 广播载荷（只取 mode，resolved 由前端自行解析）
+#[derive(serde::Deserialize)]
+struct ThemeChangedPayload {
+    mode: String,
+}
 
 /// 主窗口最后可见位置（客户区物理像素）：托盘 hide→show 循环位置漂移的校正基准。
 /// Windows 上无装饰 + 阴影窗口每次 hide/show 都会被 tao 重写窗口样式并强制
@@ -86,6 +98,89 @@ fn apply_window_cloak(_window: &tauri::WebviewWindow, _cloaked: bool) -> Result<
 #[tauri::command]
 fn set_window_cloaked(window: tauri::WebviewWindow, cloaked: bool) -> Result<(), String> {
     apply_window_cloak(&window, cloaked)
+}
+
+/// 启动页进度：只记录真实到达的里程碑，供晚加载的启动页回放
+#[derive(Clone, serde::Serialize)]
+struct SplashState {
+    progress: f64,
+    status: String,
+    error: Option<String>,
+}
+
+impl Default for SplashState {
+    fn default() -> Self {
+        Self {
+            progress: 0.0,
+            status: "正在启动…".to_string(),
+            error: None,
+        }
+    }
+}
+
+struct SplashProgress(std::sync::Mutex<SplashState>);
+
+/// 启动页窗口标签（与 tauri.conf.json / src/window/splash.ts 一致）
+const SPLASH_LABEL: &str = "splash";
+
+fn splash_emit(app: &tauri::AppHandle, state: &SplashState) {
+    let _ = app.emit_to(SPLASH_LABEL, "splash:state", state.clone());
+}
+
+/// 推进到某个真实里程碑；进度只增不减，避免并行里程碑让进度条回退
+fn splash_advance(app: &tauri::AppHandle, progress: f64, status: &str) {
+    let state = app.state::<SplashProgress>();
+    let mut guard = state.0.lock().unwrap();
+    if guard.error.is_some() || progress < guard.progress {
+        return;
+    }
+    guard.progress = progress;
+    guard.status = status.to_string();
+    splash_emit(app, &guard);
+}
+
+/// 前端调用：报告真实初始化里程碑（界面 bundle 就绪 / 开始读库等）
+#[tauri::command]
+fn splash_report(app: tauri::AppHandle, progress: f64, status: String) {
+    splash_advance(&app, progress, &status);
+}
+
+/// 关闭启动页并把焦点交还主窗口；窗口已销毁时静默跳过
+fn close_splash(app: &tauri::AppHandle) {
+    if let Some(splash) = app.get_webview_window(SPLASH_LABEL) {
+        let _ = splash.close();
+    }
+    if let Some(main) = app.get_webview_window("main") {
+        let _ = main.set_focus();
+    }
+}
+
+/// 前端调用：主窗口首帧就绪后收尾。error 非空时保留启动页展示失败原因，
+/// 由用户点「关闭」或兜底线程收场，不让错误一闪而过。
+#[tauri::command]
+fn splash_finish(app: tauri::AppHandle, error: Option<String>) {
+    match error {
+        Some(message) => {
+            let state = app.state::<SplashProgress>();
+            let mut guard = state.0.lock().unwrap();
+            guard.status = "启动未完成".to_string();
+            guard.error = Some(message);
+            splash_emit(&app, &guard);
+        }
+        None => {
+            {
+                let state = app.state::<SplashProgress>();
+                let mut guard = state.0.lock().unwrap();
+                if guard.error.is_some() {
+                    return;
+                }
+                guard.progress = 1.0;
+                guard.status = "准备就绪".to_string();
+                splash_emit(&app, &guard);
+            }
+            close_splash(&app);
+        }
+    }
 }
 
 /// 「显示主窗口」兜底：show() 对「可见但矩形落在工作区外」或「窄条/异常小窗」无能为力。
@@ -208,6 +303,34 @@ fn write_entries_json(path: String, data: String) -> Result<(), String> {
 #[tauri::command]
 fn read_entries_json(path: String) -> Result<String, String> {
     std::fs::read_to_string(&path).map_err(|error| format!("读取失败：{error}"))
+}
+
+/// 图片预览数据中转：base64 图片常有数 MB，超过 WebView localStorage 的 5MB 配额；
+/// 主窗口先按 key 写入内存，预览窗口加载后取走，既不经过 URL 也不用本地存储。
+#[derive(Default)]
+struct ImagePreviewRelay(std::sync::Mutex<Vec<(String, String)>>);
+
+/// 在途预览上限：仅用于丢弃「窗口没加载完就被关掉」的残留，正常路径取走即释放
+const IMAGE_PREVIEW_RELAY_KEEP: usize = 8;
+
+#[tauri::command]
+fn set_image_preview_payload(state: tauri::State<ImagePreviewRelay>, key: String, payload: String) {
+    let mut guard = state.0.lock().unwrap();
+    guard.retain(|(existing, _)| existing != &key);
+    guard.push((key, payload));
+    while guard.len() > IMAGE_PREVIEW_RELAY_KEEP {
+        guard.remove(0);
+    }
+}
+
+#[tauri::command]
+fn take_image_preview_payload(
+    state: tauri::State<ImagePreviewRelay>,
+    key: String,
+) -> Option<String> {
+    let mut guard = state.0.lock().unwrap();
+    let index = guard.iter().position(|(existing, _)| existing == &key)?;
+    Some(guard.remove(index).1)
 }
 
 /// 导出分享图：前端把 canvas 转成 base64 PNG，这里解码并写入用户选择的路径
@@ -566,6 +689,10 @@ CREATE INDEX IF NOT EXISTS idx_entries_deleted ON entries(deleted_at);
         .manage(ai::AiState::default())
         // 主窗口最后可见位置：hide→show 循环位置漂移的校正基准
         .manage(LastWindowPos(std::sync::Mutex::new(None)))
+        // 启动页进度：真实里程碑的当前值，供晚加载的启动页回放
+        .manage(SplashProgress(std::sync::Mutex::new(SplashState::default())))
+        // 图片预览数据中转：绕过 localStorage 5MB 配额
+        .manage(ImagePreviewRelay::default())
         .plugin(tauri_plugin_notification::init())
         .plugin(
             tauri_plugin_sql::Builder::default()
@@ -641,7 +768,28 @@ CREATE INDEX IF NOT EXISTS idx_entries_deleted ON entries(deleted_at);
                 .build(),
         )
         .setup(|app| {
+            // 启动页兜底：前端异常/卡死时不让启动页永久挡住主窗口
+            // （正常路径由前端 splash_finish 关闭；失败路径留出阅读错误的时间）
+            {
+                let handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_secs(20));
+                    if handle.get_webview_window(SPLASH_LABEL).is_some() {
+                        close_splash(&handle);
+                    }
+                });
+                let replay_handle = std::sync::Arc::new(app.handle().clone());
+                replay_handle.listen("splash:ready", {
+                    let handle = replay_handle.clone();
+                    move |_| {
+                        let state = handle.state::<SplashProgress>();
+                        let guard = state.0.lock().unwrap();
+                        splash_emit(&handle, &guard);
+                    }
+                });
+            }
             build_tray(app)?;
+            splash_advance(app.handle(), 0.3, "正在准备系统托盘…");
             // 启动防闪屏：无装饰+阴影窗口在 WebView2 首帧合成前，DWM 会按未初始化
             // 表面绘出一帧白屏（Win11 上尤甚）；且窗口默认位置与前端恢复的保存位置
             // 不同，直接显示会先白屏再跳位。这里创建后立即斗篷再显示——斗篷期间
@@ -678,6 +826,24 @@ CREATE INDEX IF NOT EXISTS idx_entries_deleted ON entries(deleted_at);
                     }
                 }
             });
+            // 主题广播回灌托盘勾选：前端（设置页 / 托盘 / 系统跟随）任一路径改了主题，
+            // 菜单勾选都据此同步，Rust 侧不自己维护主题状态
+            let theme_handle = std::sync::Arc::new(app.handle().clone());
+            theme_handle.listen("theme:changed", {
+                let handle = theme_handle.clone();
+                move |event| {
+                    let Ok(payload) =
+                        serde_json::from_str::<ThemeChangedPayload>(event.payload())
+                    else {
+                        return;
+                    };
+                    let state = handle.state::<TrayThemeState>();
+                    let guard = state.0.lock().unwrap();
+                    for (mode, item) in guard.iter() {
+                        let _ = item.set_checked(mode == &payload.mode);
+                    }
+                }
+            });
             // 每日自动备份：启动时检查当天是否已备份，失败只记录日志，不阻塞启动
             if let Err(error) = run_daily_backup(app.handle()) {
                 eprintln!("每日自动备份失败: {error}");
@@ -702,6 +868,7 @@ CREATE INDEX IF NOT EXISTS idx_entries_deleted ON entries(deleted_at);
                     eprintln!("注册窗口显示/隐藏快捷键失败: {error}");
                 }
             }
+            splash_advance(app.handle(), 0.45, "正在准备后台服务…");
             // 关闭拦截：点 X / Alt+F4 不退出，直接隐藏到系统托盘继续运行
             // （提醒、闹钟、自动备份等后台能力不受影响；退出走托盘菜单「退出」）
             if let Some(window) = app.get_webview_window("main") {
@@ -736,6 +903,8 @@ CREATE INDEX IF NOT EXISTS idx_entries_deleted ON entries(deleted_at);
         .invoke_handler(tauri::generate_handler![
             quit_app,
             set_window_bounds,
+            splash_report,
+            splash_finish,
             backup_db,
             restore_db,
             write_entries_json,
@@ -755,7 +924,10 @@ CREATE INDEX IF NOT EXISTS idx_entries_deleted ON entries(deleted_at);
             ai::ai_cancel,
             web_search::ai_web_search,
             get_autostart_enabled,
-            set_window_cloaked
+            get_system_theme,
+            set_window_cloaked,
+            set_image_preview_payload,
+            take_image_preview_payload
         ])
         .run(context)
         .expect("启动便签应用失败");
@@ -793,6 +965,34 @@ fn get_autostart_enabled(app: tauri::AppHandle) -> bool {
     autostart_is_enabled(&app)
 }
 
+/// 读取 Windows 应用主题（浅色 / 深色），供前端「跟随系统」模式解析。
+///
+/// 直接读 HKCU\...\Themes\Personalize\AppsUseLightTheme：这是系统设置的权威值。
+/// WebView2 的 prefers-color-scheme 在部分版本上不随该键即时更新，只作前端快路径兜底。
+/// 键不存在（Win10 早期版本）或读取被拒时按浅色处理，与系统默认一致。
+#[tauri::command]
+fn get_system_theme() -> String {
+    #[cfg(windows)]
+    {
+        use windows_registry::CURRENT_USER;
+        const PERSONALIZE_KEY: &str =
+            r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize";
+        let use_light = CURRENT_USER
+            .open(PERSONALIZE_KEY)
+            .and_then(|key| key.get_u32("AppsUseLightTheme"))
+            .unwrap_or(1);
+        if use_light == 0 {
+            "dark".to_string()
+        } else {
+            "light".to_string()
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        "light".to_string()
+    }
+}
+
 /// 构建系统托盘：图标 + 菜单（显示/最小化/隐藏主窗口、新建便签、AI 助手、开机自启动勾选、退出）。
 /// 左键单击切换显示/隐藏，左键双击显示并聚焦。
 fn build_tray(app: &tauri::App) -> tauri::Result<()> {
@@ -811,6 +1011,22 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     ))));
     let quit_item = MenuItemBuilder::with_id("quit", "退出").build(app)?;
 
+    // 主题子菜单：三档互斥勾选。初始勾选按系统主题猜一个近似值，
+    // 前端初始化后广播 theme:changed 会立即校正为真实持久化选择。
+    let theme_light = CheckMenuItemBuilder::with_id("theme-light", "浅色").build(app)?;
+    let theme_dark = CheckMenuItemBuilder::with_id("theme-dark", "深色").build(app)?;
+    let theme_system = CheckMenuItemBuilder::with_id("theme-system", "跟随系统")
+        .checked(true)
+        .build(app)?;
+    app.manage(TrayThemeState(std::sync::Mutex::new(vec![
+        ("light".to_string(), theme_light.clone()),
+        ("dark".to_string(), theme_dark.clone()),
+        ("system".to_string(), theme_system.clone()),
+    ])));
+    let theme_menu = SubmenuBuilder::with_id(app, "theme", "主题")
+        .items(&[&theme_light, &theme_dark, &theme_system])
+        .build()?;
+
     let menu = Menu::with_items(
         app,
         &[
@@ -820,6 +1036,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
             &new_item,
             &assistant_item,
             &PredefinedMenuItem::separator(app)?,
+            &theme_menu,
             &autostart_item,
             &PredefinedMenuItem::separator(app)?,
             &quit_item,
@@ -902,6 +1119,11 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                         eprintln!("切换开机自启动失败: {err}");
                     }
                 }
+            }
+            "theme-light" | "theme-dark" | "theme-system" => {
+                // 主题真源在前端：这里只转发意图，由主窗口落盘并广播到全部窗口
+                let mode = event.id.as_ref().trim_start_matches("theme-");
+                let _ = app.emit("tray:set-theme", mode);
             }
             "quit" => {
                 app.exit(0);

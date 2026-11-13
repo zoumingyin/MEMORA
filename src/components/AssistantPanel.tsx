@@ -1,13 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { App as AntdApp, Button, Dropdown, Flex, Popconfirm, Select, Tooltip } from 'antd'
-import dayjs from 'dayjs'
 import { openExternal } from '../utils/openExternal'
 import {
   ArrowUp,
   Bell,
   Brain,
   Check,
+  CircleAlert,
   Copy,
   FileText,
   Globe,
@@ -21,12 +21,17 @@ import {
   ShieldOff,
   Sparkles,
   Square,
+  Trash2,
   TriangleAlert,
   X,
 } from 'lucide-react'
 import { markdownToHtml } from '../utils/markdown'
 import { parseAssistantActions, type AssistantAction } from '../utils/assistantActions'
 import { saveAiProfile } from '../services/aiClient'
+import {
+  cancelDeleteProposal,
+  confirmDeleteProposal,
+} from '../services/deleteExecution'
 import { FreeBadge } from './FreeBadge'
 import { ModalityBadge } from './ModalityBadge'
 import { ProviderMark } from './ProviderMark'
@@ -172,8 +177,8 @@ function ErrorCard({
   const needsConfig = error.code === 'not_configured'
 
   return (
-    <div className="mt-2 rounded-[10px] border border-[var(--border)] bg-[var(--field)] px-3 py-2.5">
-      <div className="flex items-center gap-1.5 text-[12.5px] font-semibold text-[var(--danger)]">
+    <div className="mt-2 rounded-[var(--memora-radius)] border border-[color-mix(in_srgb,var(--memora-danger)_45%,transparent)] bg-[color-mix(in_srgb,var(--memora-danger)_10%,var(--field))] px-3 py-2.5">
+      <div className="flex items-center gap-1.5 text-[12.5px] font-semibold text-[var(--memora-danger)]">
         <TriangleAlert size={13} />
         {errorTitle(error.code)}
       </div>
@@ -253,242 +258,136 @@ const ACTION_META: Record<EntryKind, { label: string; icon: ReactNode }> = {
   draw: { label: '涂鸦', icon: <Pencil size={12} /> },
 }
 
-/** AI 提议的操作：卡片确认后才写入仓储，避免模型直接改数据 */
+/** 删除确认卡片：AI 唯一需要用户确认的操作；新增与修改都已直接执行 */
 function ActionCard({
   action,
-  created,
-  onCreated,
+  done,
+  cancelled,
+  onDone,
+  onCancelled,
 }: {
   action: AssistantAction
-  created: boolean
-  onCreated: () => void
+  done: boolean
+  cancelled: boolean
+  onDone: () => void
+  onCancelled: () => void
 }) {
   const { message: antdMessage } = AntdApp.useApp()
-  const [status, setStatus] = useState<'idle' | 'creating' | 'dismissed'>('idle')
+  const [busy, setBusy] = useState(false)
+  const [failure, setFailure] = useState<string | null>(null)
+  // 写入失败但提议已释放时允许原卡片重试；其它失败（过期 / 已执行 / 目标变化）直接作废
+  const [retryable, setRetryable] = useState(false)
   const target = useEntryStore((state) =>
     action.targetId
       ? state.entries.find((entry) => entry.id === action.targetId)
-      : undefined
+      : undefined,
   )
-  const meta = ACTION_META[action.kind]
-  const op = action.op ?? 'create'
-  if (status === 'dismissed') return null
+  const meta = ACTION_META[target?.kind ?? action.kind]
+  const title = target?.title.trim() || action.title || '无标题'
+  const resolved = done || cancelled || (failure !== null && !retryable)
+  const stateLabel = done
+    ? '已移入废纸篓'
+    : cancelled
+      ? '已取消'
+      : failure
+        ? retryable
+          ? '删除失败，可重试'
+          : '已失效'
+        : '待确认'
 
-  // 操作已有条目：目标被删除或类型不符时不再提供确认按钮
-  const targetMissing =
-    op !== 'create' && (!target || target.kind !== action.kind)
-  const headerLabel =
-    op === 'create'
-      ? `新建${meta.label}`
-      : op === 'complete-todo'
-        ? '勾选待办子任务'
-        : op === 'delete'
-          ? '删除便签'
-          : '追加备忘内容'
-  const doneLabel =
-    op === 'create'
-      ? '已创建'
-      : op === 'complete-todo'
-        ? '已勾选'
-        : op === 'delete'
-          ? '已删除'
-          : '已追加'
-  const confirmLabel =
-    op === 'create'
-      ? `创建${meta.label}`
-      : op === 'complete-todo'
-        ? '勾选'
-        : op === 'delete'
-          ? '删除'
-          : '追加'
-
-  const handleApply = async (): Promise<void> => {
-    if (created || status !== 'idle') return
-    setStatus('creating')
-    const state = useEntryStore.getState()
-
-    // 删除：移入废纸篓（可恢复），由用户点击确认后才执行
-    if (op === 'delete') {
-      if (!action.targetId) {
-        setStatus('idle')
-        antdMessage.error('找不到要删除的便签')
-        return
-      }
-      await state.moveToTrash(action.targetId)
-      onCreated()
-      antdMessage.success('已移入废纸篓')
-      setStatus('idle')
+  const handleConfirm = async (): Promise<void> => {
+    if (busy || resolved) return
+    setBusy(true)
+    const result = await confirmDeleteProposal({
+      proposalId: action.proposalId,
+      targetId: action.targetId,
+      expectedKind: action.kind,
+      access: {
+        findEntry: (id) => useEntryStore.getState().entries.find((entry) => entry.id === id),
+        moveToTrash: (id) => useEntryStore.getState().moveToTrash(id),
+        stillExists: (id) =>
+          useEntryStore.getState().entries.some((entry) => entry.id === id),
+      },
+    })
+    setBusy(false)
+    if (!result.ok) {
+      setFailure(result.message)
+      setRetryable(result.reason === 'failed' || result.reason === 'busy')
       return
     }
+    onDone()
+    antdMessage.success('已移入废纸篓')
+  }
 
-    if (op === 'create') {
-      const entry = await state.addEntry(
-        {
-          title: action.title,
-          content: action.content,
-          remindAt: action.remindAt,
-          items: action.items,
-        },
-        action.kind,
-      )
-      if (!entry) {
-        setStatus('idle')
-        antdMessage.error(`创建${meta.label}失败，请稍后重试`)
-        return
-      }
-      // 记到消息里并持久化：重开面板或重启应用后不再重复提供操作按钮
-      onCreated()
-      antdMessage.success(`已创建${meta.label}`)
-      setStatus('idle')
-      return
-    }
-
-    const targetEntry = action.targetId
-      ? state.entries.find((entry) => entry.id === action.targetId)
-      : undefined
-    if (!targetEntry || targetEntry.kind !== action.kind) {
-      setStatus('idle')
-      antdMessage.error('找不到对应便签，可能已被删除')
-      return
-    }
-
-    if (op === 'complete-todo' && targetEntry.kind === 'todo') {
-      const wanted = new Set(action.items ?? [])
-      let matched = 0
-      const items = targetEntry.items.map((item) => {
-        if (!item.done && wanted.has(item.text)) {
-          matched += 1
-          return { ...item, done: true }
-        }
-        return item
-      })
-      if (matched === 0) {
-        setStatus('idle')
-        antdMessage.warning('没有找到匹配的子任务，可能已被修改')
-        return
-      }
-      await state.updateEntry(targetEntry.id, { kind: 'todo', items })
-      onCreated()
-      antdMessage.success(`已勾选 ${matched} 项`)
-    } else if (op === 'append-note' && targetEntry.kind === 'note') {
-      const next = targetEntry.content
-        ? `${targetEntry.content}\n\n${action.content}`
-        : action.content
-      await state.updateEntry(targetEntry.id, { content: next })
-      onCreated()
-      antdMessage.success('已追加到备忘')
-    }
-    setStatus('idle')
+  const handleCancel = (): void => {
+    if (busy || resolved) return
+    cancelDeleteProposal(action.proposalId)
+    onCancelled()
+    antdMessage.info('已取消删除，便签没有任何改动')
   }
 
   return (
-    <div className="rounded-[10px] border border-[var(--border)] bg-[var(--field)] px-3 py-2.5">
+    <div
+      className={`rounded-[var(--memora-radius)] border px-3 py-2.5 ${
+        done
+          ? 'border-[color-mix(in_srgb,var(--memora-success)_45%,transparent)] bg-[color-mix(in_srgb,var(--memora-success)_8%,var(--field))]'
+          : cancelled || failure
+            ? 'border-[var(--border)] bg-[var(--field)] opacity-80'
+            : 'border-[color-mix(in_srgb,var(--memora-danger)_40%,transparent)] bg-[var(--field)]'
+      }`}
+    >
       <div className="flex items-center gap-1.5 text-[10.5px] text-[var(--text-muted)]">
-        <span className="flex-center text-[var(--kind-accent)]">{meta.icon}</span>
-        <span>{headerLabel}</span>
-        {action.remindAt !== undefined && (
-          <span className="text-[var(--text)]">
-            · {dayjs(action.remindAt).format('M月D日 HH:mm')}
-          </span>
-        )}
-        {created && (
-          <span className="ml-auto flex items-center gap-0.5 text-[var(--kind-accent)]">
+        <span className="flex-center text-[var(--memora-danger)]">
+          <Trash2 size={12} />
+        </span>
+        <span>删除便签</span>
+        <span className="text-[var(--text)]">· {meta.label}</span>
+        <span
+          className={`ml-auto flex items-center gap-0.5 ${
+            done
+              ? 'font-semibold text-[var(--memora-success)]'
+              : cancelled || failure
+                ? ''
+                : 'text-[var(--memora-warning)]'
+          }`}
+        >
+          {done ? (
             <Check size={11} />
-            {doneLabel}
-          </span>
-        )}
+          ) : cancelled || failure ? null : (
+            <CircleAlert size={11} />
+          )}
+          {stateLabel}
+        </span>
       </div>
 
-      {targetMissing ? (
-        <p className="mt-1 text-[12px] leading-relaxed text-[var(--text-muted)]">
-          找不到对应便签，可能已被删除或修改，可让助手重新确认标题。
-        </p>
-      ) : op === 'create' ? (
-        <>
-          <div className="mt-1 whitespace-pre-wrap break-words text-[12.5px] font-semibold leading-snug text-[var(--text)]">
-            {action.title}
-          </div>
-          {action.content && (
-            <p className="mt-0.5 line-clamp-2 whitespace-pre-wrap break-words text-[11.5px] leading-relaxed text-[var(--text-muted)]">
-              {action.content}
-            </p>
-          )}
-          {action.items && action.items.length > 0 && (
-            <>
-              <Flex vertical gap={2} className="mt-1">
-                {action.items.slice(0, 4).map((item) => (
-                  <Flex
-                    key={item}
-                    align="flex-start"
-                    gap={6}
-                    className="text-[11.5px] leading-relaxed text-[var(--text-muted)]"
-                  >
-                    <span className="mt-[7px] h-[3px] w-[3px] shrink-0 rounded-full bg-[var(--text-muted)]" />
-                    <span className="min-w-0 break-words">{item}</span>
-                  </Flex>
-                ))}
-              </Flex>
-              {action.items.length > 4 && (
-                <div className="pl-[9px] text-[11px] text-[var(--text-muted)]">
-                  还有 {action.items.length - 4} 项…
-                </div>
-              )}
-            </>
-          )}
-        </>
-      ) : op === 'delete' ? (
-        <p className="mt-1 text-[12px] leading-relaxed text-[var(--text-muted)]">
-          将移入废纸篓，可在废纸篓中恢复。确认后才会真正删除。
-        </p>
-      ) : (
-        <>
-          <div className="mt-1 break-words text-[12.5px] font-semibold leading-snug text-[var(--text)]">
-            {target?.title || '无标题'}
-          </div>
-          {op === 'complete-todo' ? (
-            <Flex vertical gap={2} className="mt-1">
-              {(action.items ?? []).slice(0, 4).map((item) => (
-                <Flex
-                  key={item}
-                  align="flex-start"
-                  gap={6}
-                  className="text-[11.5px] leading-relaxed text-[var(--text-muted)]"
-                >
-                  <Check size={11} className="mt-[3px] shrink-0" />
-                  <span className="min-w-0 break-words">{item}</span>
-                </Flex>
-              ))}
-            </Flex>
-          ) : (
-            <p className="mt-0.5 line-clamp-3 whitespace-pre-wrap break-words text-[11.5px] leading-relaxed text-[var(--text-muted)]">
-              {action.content}
-            </p>
-          )}
-        </>
-      )}
+      <div className="mt-1 flex items-center gap-1.5 break-words text-[12.5px] font-semibold leading-snug text-[var(--text)]">
+        <span className="text-[var(--text-muted)]">{meta.icon}</span>
+        <span className="min-w-0">{title}</span>
+      </div>
+      <p className="mt-1 text-[11.5px] leading-relaxed text-[var(--text-muted)]">
+        {done
+          ? '已从列表移入废纸篓，可在废纸篓中恢复。'
+          : cancelled
+            ? '已取消删除，便签内容和数据都没有改动。'
+            : failure
+              ? failure
+              : '将移入废纸篓（可在废纸篓恢复），不会永久删除。确认前不会修改任何数据。'}
+      </p>
 
-      {!created && !targetMissing && (
+      {!resolved && (
         <div className="mt-2 flex items-center gap-2">
           <Button
             size="small"
             type="primary"
-            danger={op === 'delete'}
-            icon={
-              op === 'create' ? (
-                <Plus size={12} />
-              ) : op === 'delete' ? (
-                <X size={12} />
-              ) : (
-                <Check size={12} />
-              )
-            }
-            loading={status === 'creating'}
-            onClick={() => void handleApply()}
+            danger
+            icon={<Trash2 size={12} />}
+            loading={busy}
+            onClick={() => void handleConfirm()}
           >
-            {confirmLabel}
+            确认删除
           </Button>
-          <Button size="small" type="text" onClick={() => setStatus('dismissed')}>
-            忽略
+          <Button size="small" type="text" onClick={handleCancel}>
+            取消
           </Button>
         </div>
       )}
@@ -522,11 +421,10 @@ function MessageBubble({
     })
     return result
   }, [message.role, parsed.text])
-  const markActionCreated = useAssistantStore((state) => state.markActionCreated)
   const markToolActionDone = useAssistantStore((state) => state.markToolActionDone)
-  const createdActions = Array.isArray(message.createdActions)
-    ? message.createdActions
-    : []
+  const markToolActionCancelled = useAssistantStore(
+    (state) => state.markToolActionCancelled,
+  )
   /** 回复里的交互元素：便签引用胶囊（.note-ref-link，消毒后由前端注入）点击跳转选中对应便签；
    * 超链接走系统浏览器打开（阻止默认行为，避免 WebView2 整窗导航/opener 权限报错） */
   const handleLinkClick = (event: React.MouseEvent<HTMLDivElement>): void => {
@@ -560,7 +458,7 @@ function MessageBubble({
   if (message.role === 'user') {
     return (
       <div className="group flex flex-col items-end gap-0.5">
-        <div className="max-w-[86%] whitespace-pre-wrap break-words rounded-[12px] border border-[var(--card-active-border)] bg-[var(--card-active-bg)] px-3 py-2 text-[13px] leading-relaxed text-[var(--text)]">
+        <div className="max-w-[86%] whitespace-pre-wrap break-words rounded-[var(--memora-radius-card)] border border-[var(--card-active-border)] bg-[var(--card-active-bg)] px-3 py-2 text-[13px] leading-relaxed text-[var(--text)]">
           {message.content}
         </div>
         <div className="opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
@@ -583,10 +481,10 @@ function MessageBubble({
         : webSearch?.status === 'failed'
           ? `联网搜索失败：${webSearch.error ?? '未知原因'}`
           : null
-  // agent 工具提示：回答前自动检索过便签数据（function calling 只读工具）
+  // agent 工具提示：本回答执行过几轮工具调用（查询 / 新增 / 修改自动生效，删除待确认）
   const toolHint =
     (message.toolRounds ?? 0) > 0
-      ? `已自动检索便签 ${message.toolRounds} 次`
+      ? `已执行 ${message.toolRounds} 轮便签工具`
       : null
 
   return (
@@ -596,7 +494,7 @@ function MessageBubble({
       </div>
       <div className="min-w-0 flex-1">
         {showBubble && (
-          <div className="rounded-[12px] border border-[var(--border)] bg-[var(--field)] px-3 py-2 text-[13px] leading-relaxed text-[var(--text)]">
+          <div className="rounded-[var(--memora-radius-card)] border border-[var(--border)] bg-[var(--field)] px-3 py-2 text-[13px] leading-relaxed text-[var(--text)]">
             {message.status === 'streaming' && !parsed.text && (
               <ThinkingIndicator
                 startedAt={message.createdAt}
@@ -606,14 +504,27 @@ function MessageBubble({
               />
             )}
             {searchHint && searchHint !== '正在联网搜索…' && (
-              <div className="mb-1 flex items-center gap-1 text-[10.5px] leading-snug text-[var(--text-muted)]">
-                <Globe size={10} />
+              <div
+                className={`mb-1 inline-flex items-center gap-1 rounded-[var(--memora-radius-sm)] px-1.5 py-0.5 text-[10.5px] leading-snug ${
+                  webSearch?.status === 'failed'
+                    ? 'bg-[color-mix(in_srgb,var(--memora-danger)_12%,transparent)] text-[var(--text)]'
+                    : 'bg-[var(--hover-fill)] text-[var(--text-muted)]'
+                }`}
+              >
+                <Globe
+                  size={10}
+                  className={
+                    webSearch?.status === 'failed'
+                      ? 'text-[var(--memora-danger)]'
+                      : undefined
+                  }
+                />
                 <span>{searchHint}</span>
               </div>
             )}
             {toolHint && (
-              <div className="mb-1 flex items-center gap-1 text-[10.5px] leading-snug text-[var(--text-muted)]">
-                <Search size={10} />
+              <div className="mb-1 inline-flex items-center gap-1 rounded-[var(--memora-radius-sm)] bg-[color-mix(in_srgb,var(--memora-violet)_12%,transparent)] px-1.5 py-0.5 text-[10.5px] leading-snug text-[var(--text-muted)]">
+                <Search size={10} className="text-[var(--memora-violet)]" />
                 <span>{toolHint}</span>
               </div>
             )}
@@ -628,7 +539,12 @@ function MessageBubble({
               <span className="assistant-caret" aria-hidden />
             )}
             {message.stopped && (
-              <div className="mt-1 text-[11px] text-[var(--text-muted)]">已停止生成</div>
+              <div className="mt-1 text-[11px] leading-snug text-[var(--text-muted)]">
+                已停止生成
+                {(message.toolRounds ?? 0) > 0
+                  ? '；停止前已开始的工具操作可能已经生效，请检查便签列表。'
+                  : ''}
+              </div>
             )}
             {message.truncated && message.status !== 'streaming' && (
               <div className="mt-1 text-[11px] leading-snug text-[var(--text-muted)]">
@@ -646,26 +562,16 @@ function MessageBubble({
             </span>
           </div>
         )}
-        {message.status !== 'streaming' && parsed.actions.length > 0 && (
-          <div className="mt-2 flex flex-col gap-2">
-            {parsed.actions.map((action, index) => (
-              <ActionCard
-                key={`${message.id}:${index}`}
-                action={action}
-                created={createdActions.includes(index)}
-                onCreated={() => markActionCreated(message.id, index)}
-              />
-            ))}
-          </div>
-        )}
         {message.status !== 'streaming' && (message.toolActions ?? []).length > 0 && (
           <div className="mt-2 flex flex-col gap-2">
             {(message.toolActions ?? []).map((action, index) => (
               <ActionCard
                 key={`${message.id}:tool:${index}`}
                 action={action}
-                created={(message.toolActionsDone ?? []).includes(index)}
-                onCreated={() => markToolActionDone(message.id, index)}
+                done={(message.toolActionsDone ?? []).includes(index)}
+                cancelled={(message.toolActionsCancelled ?? []).includes(index)}
+                onDone={() => markToolActionDone(message.id, index)}
+                onCancelled={() => markToolActionCancelled(message.id, index)}
               />
             ))}
           </div>
@@ -883,7 +789,7 @@ function AssistantPanelBody() {
                 <button
                   key={suggestion}
                   type="button"
-                  className="rounded-[10px] border border-[var(--border)] bg-[var(--field)] px-3 py-2 text-left text-[12px] text-[var(--text)] transition hover:border-[var(--card-border-hover)] hover:bg-[var(--hover-fill)]"
+                  className="rounded-[var(--memora-radius)] border border-[var(--border)] bg-[var(--field)] px-3 py-2 text-left text-[12px] text-[var(--text)] transition hover:border-[var(--card-border-hover)] hover:bg-[var(--hover-fill)]"
                   onClick={() => handleSend(suggestion)}
                 >
                   {suggestion}
@@ -904,7 +810,7 @@ function AssistantPanelBody() {
 
       <footer className="shrink-0 px-2.5 pb-2.5 pt-1.5">
         {/* 输入卡片：正文区 + 虚线分隔 + 底部工具条（对齐参考布局） */}
-        <div className="flex flex-col overflow-hidden rounded-[16px] border border-[var(--control-border)] bg-[var(--field)] transition-colors focus-within:border-[var(--kind-accent)]">
+        <div className="flex flex-col overflow-hidden rounded-[var(--memora-radius-lg)] border border-[var(--control-border)] bg-[var(--field)] transition-colors focus-within:border-[var(--kind-accent)]">
           <textarea
             ref={inputRef}
             rows={1}
@@ -1084,7 +990,7 @@ function AssistantPanelBody() {
               {sending ? (
                 <button
                   type="button"
-                  className="flex-center h-8 w-8 shrink-0 cursor-pointer rounded-[9px] border-0 bg-[var(--danger)] p-0 text-white transition-opacity hover:opacity-90"
+                  className="flex-center h-8 w-8 shrink-0 cursor-pointer rounded-[var(--memora-radius)] border-0 bg-[var(--danger)] p-0 text-[var(--memora-on-primary)] transition-opacity hover:opacity-90"
                   onClick={stop}
                   title="停止生成"
                   aria-label="停止生成"
@@ -1094,7 +1000,7 @@ function AssistantPanelBody() {
               ) : (
                 <button
                   type="button"
-                  className="flex-center h-8 w-8 shrink-0 cursor-pointer rounded-[9px] border-0 bg-[var(--kind-accent)] p-0 text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-35"
+                  className="flex-center h-8 w-8 shrink-0 cursor-pointer rounded-[var(--memora-radius)] border-0 bg-[var(--kind-accent)] p-0 text-[var(--memora-on-primary)] transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-35"
                   disabled={!input.trim()}
                   onClick={() => handleSend()}
                   title="发送（Enter）"

@@ -1,0 +1,63 @@
+import type { ThemeConfig } from 'antd';
+
+/** MEMORA brand theme for Ant Design 5 */
+export const memoraTheme: ThemeConfig = {
+  token: {
+    colorPrimary: '#536DFF',
+    colorInfo: '#397BFF',
+    colorSuccess: '#16A78A',
+    colorWarning: '#F5B942',
+    colorError: '#E56875',
+    colorText: '#14213D',
+    colorTextSecondary: '#64748B',
+    colorTextTertiary: '#94A3B8',
+    colorBgBase: '#F8FAFC',
+    colorBgContainer: '#FFFFFF',
+    colorBgElevated: '#FFFFFF',
+    colorBorder: '#E5EAF3',
+    colorBorderSecondary: '#EEF1F7',
+    borderRadius: 10,
+    borderRadiusLG: 16,
+    borderRadiusSM: 6,
+    controlHeight: 36,
+    controlHeightLG: 42,
+    controlHeightSM: 28,
+    fontFamily: 'Inter, "Segoe UI", "Microsoft YaHei", sans-serif',
+    fontSize: 14,
+    lineHeight: 1.55,
+    boxShadow: '0 4px 16px rgba(31, 51, 105, 0.06)',
+    boxShadowSecondary: '0 12px 32px rgba(31, 51, 105, 0.10)',
+  },
+  components: {
+    Button: { borderRadius: 9, controlHeight: 36, fontWeight: 600, primaryShadow: 'none' },
+    Input: { activeShadow: '0 0 0 3px rgba(83,109,255,.12)', borderRadius: 9 },
+    Select: { optionSelectedBg: '#EEF1FF', borderRadius: 9 },
+    Card: { borderRadiusLG: 16, paddingLG: 18 },
+    Modal: { borderRadiusLG: 18 },
+    Menu: { itemBorderRadius: 8, itemSelectedBg: '#EEF1FF', itemSelectedColor: '#4357E8' },
+    Tabs: { itemSelectedColor: '#536DFF', inkBarColor: '#536DFF' },
+    Switch: { colorPrimary: '#536DFF' },
+    Tag: { borderRadiusSM: 6 },
+  },
+};
+
+export const memoraDarkTheme: ThemeConfig = {
+  token: {
+    colorPrimary: '#8292FF',
+    colorInfo: '#72A0FF',
+    colorSuccess: '#45C7A5',
+    colorWarning: '#F6C66A',
+    colorError: '#F18A96',
+    colorText: '#E8EDFA',
+    colorTextSecondary: '#A8B4CC',
+    colorTextTertiary: '#7F8CA6',
+    colorBgBase: '#111827',
+    colorBgContainer: '#182235',
+    colorBgElevated: '#202C42',
+    colorBorder: '#2D3B54',
+    colorBorderSecondary: '#26334A',
+    borderRadius: 10,
+    borderRadiusLG: 16,
+    fontFamily: 'Inter, "Segoe UI", "Microsoft YaHei", sans-serif',
+  },
+};

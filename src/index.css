@@ -77,7 +77,7 @@ body,
 }
 
 body {
-  font-family: system-ui, "Segoe UI", "Microsoft YaHei", sans-serif;
+  font-family: var(--memora-font);
   font-size: 13px;
   color: var(--text);
   -webkit-font-smoothing: antialiased;
@@ -178,15 +178,6 @@ textarea {
   border-color: var(--kind-accent);
 }
 
-.titlebar-title .dot {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  background: var(--kind-accent);
-  box-shadow: 0 0 0 4px color-mix(in srgb, var(--kind-accent) 18%, transparent);
-  transition: background 0.25s;
-}
-
 .titlebar-actions {
   display: flex;
   align-items: center;
@@ -203,7 +194,7 @@ textarea {
   width: 28px;
   height: 28px;
   border: none;
-  border-radius: 8px;
+  border-radius: var(--memora-radius-sm);
   background: transparent;
   color: var(--text-muted);
   transition:
@@ -229,7 +220,7 @@ textarea {
 
 .titlebar-btn.close:hover {
   background: var(--danger);
-  color: #fff;
+  color: var(--memora-on-primary);
   text-shadow: none;
 }
 
@@ -240,10 +231,10 @@ textarea {
   gap: 4px;
 }
 
-/* 树形设置：左侧分组导航 + 右侧内容区 */
+/* 树形设置：左侧分组导航 + 右侧内容区（分组卡片，不用竖分割线） */
 .settings-tree {
   display: flex;
-  gap: 0;
+  gap: 10px;
   min-height: 300px;
   max-height: 60vh;
   overflow: hidden;
@@ -252,8 +243,9 @@ textarea {
 .settings-tree-nav {
   flex: none;
   width: 140px;
-  border-right: 1px solid var(--border);
-  padding: 4px 4px 6px 0;
+  border-radius: var(--memora-radius-card);
+  background: var(--hover-fill);
+  padding: 6px;
   overflow-y: auto;
 }
 
@@ -279,7 +271,7 @@ textarea {
 .settings-tree-content {
   flex: 1;
   min-width: 0;
-  padding: 4px 0 0 12px;
+  padding: 2px 0 0;
   overflow-y: auto;
 }
 
@@ -287,16 +279,21 @@ textarea {
   margin-top: 8px;
 }
 
+/* 设置项：分组卡片替代逐项下划线，减少分割线噪声 */
 .settings-item {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 11px 2px;
-  border-bottom: 1px solid var(--border);
+  gap: 10px;
+  padding: 11px 13px;
+  margin-bottom: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--memora-radius-card);
+  background: var(--card-bg);
 }
 
 .settings-item:last-child {
-  border-bottom: none;
+  margin-bottom: 0;
 }
 
 .settings-item-main {
@@ -314,6 +311,25 @@ textarea {
 
 .settings-item-hint {
   font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* 关于页品牌头：完整 Logo（图形 + 词标）按原始比例，浅/深色自动换版 */
+.about-brand {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 18px 13px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--memora-radius-card);
+  background: var(--card-bg);
+}
+
+.about-brand-tag {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 3px;
   color: var(--text-muted);
 }
 
@@ -369,7 +385,7 @@ textarea {
   font-size: 12px;
   font-weight: 500;
   padding: 4px 10px;
-  border-radius: 8px;
+  border-radius: var(--memora-radius);
   cursor: pointer;
   transition:
     background 0.15s,
@@ -448,23 +464,23 @@ textarea {
   border-radius: 10px;
   font-size: 16px;
   flex: none;
-  color: #fff;
+  color: var(--memora-on-primary);
 }
 
 .create-kind-option.kind-note .create-kind-icon {
-  background: #2563eb;
+  background: var(--memora-primary);
 }
 
 .create-kind-option.kind-reminder .create-kind-icon {
-  background: #d9686b;
+  background: var(--memora-danger);
 }
 
 .create-kind-option.kind-todo .create-kind-icon {
-  background: #57a878;
+  background: var(--memora-success);
 }
 
 .create-kind-option.kind-draw .create-kind-icon {
-  background: #8b5cf6;
+  background: var(--memora-violet);
 }
 
 /* ===== 手写涂鸦板（详情编辑） ===== */
@@ -631,7 +647,7 @@ textarea {
   gap: 5px;
   padding: 4px 8px;
   border: none;
-  border-radius: 8px;
+  border-radius: var(--memora-radius-sm);
   font-size: 12px;
   color: var(--text-muted);
   background: var(--hover-fill);
@@ -641,8 +657,8 @@ textarea {
     color 0.15s;
 }
 .filter-chip.active {
-  color: #fff;
-  background: var(--note);
+  color: var(--memora-on-primary);
+  background: var(--memora-primary);
 }
 
 .filter-chip-count {
@@ -656,11 +672,11 @@ textarea {
   font-size: 11px;
   font-style: normal;
   color: var(--text-muted);
-  background: rgba(16, 24, 40, 0.06);
+  background: color-mix(in srgb, var(--text) 10%, transparent);
 }
 .filter-chip.active .filter-chip-count {
-  color: #fff;
-  background: rgba(255, 255, 255, 0.22);
+  color: var(--memora-on-primary);
+  background: color-mix(in srgb, var(--memora-on-primary) 22%, transparent);
 }
 
 /* 下拉选项行：间距与主题色选中（dropdown 在 portal，--kind-accent 已在 :root 全局） */
@@ -785,7 +801,7 @@ textarea {
   width: 100%;
   min-height: 96px;
   resize: vertical;
-  border-radius: 8px;
+  border-radius: var(--memora-radius);
   border: 1px solid var(--control-border);
   background: rgba(var(--field-rgb), 0.55);
   color: var(--text);
@@ -851,15 +867,15 @@ textarea {
   font-weight: 700;
   padding: 1px 10px;
   border-radius: 999px;
-  color: #fff;
+  color: var(--memora-on-primary);
 }
 
 .pomodoro-mode.work {
-  background: #d9686b;
+  background: var(--memora-danger);
 }
 
 .pomodoro-mode.break {
-  background: #57a878;
+  background: var(--memora-success);
 }
 
 .pomodoro-rounds {
@@ -905,7 +921,7 @@ textarea {
   font-size: 12px;
   line-height: 1;
   padding: 5px 12px;
-  border-radius: 8px;
+  border-radius: var(--memora-radius-sm);
   border: 1px solid var(--control-border);
   background: transparent;
   color: var(--text);
@@ -929,8 +945,8 @@ textarea {
 }
 
 .data-action-btn.danger {
-  color: #d9686b;
-  border-color: color-mix(in srgb, #d9686b 45%, transparent);
+  color: var(--memora-danger);
+  border-color: color-mix(in srgb, var(--memora-danger) 45%, transparent);
 }
 
 .data-action-btn:disabled {
@@ -943,7 +959,7 @@ textarea {
   line-height: 1.5;
   color: var(--text-muted);
   background: var(--hover-fill);
-  border-radius: 8px;
+  border-radius: var(--memora-radius-sm);
   padding: 6px 9px;
   margin-top: 6px;
   word-break: break-all;
@@ -1026,7 +1042,7 @@ textarea {
   text-align: left;
   border: 1px solid var(--border);
   background: rgba(var(--field-rgb), 0.4);
-  border-radius: 8px;
+  border-radius: var(--memora-radius-sm);
   padding: 6px 8px;
   cursor: pointer;
   color: var(--text);
@@ -1094,7 +1110,7 @@ textarea {
   --card-tint-alpha: 20%;
   /* 暗色投影加深才可感知（深底上淡灰影不可见） */
   --card-hover-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
-  --wall-dot: rgba(236, 230, 220, 0.13);
+  --wall-dot: color-mix(in srgb, var(--memora-text) 13%, transparent);
   --wall-card-shadow:
     0 3px 8px rgba(0, 0, 0, 0.3),
     0 16px 34px rgba(0, 0, 0, 0.28);
@@ -1221,7 +1237,7 @@ button.note-list-row {
   color: var(--text);
 }
 
-/* 贴新便签：参考图的深色主按钮 */
+/* 贴新便签：品牌主色实底，前景色随主题翻转保证对比度 */
 .wall-new-btn {
   display: inline-flex;
   align-items: center;
@@ -1230,29 +1246,26 @@ button.note-list-row {
   padding: 0 14px;
   border: none;
   border-radius: 999px;
-  background: #1f2430;
-  color: #f8f6f1;
+  background: var(--memora-primary);
+  color: var(--memora-on-primary);
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
-  box-shadow: 0 4px 12px rgba(16, 24, 40, 0.22);
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--memora-primary) 32%, transparent);
   transition:
+    background 0.15s ease,
     transform 0.12s ease,
     box-shadow 0.15s ease;
 }
 
 .wall-new-btn:hover {
+  background: var(--memora-primary-hover);
   transform: translateY(-1px);
-  box-shadow: 0 6px 16px rgba(16, 24, 40, 0.28);
+  box-shadow: 0 6px 16px color-mix(in srgb, var(--memora-primary) 40%, transparent);
 }
 
 .wall-new-btn:active {
   transform: translateY(0);
-}
-
-:root.dark-glass .wall-new-btn {
-  background: #f4f0e8;
-  color: #1f2430;
 }
 
 .wall-filters {
@@ -1303,7 +1316,7 @@ button.note-list-row {
   height: var(--wall-card-h);
   padding: 18px 18px 11px;
   border: 1px solid var(--border);
-  border-radius: 14px;
+  border-radius: var(--memora-radius-card);
   background-color: var(--card-bg);
   box-shadow: var(--wall-card-shadow);
   color: var(--text);
@@ -1509,19 +1522,19 @@ button.note-list-row {
   color: var(--text);
 }
 
-/* 置顶按钮激活态：红色图钉，工具条保持可见，与卡片红点装饰呼应 */
+/* 置顶按钮激活态：珊瑚色图钉，工具条保持可见，与卡片红点装饰呼应 */
 .wall-note-tool.wall-note-pin.is-pinned {
-  color: #dc2626;
+  color: var(--memora-danger);
 }
 
 .wall-note-tool.wall-note-pin.is-pinned:hover {
-  background: color-mix(in srgb, #dc2626 14%, transparent);
-  color: #dc2626;
+  background: color-mix(in srgb, var(--memora-danger) 14%, transparent);
+  color: var(--memora-danger);
 }
 
 .wall-note-tool.wall-note-delete:hover {
-  background: color-mix(in srgb, #dc2626 12%, transparent);
-  color: #dc2626;
+  background: color-mix(in srgb, var(--memora-danger) 12%, transparent);
+  color: var(--memora-danger);
 }
 
 .wall-note-body {
@@ -1877,12 +1890,12 @@ button.note-list-row {
   font-size: 11px;
   background: var(--hover-fill);
   padding: 0 4px;
-  border-radius: 4px;
+  border-radius: var(--memora-radius-sm);
 }
 .note-md pre {
   background: var(--hover-fill);
   padding: 6px 8px;
-  border-radius: 6px;
+  border-radius: var(--memora-radius-sm);
   overflow-x: auto;
   margin: 4px 0;
 }
@@ -1920,7 +1933,7 @@ button.note-list-row {
   width: 100%;
   display: block;
   margin: 1px 0 2px;
-  border-radius: 8px;
+  border-radius: var(--memora-radius-sm);
   overflow: hidden;
   background: var(--hover-fill);
 }
@@ -1981,14 +1994,14 @@ button.note-list-row {
 /* ===== 纸张外观（详情面板 data-paper）：底色圆点 + 纹理，颜色令牌随主题适配 ===== */
 :root {
   --paper-tint-alpha: 45%;
-  --paper-line: rgba(16, 24, 40, 0.07);
-  --paper-dot: rgba(16, 24, 40, 0.16);
+  --paper-line: color-mix(in srgb, var(--memora-text) 7%, transparent);
+  --paper-dot: color-mix(in srgb, var(--memora-text) 16%, transparent);
 }
 
 :root.dark-glass {
   --paper-tint-alpha: 20%;
-  --paper-line: rgba(236, 230, 220, 0.09);
-  --paper-dot: rgba(236, 230, 220, 0.18);
+  --paper-line: color-mix(in srgb, var(--memora-text) 9%, transparent);
+  --paper-dot: color-mix(in srgb, var(--memora-text) 18%, transparent);
 }
 
 /* 横线：27px 行距的重复线 */
@@ -2299,14 +2312,14 @@ button.note-list-row {
   font-family: Consolas, "Courier New", monospace;
   font-size: 12px;
   background: var(--hover-fill);
-  border-radius: 4px;
+  border-radius: var(--memora-radius-sm);
   padding: 1px 5px;
 }
 
 .md-preview pre {
   margin: 8px 0;
   padding: 10px 12px;
-  border-radius: 8px;
+  border-radius: var(--memora-radius);
   background: var(--hover-fill);
   overflow-x: auto;
 }
@@ -2327,7 +2340,7 @@ button.note-list-row {
 
 .md-preview img {
   max-width: 100%;
-  border-radius: 8px;
+  border-radius: var(--memora-radius);
 }
 
 .md-editor-status {
@@ -2425,14 +2438,14 @@ button.note-list-row {
   font-family: Consolas, "Courier New", monospace;
   font-size: 12px;
   background: var(--hover-fill);
-  border-radius: 4px;
+  border-radius: var(--memora-radius-sm);
   padding: 1px 5px;
 }
 
 .md-prose pre {
   margin: 8px 0;
   padding: 10px 12px;
-  border-radius: 8px;
+  border-radius: var(--memora-radius);
   background: var(--hover-fill);
   overflow-x: auto;
 }
@@ -2475,7 +2488,7 @@ button.note-list-row {
 .md-prose img {
   /* 图片宽度上限 420px；超过编辑器宽度时仍以编辑器为准，小图保持原尺寸不放大 */
   max-width: min(100%, 420px);
-  border-radius: 8px;
+  border-radius: var(--memora-radius);
   cursor: pointer;
 }
 
@@ -2651,7 +2664,7 @@ button.note-list-row {
   align-items: center;
   gap: 7px;
   padding: 4px 7px;
-  border-radius: 8px;
+  border-radius: var(--memora-radius-sm);
   background: var(--hover-fill);
 }
 
@@ -2745,7 +2758,7 @@ button.note-list-row {
   align-items: center;
   gap: 8px;
   padding: 5px 8px;
-  border-radius: 8px;
+  border-radius: var(--memora-radius-sm);
   background: var(--hover-fill);
   cursor: default;
   -webkit-user-select: none;
@@ -2874,7 +2887,7 @@ button.note-list-row {
   font-size: 12.5px;
   text-align: left;
   padding: 7px 10px;
-  border-radius: 7px;
+  border-radius: var(--memora-radius-sm);
   cursor: pointer;
   transition: background 0.13s;
 }
@@ -2884,7 +2897,7 @@ button.note-list-row {
 }
 
 .alarm-ctx-item.danger {
-  color: #d9686b;
+  color: var(--memora-danger);
 }
 
 .alarm-add-btn:hover {
@@ -2908,7 +2921,7 @@ button.note-list-row {
 
 .alarm-dt-select {
   border: 1px solid var(--border);
-  border-radius: 7px;
+  border-radius: var(--memora-radius);
   background: rgba(var(--field-rgb), var(--surface-alpha));
   padding: 4px 5px;
   font-size: 11.5px;
@@ -2975,7 +2988,7 @@ button.note-list-row {
   flex-direction: column;
   gap: 12px;
   padding: 16px 18px 14px;
-  border-radius: 14px;
+  border-radius: var(--memora-radius-card);
   background: rgba(var(--field-rgb), 0.97);
   box-shadow: 0 14px 40px rgba(0, 0, 0, 0.22);
   -webkit-animation: editor-card-in 0.16s ease-out;
@@ -3026,7 +3039,7 @@ button.note-list-row {
 
 .alarm-editor-field select {
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--memora-radius);
   background: rgba(var(--field-rgb), var(--surface-alpha));
   padding: 6px 9px;
   font-size: 12px;
@@ -3051,7 +3064,7 @@ button.note-list-row {
   border: none;
   background: transparent;
   padding: 6px 12px;
-  border-radius: 8px;
+  border-radius: var(--memora-radius);
   font-size: 12px;
   color: var(--text-muted);
   cursor: pointer;
@@ -3066,10 +3079,10 @@ button.note-list-row {
   border: none;
   background: var(--kind-accent);
   padding: 6px 18px;
-  border-radius: 8px;
+  border-radius: var(--memora-radius);
   font-size: 12px;
   font-weight: 600;
-  color: #fff;
+  color: var(--memora-on-primary);
   cursor: pointer;
   transition: -webkit-filter 0.15s;
   transition: filter 0.15s;
@@ -3131,7 +3144,7 @@ button.note-list-row {
 
 .detail-field input[type="datetime-local"] {
   border: 1px solid var(--border);
-  border-radius: 9px;
+  border-radius: var(--memora-radius);
   background: rgba(var(--field-rgb), var(--surface-alpha));
   padding: 7px 10px;
   font-size: 12.5px;
@@ -3173,7 +3186,7 @@ button.note-list-row {
   height: 28px;
   padding: 0 11px;
   border: none;
-  border-radius: 9px;
+  border-radius: var(--memora-radius);
   background: color-mix(in srgb, var(--kind-accent) 12%, transparent);
   color: var(--kind-accent);
   font-size: 12px;
@@ -3229,7 +3242,7 @@ button.note-list-row {
    此前 antd Empty 描述 / PRESENTED_IMAGE_SIMPLE 插画、detail-empty 图标与副文案在深色面板上
    叠 opacity 后对比度过低，几乎不可读。 */
 :root.dark-glass .ant-empty-description {
-  color: #c9c3b8;
+  color: var(--memora-text-secondary);
 }
 
 :root.dark-glass .ant-empty-img-simple {
@@ -3239,12 +3252,12 @@ button.note-list-row {
 :root.dark-glass .ant-empty-img-simple ellipse,
 :root.dark-glass .ant-empty-img-simple path,
 :root.dark-glass .ant-empty-img-simple rect {
-  stroke: rgba(236, 230, 220, 0.4);
-  fill: rgba(236, 230, 220, 0.08);
+  stroke: color-mix(in srgb, var(--memora-text) 40%, transparent);
+  fill: color-mix(in srgb, var(--memora-text) 8%, transparent);
 }
 
 :root.dark-glass .detail-empty {
-  color: #c9c3b8;
+  color: var(--memora-text-secondary);
 }
 
 :root.dark-glass .detail-empty .icon {
@@ -3253,26 +3266,22 @@ button.note-list-row {
 
 :root.dark-glass .detail-empty .sub {
   opacity: 1;
-  color: #b8b2a7;
+  color: var(--memora-text-tertiary);
 }
 
 /* 暗色下标题栏图标也提亮一档（默认 --text-muted 在深色面板上偏灰） */
 :root.dark-glass .titlebar-btn {
-  color: #c9c3b8;
+  color: var(--memora-text-secondary);
 }
 
 :root.dark-glass .titlebar-btn:hover {
-  color: #f6f3ed;
+  color: var(--memora-text);
 }
 
 /* 暗色模式下详情面板：保持暗色玻璃背景（与列表区一致），仅提亮文字与控件对比度。
    此前曾切换为白底深字的亮色卡片，在整体暗色毛玻璃里过于突兀，已改回暗底亮字：
    文字使用更高亮度的浅色，输入框等 antd 控件沿用暗色主题（darkAlgorithm 暗底浅字）。 */
 :root.dark-glass .detail-pane {
-  --text: #f6f3ed;
-  --text-muted: #c9c3b8;
-  --border: rgba(236, 230, 220, 0.18);
-  --hover-fill: rgba(236, 230, 220, 0.09);
   color: var(--text);
 }
 
@@ -3281,262 +3290,261 @@ button.note-list-row {
 :root.dark-glass
   .detail-pane
   .ant-input-affix-wrapper::-webkit-input-placeholder {
-  color: #ffffff !important;
+  color: var(--memora-text-secondary) !important;
   opacity: 0.9;
 }
 :root.dark-glass .detail-pane .ant-input::-moz-placeholder,
 :root.dark-glass .detail-pane .ant-input-affix-wrapper::-moz-placeholder {
-  color: #ffffff !important;
+  color: var(--memora-text-secondary) !important;
   opacity: 0.9;
 }
 :root.dark-glass .detail-pane .ant-input:-ms-input-placeholder,
 :root.dark-glass .detail-pane .ant-input-affix-wrapper:-ms-input-placeholder {
-  color: #ffffff !important;
+  color: var(--memora-text-secondary) !important;
   opacity: 0.9;
 }
 :root.dark-glass .detail-pane .ant-input::-ms-input-placeholder,
 :root.dark-glass .detail-pane .ant-input-affix-wrapper::-ms-input-placeholder {
-  color: #ffffff !important;
+  color: var(--memora-text-secondary) !important;
   opacity: 0.9;
 }
 :root.dark-glass .detail-pane .ant-input::-webkit-input-placeholder,
 :root.dark-glass
   .detail-pane
   .ant-input-affix-wrapper::-webkit-input-placeholder {
-  color: #ffffff !important;
+  color: var(--memora-text-secondary) !important;
   opacity: 0.9;
 }
 :root.dark-glass .detail-pane .ant-input::-moz-placeholder,
 :root.dark-glass .detail-pane .ant-input-affix-wrapper::-moz-placeholder {
-  color: #ffffff !important;
+  color: var(--memora-text-secondary) !important;
   opacity: 0.9;
 }
 :root.dark-glass .detail-pane .ant-input:-ms-input-placeholder,
 :root.dark-glass .detail-pane .ant-input-affix-wrapper:-ms-input-placeholder {
-  color: #ffffff !important;
+  color: var(--memora-text-secondary) !important;
   opacity: 0.9;
 }
 :root.dark-glass .detail-pane .ant-input::-ms-input-placeholder,
 :root.dark-glass .detail-pane .ant-input-affix-wrapper::-ms-input-placeholder {
-  color: #ffffff !important;
+  color: var(--memora-text-secondary) !important;
   opacity: 0.9;
 }
 :root.dark-glass .detail-pane .ant-input::-webkit-input-placeholder,
 :root.dark-glass
   .detail-pane
   .ant-input-affix-wrapper::-webkit-input-placeholder {
-  color: #ffffff !important;
+  color: var(--memora-text-secondary) !important;
   opacity: 0.9;
 }
 :root.dark-glass .detail-pane .ant-input::-moz-placeholder,
 :root.dark-glass .detail-pane .ant-input-affix-wrapper::-moz-placeholder {
-  color: #ffffff !important;
+  color: var(--memora-text-secondary) !important;
   opacity: 0.9;
 }
 :root.dark-glass .detail-pane .ant-input:-ms-input-placeholder,
 :root.dark-glass .detail-pane .ant-input-affix-wrapper:-ms-input-placeholder {
-  color: #ffffff !important;
+  color: var(--memora-text-secondary) !important;
   opacity: 0.9;
 }
 :root.dark-glass .detail-pane .ant-input::-ms-input-placeholder,
 :root.dark-glass .detail-pane .ant-input-affix-wrapper::-ms-input-placeholder {
-  color: #ffffff !important;
+  color: var(--memora-text-secondary) !important;
   opacity: 0.9;
 }
 :root.dark-glass .detail-pane .ant-input::-webkit-input-placeholder,
 :root.dark-glass
   .detail-pane
   .ant-input-affix-wrapper::-webkit-input-placeholder {
-  color: #ffffff !important;
+  color: var(--memora-text-secondary) !important;
   opacity: 0.9;
 }
 :root.dark-glass .detail-pane .ant-input::-moz-placeholder,
 :root.dark-glass .detail-pane .ant-input-affix-wrapper::-moz-placeholder {
-  color: #ffffff !important;
+  color: var(--memora-text-secondary) !important;
   opacity: 0.9;
 }
 :root.dark-glass .detail-pane .ant-input:-ms-input-placeholder,
 :root.dark-glass .detail-pane .ant-input-affix-wrapper:-ms-input-placeholder {
-  color: #ffffff !important;
+  color: var(--memora-text-secondary) !important;
   opacity: 0.9;
 }
 :root.dark-glass .detail-pane .ant-input::-ms-input-placeholder,
 :root.dark-glass .detail-pane .ant-input-affix-wrapper::-ms-input-placeholder {
-  color: #ffffff !important;
+  color: var(--memora-text-secondary) !important;
   opacity: 0.9;
 }
 :root.dark-glass .detail-pane .ant-input::-webkit-input-placeholder,
 :root.dark-glass
   .detail-pane
   .ant-input-affix-wrapper::-webkit-input-placeholder {
-  color: #ffffff !important;
+  color: var(--memora-text-secondary) !important;
   opacity: 0.9;
 }
 :root.dark-glass .detail-pane .ant-input::-moz-placeholder,
 :root.dark-glass .detail-pane .ant-input-affix-wrapper::-moz-placeholder {
-  color: #ffffff !important;
+  color: var(--memora-text-secondary) !important;
   opacity: 0.9;
 }
 :root.dark-glass .detail-pane .ant-input:-ms-input-placeholder,
 :root.dark-glass .detail-pane .ant-input-affix-wrapper:-ms-input-placeholder {
-  color: #ffffff !important;
+  color: var(--memora-text-secondary) !important;
   opacity: 0.9;
 }
 :root.dark-glass .detail-pane .ant-input::-ms-input-placeholder,
 :root.dark-glass .detail-pane .ant-input-affix-wrapper::-ms-input-placeholder {
-  color: #ffffff !important;
+  color: var(--memora-text-secondary) !important;
   opacity: 0.9;
 }
 :root.dark-glass .detail-pane .ant-input::-webkit-input-placeholder,
 :root.dark-glass
   .detail-pane
   .ant-input-affix-wrapper::-webkit-input-placeholder {
-  color: #ffffff !important;
+  color: var(--memora-text-secondary) !important;
   opacity: 0.9;
 }
 :root.dark-glass .detail-pane .ant-input::-moz-placeholder,
 :root.dark-glass .detail-pane .ant-input-affix-wrapper::-moz-placeholder {
-  color: #ffffff !important;
+  color: var(--memora-text-secondary) !important;
   opacity: 0.9;
 }
 :root.dark-glass .detail-pane .ant-input:-ms-input-placeholder,
 :root.dark-glass .detail-pane .ant-input-affix-wrapper:-ms-input-placeholder {
-  color: #ffffff !important;
+  color: var(--memora-text-secondary) !important;
   opacity: 0.9;
 }
 :root.dark-glass .detail-pane .ant-input::-ms-input-placeholder,
 :root.dark-glass .detail-pane .ant-input-affix-wrapper::-ms-input-placeholder {
-  color: #ffffff !important;
+  color: var(--memora-text-secondary) !important;
   opacity: 0.9;
 }
 :root.dark-glass .detail-pane .ant-input::-webkit-input-placeholder,
 :root.dark-glass
   .detail-pane
   .ant-input-affix-wrapper::-webkit-input-placeholder {
-  color: #ffffff !important;
+  color: var(--memora-text-secondary) !important;
   opacity: 0.9;
 }
 :root.dark-glass .detail-pane .ant-input::-moz-placeholder,
 :root.dark-glass .detail-pane .ant-input-affix-wrapper::-moz-placeholder {
-  color: #ffffff !important;
+  color: var(--memora-text-secondary) !important;
   opacity: 0.9;
 }
 :root.dark-glass .detail-pane .ant-input:-ms-input-placeholder,
 :root.dark-glass .detail-pane .ant-input-affix-wrapper:-ms-input-placeholder {
-  color: #ffffff !important;
+  color: var(--memora-text-secondary) !important;
   opacity: 0.9;
 }
 :root.dark-glass .detail-pane .ant-input::-ms-input-placeholder,
 :root.dark-glass .detail-pane .ant-input-affix-wrapper::-ms-input-placeholder {
-  color: #ffffff !important;
+  color: var(--memora-text-secondary) !important;
   opacity: 0.9;
 }
 :root.dark-glass .detail-pane .ant-input::-webkit-input-placeholder,
 :root.dark-glass
   .detail-pane
   .ant-input-affix-wrapper::-webkit-input-placeholder {
-  color: #ffffff !important;
+  color: var(--memora-text-secondary) !important;
   opacity: 0.9;
 }
 :root.dark-glass .detail-pane .ant-input::-moz-placeholder,
 :root.dark-glass .detail-pane .ant-input-affix-wrapper::-moz-placeholder {
-  color: #ffffff !important;
+  color: var(--memora-text-secondary) !important;
   opacity: 0.9;
 }
 :root.dark-glass .detail-pane .ant-input:-ms-input-placeholder,
 :root.dark-glass .detail-pane .ant-input-affix-wrapper:-ms-input-placeholder {
-  color: #ffffff !important;
+  color: var(--memora-text-secondary) !important;
   opacity: 0.9;
 }
 :root.dark-glass .detail-pane .ant-input::-ms-input-placeholder,
 :root.dark-glass .detail-pane .ant-input-affix-wrapper::-ms-input-placeholder {
-  color: #ffffff !important;
+  color: var(--memora-text-secondary) !important;
   opacity: 0.9;
 }
 :root.dark-glass .detail-pane .ant-input::-webkit-input-placeholder,
 :root.dark-glass
   .detail-pane
   .ant-input-affix-wrapper::-webkit-input-placeholder {
-  color: #ffffff !important;
+  color: var(--memora-text-secondary) !important;
   opacity: 0.9;
 }
 :root.dark-glass .detail-pane .ant-input::-moz-placeholder,
 :root.dark-glass .detail-pane .ant-input-affix-wrapper::-moz-placeholder {
-  color: #ffffff !important;
+  color: var(--memora-text-secondary) !important;
   opacity: 0.9;
 }
 :root.dark-glass .detail-pane .ant-input:-ms-input-placeholder,
 :root.dark-glass .detail-pane .ant-input-affix-wrapper:-ms-input-placeholder {
-  color: #ffffff !important;
+  color: var(--memora-text-secondary) !important;
   opacity: 0.9;
 }
 :root.dark-glass .detail-pane .ant-input::-ms-input-placeholder,
 :root.dark-glass .detail-pane .ant-input-affix-wrapper::-ms-input-placeholder {
-  color: #ffffff !important;
+  color: var(--memora-text-secondary) !important;
   opacity: 0.9;
 }
 :root.dark-glass .detail-pane .ant-input::-webkit-input-placeholder,
 :root.dark-glass
   .detail-pane
   .ant-input-affix-wrapper::-webkit-input-placeholder {
-  color: #ffffff !important;
+  color: var(--memora-text-secondary) !important;
   opacity: 0.9;
 }
 :root.dark-glass .detail-pane .ant-input::-moz-placeholder,
 :root.dark-glass .detail-pane .ant-input-affix-wrapper::-moz-placeholder {
-  color: #ffffff !important;
+  color: var(--memora-text-secondary) !important;
   opacity: 0.9;
 }
 :root.dark-glass .detail-pane .ant-input:-ms-input-placeholder,
 :root.dark-glass .detail-pane .ant-input-affix-wrapper:-ms-input-placeholder {
-  color: #ffffff !important;
+  color: var(--memora-text-secondary) !important;
   opacity: 0.9;
 }
 :root.dark-glass .detail-pane .ant-input::-ms-input-placeholder,
 :root.dark-glass .detail-pane .ant-input-affix-wrapper::-ms-input-placeholder {
-  color: #ffffff !important;
+  color: var(--memora-text-secondary) !important;
   opacity: 0.9;
 }
 :root.dark-glass .detail-pane .ant-input::placeholder,
 :root.dark-glass .detail-pane .ant-input-affix-wrapper::placeholder {
-  color: #ffffff !important;
+  color: var(--memora-text-secondary) !important;
   opacity: 0.9;
 }
 
 :root.dark-glass .detail-pane .ant-btn {
-  color: #ffffff;
+  color: var(--memora-text);
 }
 
 :root.dark-glass .detail-pane .ant-btn:hover {
-  color: #ffffff;
+  color: var(--memora-text);
   opacity: 0.9;
 }
 
 :root.dark-glass .detail-pane .ant-btn-default {
-  border-color: rgba(255, 255, 255, 0.25);
-  background: rgba(255, 255, 255, 0.08);
+  border-color: var(--control-border);
+  background: var(--hover-fill);
 }
 
-/* 暗色模式下返回列表按钮提亮为纯白 */
+/* 暗色模式下返回列表按钮提亮 */
 :root.dark-glass .detail-back {
-  color: #ffffff;
+  color: var(--memora-text);
 }
 
 :root.dark-glass .detail-back:hover {
-  color: #ffffff;
+  color: var(--memora-text);
   opacity: 0.9;
 }
 
-/* 暗色玻璃下链接文字提亮：分类主题蓝在深底上对比度偏低（约 4.4:1，临界 AA），
-   改用更亮的蓝确保 ≥6:1，仍保留主题色语义 */
+/* 暗色玻璃下链接文字提亮：品牌主色在深底上已 ≥5:1，hover 再提一档 */
 :root.dark-glass .md-prose a,
 :root.dark-glass .md-preview a {
-  color: #82b1e8;
+  color: var(--memora-primary);
 }
 
 :root.dark-glass .md-prose a:hover,
 :root.dark-glass .md-preview a:hover {
-  color: #9ac1ef;
+  color: var(--memora-primary-hover);
 }
 
 /* ===== 右键上下文菜单 ===== */
@@ -3924,7 +3932,7 @@ button.note-list-row {
   width: 26px;
   height: 26px;
   border: none;
-  border-radius: 7px;
+  border-radius: var(--memora-radius-sm);
   background: transparent;
   color: var(--text-muted);
   transition:
@@ -4281,8 +4289,8 @@ button.note-list-row {
   height: 44px;
   border: none;
   border-radius: 50%;
-  background: rgba(0, 0, 0, 0.08);
-  color: #666;
+  background: var(--hover-fill);
+  color: var(--text-muted);
   font-size: 22px;
   line-height: 1;
   cursor: pointer;
@@ -4291,8 +4299,8 @@ button.note-list-row {
 }
 
 .img-viewer-nav:hover {
-  background: rgba(0, 0, 0, 0.16);
-  color: #333;
+  background: color-mix(in srgb, var(--text) 14%, transparent);
+  color: var(--text);
 }
 
 .img-viewer-prev {
@@ -4371,13 +4379,13 @@ button.note-list-row {
 }
 
 .clock-face {
-  fill: #fff;
-  stroke: rgba(16, 24, 40, 0.12);
+  fill: var(--field);
+  stroke: var(--border);
   stroke-width: 1.5;
 }
 
 .clock-tick {
-  stroke: rgba(16, 24, 40, 0.35);
+  stroke: color-mix(in srgb, var(--text) 35%, transparent);
   stroke-width: 1.6;
   stroke-linecap: round;
 }
@@ -4459,7 +4467,7 @@ button.note-list-row {
   gap: 4px;
   padding: 10px 4px;
   border: none;
-  border-radius: 9px;
+  border-radius: var(--memora-radius);
   background: transparent;
   color: var(--text-muted);
   font-size: 12px;
@@ -4489,7 +4497,7 @@ button.note-list-row {
   border: none;
   border-radius: 12px;
   background: var(--reminder);
-  color: #fff;
+  color: var(--memora-on-primary);
   font-size: 14px;
   font-weight: 600;
   text-shadow: none;
@@ -4736,7 +4744,7 @@ body.img-viewer-window .ant-image-preview {
     width: min(420px, calc(100vw - 32px));
     overflow: hidden;
     border: 1px solid var(--border);
-    border-radius: 14px;
+    border-radius: var(--memora-radius-card);
     box-shadow:
       0 12px 40px rgba(0, 0, 0, 0.16),
       0 2px 8px rgba(0, 0, 0, 0.08);
@@ -4894,7 +4902,7 @@ body.img-viewer-window .ant-image-preview {
   display: inline-block;
   padding: 0 6px;
   margin: 0 1px;
-  border-radius: 6px;
+  border-radius: var(--memora-radius-sm);
   border: 1px solid var(--border);
   background: var(--hover-fill);
   color: var(--text);

@@ -7,7 +7,7 @@ import { isTauriRuntime } from "../repository";
  *
  * 早期实现每次右键都 new WebviewWindow：创建 WebView2 实例、加载 ctxmenu 入口
  * bundle、再串行做多次 IPC 定位，实测有几百毫秒延迟。改为应用启动后预热一个
- * 隐藏窗口，右键时只把快照（选中文本 / 格式 / 光标物理坐标 / 主题变量）通过事件
+ * 隐藏窗口，右键时只把快照（选中文本 / 格式 / 光标物理坐标）通过事件
  * 发过去，由菜单窗口自己定位并 show，延迟降到毫秒级。
  *
  * 窗口能力见 capabilities/md-ctx-menu.json（按 md-ctx-* 匹配）。
@@ -52,9 +52,6 @@ export interface CtxMenuState {
   underline: boolean;
   /** 当前文字颜色（拾色器子菜单初始值） */
   color?: string;
-  isDark: boolean;
-  /** 主窗口当前主题的 CSS 变量快照，注入本窗口让菜单视觉与主窗口一致 */
-  cssVars: Record<string, string>;
   /** 右键瞬间的鼠标位置（物理像素）：系统光标读取失败时为主窗口几何换算的兜底值 */
   cursorX: number;
   cursorY: number;

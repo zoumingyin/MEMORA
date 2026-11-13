@@ -28,6 +28,7 @@ import {
   type NoteWindowSnapshot,
 } from "../window/noteWindow";
 import { useNow } from "../hooks/useNow";
+import { ENTRY_KIND_COLOR } from "../utils/entryLabels";
 import { paperTintHex } from "../utils/paper";
 import { EntryCardBody } from "./EntryCardBody";
 import { DetailPane } from "./DetailPane";
@@ -386,6 +387,16 @@ export function NoteWindow() {
     knownTags,
   };
 
+  // 分类点缀色同步到 :root：antd 下拉/弹窗 portal 到 body，取不到卡片内联的 kind-* 类。
+  // 小窗只有一条条目，accent 由自身分类决定，不跟随主窗口当前筛选
+  useEffect(() => {
+    if (!entry) return;
+    document.documentElement.style.setProperty(
+      "--kind-accent",
+      ENTRY_KIND_COLOR[entry.kind]
+    );
+  }, [entry]);
+
   useEffect(() => {
     let disposed = false;
     let detachOpen: (() => void) | null = null;
@@ -399,14 +410,6 @@ export function NoteWindow() {
           (event) => {
             const incoming = event.payload;
             if (incoming.id !== entryId) return;
-            // 主题变量注入（与主窗口一致）
-            for (const [key, value] of Object.entries(incoming.cssVars)) {
-              document.documentElement.style.setProperty(key, value);
-            }
-            document.documentElement.classList.toggle(
-              "dark-glass",
-              incoming.isDark
-            );
             lastSyncedRef.current = incoming.entry;
             setEntry(incoming.entry);
             setKnownTags(incoming.knownTags);

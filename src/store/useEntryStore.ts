@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { AlarmItem, Entry, EntryKind, NewEntryInput } from '../types/entry'
+import type { AlarmItem, Entry, EntryKind, NewEntryInput, TodoItem } from '../types/entry'
 import { getRepository } from '../repository'
 
 /** 界面状态持久化键：异常退出/重启后恢复上次筛选、选中条目与默认分类 */
@@ -291,6 +291,15 @@ export const useEntryStore = create<EntryState>((set, get) => ({
     if (!target) return
     // 仓储按 patch.kind 判别写列，这里补全条目自身类型，避免调用方漏传
     const normalized = { ...patch, kind: target.kind } as Partial<Entry>
+    // 待办子任务变更时同步派生整条完成态，保证界面与数据库一致
+    if (target.kind === 'todo' && Array.isArray((normalized as { items?: TodoItem[] }).items)) {
+      const items = (normalized as { items: TodoItem[] }).items
+      const allDone = items.length > 0 && items.every((item) => item.done)
+      ;(normalized as { done?: boolean }).done = allDone
+      ;(normalized as { completedAt?: number | null }).completedAt = allDone
+        ? target.completedAt ?? Date.now()
+        : null
+    }
     // 提醒条目改闹钟清单时同步派生条目级 remind_at（最近一个未通知闹钟），供列表排序与显示；清空清单时保留原值
     if (target.kind === 'reminder' && Array.isArray((normalized as { alarms?: AlarmItem[] }).alarms)) {
       const alarms = (normalized as { alarms: AlarmItem[] }).alarms
@@ -306,7 +315,7 @@ export const useEntryStore = create<EntryState>((set, get) => ({
       set((state) => ({
         entries: state.entries.map((entry) => {
           if (entry.id !== id) return entry
-          return { ...entry, ...patch, updatedAt: Date.now() } as Entry
+          return { ...entry, ...normalized, updatedAt: Date.now() } as Entry
         }),
       }))
     } catch (error) {

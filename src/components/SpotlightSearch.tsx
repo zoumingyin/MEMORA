@@ -52,15 +52,6 @@ export function SpotlightSearch() {
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
-  // 主题变量注入：与主窗口保持一致（ctxmenu 同款做法）
-  useEffect(() => {
-    if (!snapshot) return;
-    for (const [key, value] of Object.entries(snapshot.cssVars)) {
-      document.documentElement.style.setProperty(key, value);
-    }
-    document.documentElement.classList.toggle("dark-glass", snapshot.isDark);
-  }, [snapshot]);
-
   // 事件注册：ready 握手 + 接收打开快照 + 失焦自动隐藏
   useEffect(() => {
     let disposed = false;

@@ -134,14 +134,13 @@ function nextAlarmAt(alarm: AlarmItem): number {
   }
 }
 
-/** Tauri 环境：为到期闹钟创建居中、置顶、无边框的独立窗口（交互参考图片预览弹窗：自定义标题栏 + 暗亮主题） */
+/** Tauri 环境：为到期闹钟创建居中、置顶、无边框的独立窗口（自定义标题栏，主题由全局 ThemeProvider 解析） */
 async function openReminderDialog(entry: ReminderEntry, alarm: AlarmItem): Promise<boolean> {
   const label = `reminder-${entry.id}-${alarm.id}`
   try {
     const existing = await WebviewWindow.getByLabel(label)
     if (existing) return true
 
-    const isDark = document.documentElement.classList.contains('dark-glass')
     const params = new URLSearchParams({
       alarm: '1',
       id: entry.id,
@@ -151,7 +150,6 @@ async function openReminderDialog(entry: ReminderEntry, alarm: AlarmItem): Promi
       time: String(alarm.remindAt),
       mode: alarm.mode,
       method: alarm.method,
-      dark: isDark ? '1' : '0',
     })
 
     new WebviewWindow(label, {

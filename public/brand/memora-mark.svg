@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="MEMORA">
+  <defs>
+    <linearGradient id="memoraGradient" x1="12" y1="18" x2="116" y2="108" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#536DFF"/>
+      <stop offset=".52" stop-color="#397BFF"/>
+      <stop offset="1" stop-color="#08C6C8"/>
+    </linearGradient>
+  </defs>
+  <path d="M18 88 38 37c3-8 13-10 19-3l20 24 17-21c6-8 17-6 20 3l15 48c3 9-3 18-12 18-6 0-10-4-12-10L94 67 75 91c-5 6-14 6-19 0L39 70 30 96c-2 6-7 10-13 10-9 0-13-9-9-18Z" fill="url(#memoraGradient)" transform="translate(0 -6)"/>
+</svg>

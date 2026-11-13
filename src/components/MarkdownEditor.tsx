@@ -18,6 +18,7 @@ import Link from "@tiptap/extension-link";
 import Image from "@tiptap/extension-image";
 import TurndownService from "turndown";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { cursorPosition, getCurrentWindow } from "@tauri-apps/api/window";
 import { isTauriRuntime } from "../repository";
@@ -314,20 +315,18 @@ export function MarkdownEditor({
       return;
     }
     try {
-      const label = `image-preview-${Date.now()}`;
-      // 图片数据（base64）不放在 URL 参数里，避免 URL 过长导致 431 错误；
-      // 通过 localStorage 传递，预览窗口加载后读取。
-      const storageKey = `image-preview-${Date.now()}`;
-      const isDark = document.documentElement.classList.contains("dark-glass");
-      localStorage.setItem(
-        storageKey,
-        JSON.stringify({ images, index, isDark })
-      );
+      const key = `image-preview-${Date.now()}`;
+      // 图片数据（base64）常有数 MB，超过 localStorage 5MB 配额；
+      // 先写入 Rust 内存中转，预览窗口按 key 取走。
+      await invoke("set_image_preview_payload", {
+        key,
+        payload: JSON.stringify({ images, index }),
+      });
       const params = new URLSearchParams({
         imagePreview: "1",
-        key: storageKey,
+        key,
       });
-      new WebviewWindow(label, {
+      new WebviewWindow(key, {
         // 独立轻量入口（imagePreview.html）：只打包查看器所需代码，秒开；
         // visible:false 隐藏创建，首帧渲染完成后再 show，避免加载期白屏
         url: `imagePreview.html?${params.toString()}`,
@@ -396,21 +395,6 @@ export function MarkdownEditor({
     const italic = toolActive("italic");
     const underline = toolActive("underline");
     const color = currentTextColor();
-    const isDark = document.documentElement.classList.contains("dark-glass");
-    // 快照主窗口当前主题 CSS 变量，供菜单窗口注入，保持菜单视觉与主窗口一致
-    const cssVars: Record<string, string> = {};
-    for (const key of [
-      "--field-rgb",
-      "--border",
-      "--text",
-      "--text-muted",
-      "--hover-fill",
-      "--kind-accent",
-    ]) {
-      cssVars[key] = getComputedStyle(document.documentElement)
-        .getPropertyValue(key)
-        .trim();
-    }
 
     // 系统级光标位置（物理像素，首选）与主窗口几何（兜底定位/边界）并行读取，
     // 减少右键到菜单出现的等待
@@ -460,8 +444,6 @@ export function MarkdownEditor({
       italic,
       underline,
       color,
-      isDark,
-      cssVars,
       // 定位信息：鼠标物理坐标 + 点击所在显示器工作区（主窗口就在该显示器上）
       cursorX: posX,
       cursorY: posY,

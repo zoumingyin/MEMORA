@@ -3,8 +3,12 @@ import { buildAssistantContext } from '../services/assistantContext'
 import {
   AGENT_TOOLS,
   AGENT_TOOL_PROMPT,
+  NO_TOOL_PROMPT,
+  createAgentToolScope,
   executeAgentTool,
+  type AgentToolScope,
 } from '../services/agentTools'
+import { resetDeleteProposals } from '../services/deleteProposals'
 import { cancelChat, streamChat } from '../services/aiClient'
 import { formatWebResults, searchWeb } from '../services/webSearch'
 import {
@@ -141,10 +145,10 @@ interface AssistantState {
   stop: () => void
   retry: () => Promise<void>
   clear: () => void
-  /** 记录某条回答里的操作已创建，避免重复写入 */
-  markActionCreated: (messageId: string, index: number) => void
-  /** 记录某条回答里工具产生的待确认操作已执行，避免重复执行 */
+  /** 记录某条回答里工具产生的删除提议已执行，避免重复执行 */
   markToolActionDone: (messageId: string, index: number) => void
+  /** 记录删除提议已被用户取消：取消后不能再执行 */
+  markToolActionCancelled: (messageId: string, index: number) => void
 }
 
 const initial = loadPersisted()
@@ -228,6 +232,9 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
 
     const requestId = crypto.randomUUID()
     active = { requestId, assistantId }
+    // 幂等集合与过期判断都绑定本次请求：旧请求不会执行未开始的工具
+    const isStale = () => active?.requestId !== requestId
+    const toolScope: AgentToolScope = createAgentToolScope(requestId, isStale)
 
     // 历史消息：排除出错的回答，剥掉 <action> 操作块，从新到旧累加并受总字数约束；
     // 输入越小，首字越快（免费网关排队时长也随输入体积增长）
@@ -299,7 +306,6 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
       active = null
       persistSnapshot(get().messages, get().contextEnabled, get().webSearch)
     }
-    const isStale = () => active?.requestId !== requestId
 
     /** 更新当前回答消息上的联网搜索状态（随消息持久化） */
     const updateWebSearch = (
@@ -331,14 +337,14 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
         if (isStale()) return
       }
 
-      // agent 只读工具：仅在用户允许读取便签时提供（隐私不变量：
+      // agent 工具：仅在用户允许读取便签时提供（隐私不变量：
       // contextEnabled 关闭时不下发任何工具，模型无法触达便签数据）
       const toolsAvailable = state.contextEnabled ? AGENT_TOOLS : null
 
       const systemContent = [
         context.systemPrompt,
-        // 工具可用时附上使用说明（与请求体的 tools 参数配套）
-        toolsAvailable ? AGENT_TOOL_PROMPT : null,
+        // 工具可用时附上使用说明；不可用时明确告知只能回答、不能写数据
+        toolsAvailable ? AGENT_TOOL_PROMPT : NO_TOOL_PROMPT,
         webBlock,
       ]
         .filter((part): part is string => Boolean(part))
@@ -402,8 +408,9 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
           )
         })
 
-      // agent loop：带工具发起请求 → 模型请求调用 → 执行只读工具 → 结果回传续问，
-      // 直到模型给出最终回答 / 轮数用尽 / 出错。写操作不在此列（仍走 <action> 确认卡）。
+      // agent loop：带工具发起请求 → 模型请求调用 → 执行工具 → 结果回传续问，
+      // 直到模型给出最终回答 / 轮数用尽 / 出错。
+      // 查询与写入直接执行，删除只生成确认卡片，由用户在界面上确认。
       let apiMessages: AiChatMessage[] = [
         { role: 'system', content: systemContent },
         ...history,
@@ -426,6 +433,15 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
           ) {
             toolsDegraded = true
             toolsEnabled = false
+            // 工具不可用时把工具说明换成降级说明，避免模型仍声称能写数据
+            apiMessages = apiMessages.map((message, index) =>
+              index === 0 && message.role === 'system'
+                ? {
+                    ...message,
+                    content: `${message.content.replace(AGENT_TOOL_PROMPT, '').trim()}\n\n${NO_TOOL_PROMPT}`,
+                  }
+                : message,
+            )
             if (import.meta.env.DEV) {
               console.info(
                 `[AI] 当前模型可能不支持工具调用，已降级为普通对话重试：${attempt.error.message}`,
@@ -448,8 +464,9 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
         if (isStale()) return
 
         // 工具轮：执行工具并把结果回传，继续下一轮。
-        // 只读与写入（create/update）自动生效；delete 只生成确认卡片，由用户点击执行
+        // 查询 / 新增 / 修改直接执行；删除只生成确认卡片，由用户点击执行
         if (attempt.outcome === 'toolCalls' && toolRounds < MAX_TOOL_ROUNDS) {
+          if (isStale()) return
           toolRounds += 1
           set((current) => ({
             messages: current.messages.map((message) =>
@@ -458,8 +475,20 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
           }))
           const toolMessages: AiChatMessage[] = []
           const confirmCards: AssistantAction[] = []
+          let aborted = false
           for (const call of attempt.calls) {
-            const outcome = await executeAgentTool(call)
+            // 用户点停止后：尚未开始的工具一律不再执行
+            if (isStale()) {
+              aborted = true
+              break
+            }
+            const outcome = await executeAgentTool(call, toolScope)
+            // 执行期间用户可能已停止：不再回传结果、不展示卡片；
+            // 已提交的写入不回滚，也不向用户声称已撤销
+            if (isStale()) {
+              aborted = true
+              break
+            }
             if (outcome.confirmAction) confirmCards.push(outcome.confirmAction)
             toolMessages.push({
               role: 'tool',
@@ -467,6 +496,7 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
               content: outcome.result,
             })
           }
+          if (aborted) return
           if (confirmCards.length > 0) {
             set((current) => ({
               messages: current.messages.map((message) =>
@@ -576,24 +606,9 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
       cancelChat(active.requestId)
       active = null
     }
+    resetDeleteProposals()
     set({ messages: [], input: '', sending: false })
     persistSnapshot([], get().contextEnabled, get().webSearch)
-  },
-
-  markActionCreated: (messageId, index) => {
-    set((state) => ({
-      messages: state.messages.map((message) =>
-        message.id === messageId
-          ? {
-              ...message,
-              createdActions: Array.from(
-                new Set([...(message.createdActions ?? []), index]),
-              ),
-            }
-          : message,
-      ),
-    }))
-    persistSnapshot(get().messages, get().contextEnabled, get().webSearch)
   },
 
   markToolActionDone: (messageId, index) => {
@@ -604,6 +619,22 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
               ...message,
               toolActionsDone: Array.from(
                 new Set([...(message.toolActionsDone ?? []), index]),
+              ),
+            }
+          : message,
+      ),
+    }))
+    persistSnapshot(get().messages, get().contextEnabled, get().webSearch)
+  },
+
+  markToolActionCancelled: (messageId, index) => {
+    set((state) => ({
+      messages: state.messages.map((message) =>
+        message.id === messageId
+          ? {
+              ...message,
+              toolActionsCancelled: Array.from(
+                new Set([...(message.toolActionsCancelled ?? []), index]),
               ),
             }
           : message,

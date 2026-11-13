@@ -1,7 +1,7 @@
 [package]
 name = "bianqian"
 version = "0.2.0"
-description = "桌面便签工具：备忘、提醒、待办"
+description = "MEMORA — 个人桌面效率工具：备忘、提醒、待办、AI 助手"
 edition = "2021"
 
 [lib]

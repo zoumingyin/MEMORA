@@ -1,0 +1,40 @@
+/* MEMORA design tokens */
+:root {
+  --memora-primary: #536DFF;
+  --memora-primary-hover: #4357E8;
+  --memora-primary-soft: #EEF1FF;
+  /* 主色实底之上的前景色：暗色主色偏亮，白字会失读，改用深墨色 */
+  --memora-on-primary: #FFFFFF;
+  --memora-cyan: #08C6C8;
+  --memora-violet: #8B5CF6;
+  --memora-success: #16A78A;
+  --memora-warning: #F5B942;
+  --memora-danger: #E56875;
+  --memora-text: #14213D;
+  --memora-text-secondary: #64748B;
+  --memora-text-tertiary: #94A3B8;
+  --memora-bg: #F8FAFC;
+  --memora-surface: #FFFFFF;
+  --memora-border: #E5EAF3;
+  --memora-radius-sm: 6px;
+  --memora-radius: 10px;
+  --memora-radius-card: 12px;
+  --memora-radius-lg: 16px;
+  --memora-shadow: 0 4px 16px rgba(31,51,105,.06);
+  --memora-shadow-lg: 0 12px 32px rgba(31,51,105,.10);
+  --memora-font: Inter, "Segoe UI", "Microsoft YaHei", sans-serif;
+}
+[data-theme="dark"] {
+  --memora-primary: #8292FF;
+  --memora-primary-hover: #9BA7FF;
+  --memora-primary-soft: #263252;
+  --memora-on-primary: #14213D;
+  --memora-text: #E8EDFA;
+  --memora-text-secondary: #A8B4CC;
+  --memora-text-tertiary: #7F8CA6;
+  --memora-bg: #111827;
+  --memora-surface: #182235;
+  --memora-border: #2D3B54;
+  --memora-shadow: 0 4px 16px rgba(0,0,0,.18);
+  --memora-shadow-lg: 0 12px 32px rgba(0,0,0,.28);
+}

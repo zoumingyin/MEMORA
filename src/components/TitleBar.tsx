@@ -8,6 +8,7 @@ import { useUiStore } from "../store/useUiStore";
 import { closeWindow } from "../window/tauriWindow";
 import { toggleMaximize } from "../window/maximize";
 import { SettingsDialog } from "./SettingsDialog";
+import { BrandMark } from "./BrandLogo";
 import { QuickCapture } from "./QuickCapture";
 import { PomodoroDialog } from "./PomodoroDialog";
 import { FocusReviewDialog } from "./FocusReviewDialog";
@@ -113,9 +114,8 @@ export function TitleBar({ quickOpen, setQuickOpen }: TitleBarProps) {
 
   return (
     <header className="titlebar" data-tauri-drag-region="deep">
-      <div className="titlebar-title text-12px">
-        <span className="dot" />
-        便签
+      <div className="titlebar-title" title="MEMORA — Think · Note · Do">
+        <BrandMark size={19} />
       </div>
 
       <div className="titlebar-actions " data-tauri-drag-region="false">

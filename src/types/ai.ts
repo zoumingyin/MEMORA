@@ -1,5 +1,29 @@
 /** AI 助手：前后端共享的类型定义（与 src-tauri/src/ai.rs 对应） */
 
+import type { EntryKind } from './entry'
+
+/** 操作类型：create 新建便签；complete-todo 勾选已有待办的子任务；append-note 向已有备忘追加内容；delete 删除便签（进废纸篓，可恢复） */
+export type AssistantActionOp = 'create' | 'complete-todo' | 'append-note' | 'delete'
+
+/** AI 提议的一条操作（用户确认前不会写入仓储）；界面只渲染工具产生的删除卡片 */
+export interface AssistantAction {
+  /** 缺省视为 create（兼容旧回答里的动作块） */
+  op?: AssistantActionOp
+  kind: EntryKind
+  title: string
+  content: string
+  /** 提醒专用：毫秒时间戳（已校验为未来时间） */
+  remindAt?: number
+  /** 待办专用：子任务文本（create 为新建项；complete-todo 为要勾选的现有项） */
+  items?: string[]
+  /** 操作已有便签时的目标 id（来自上下文） */
+  targetId?: string
+  /** 删除提议 id：确认时凭它做一次性执行与过期校验 */
+  proposalId?: string
+  /** 删除提议过期时间（毫秒时间戳），过期后不可执行 */
+  expiresAt?: number
+}
+
 /** 推理强度：none 关闭思考；low / medium / high 为思考强度分档 */
 export type ReasoningEffort = 'none' | 'low' | 'medium' | 'high'
 
@@ -178,8 +202,6 @@ export interface AssistantMessage {
   stopped?: boolean
   /** 回答因 max_tokens 用尽被截断（finish_reason=length），操作卡片可能不完整 */
   truncated?: boolean
-  /** 已确认创建的操作下标：随消息持久化，避免重开面板或重启后重复创建 */
-  createdActions?: number[]
   /**
    * 联网搜索状态（仅 assistant 消息）：开启联网后随消息持久化，
    * 展示「正在搜索 / 已搜索 N 条 / 搜索失败」提示
@@ -192,7 +214,9 @@ export interface AssistantMessage {
   /** agent 自动执行的只读工具调用轮数（function calling），随消息持久化用于展示提示 */
   toolRounds?: number
   /** agent 工具产生的待确认操作（目前只有 delete_entry），随消息持久化渲染确认卡片 */
-  toolActions?: import('../utils/assistantActions').AssistantAction[]
+  toolActions?: AssistantAction[]
   /** 已确认执行的 toolActions 下标（随消息持久化，避免重复执行） */
   toolActionsDone?: number[]
+  /** 已被用户取消的 toolActions 下标：取消后不允许再次执行 */
+  toolActionsCancelled?: number[]
 }

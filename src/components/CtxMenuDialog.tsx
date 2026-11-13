@@ -1,5 +1,4 @@
 import { useEffect, useState } from "react";
-import { ConfigProvider, theme as antdTheme } from "antd";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { PhysicalPosition, PhysicalSize } from "@tauri-apps/api/dpi";
 import { emit, emitTo, listen, type UnlistenFn } from "@tauri-apps/api/event";
@@ -24,7 +23,7 @@ import {
 
 /**
  * Markdown 右键菜单独立窗口（应用启动后预热、常驻复用）：
- * 监听主窗口发来的快照（选中文本 / 格式 / 光标物理坐标 / 主题变量），
+ * 监听主窗口发来的快照（选中文本 / 格式 / 光标物理坐标），
  * 渲染与页面内完全一致的菜单面板；
  * 点击菜单项后通过 Tauri 事件把命令回传给主窗口执行，随后隐藏本窗口（不销毁，下次复用）。
  * 复制/剪切/粘贴在菜单窗口内完成剪贴板读写（此时本窗口持有焦点与用户手势）。
@@ -92,15 +91,6 @@ export function CtxMenuDialog() {
       console.error("右键菜单命令发送失败", e);
     }
   };
-
-  // 注入主窗口主题 CSS 变量，使菜单视觉（底色/边框/文字/悬停/主题色）与主窗口一致
-  useEffect(() => {
-    if (!state) return;
-    const rootStyle = document.documentElement.style;
-    for (const [key, value] of Object.entries(state.cssVars)) {
-      if (value) rootStyle.setProperty(key, value);
-    }
-  }, [state]);
 
   // 窗口以隐藏方式创建（visible:false）：先移动到光标处，使窗口落在点击所在显示器，
   // 再取该显示器的缩放与工作区，按四方向碰撞规则（右/下放不下则向左/上翻转，
@@ -310,39 +300,35 @@ export function CtxMenuDialog() {
   }
 
   return (
-    <ConfigProvider
-      theme={state.isDark ? { algorithm: antdTheme.darkAlgorithm } : undefined}
+    <div
+      className="md-ctx-window"
+      onContextMenu={(e) => {
+        e.preventDefault();
+        void close();
+      }}
     >
+      {/* 点击/右键窗口空白处关闭（透明区域也由遮罩接管，行为与页面内菜单遮罩一致） */}
       <div
-        className="md-ctx-window"
+        className="md-ctx-window-mask"
+        onClick={() => void close()}
         onContextMenu={(e) => {
           e.preventDefault();
           void close();
         }}
-      >
-        {/* 点击/右键窗口空白处关闭（透明区域也由遮罩接管，行为与页面内菜单遮罩一致） */}
-        <div
-          className="md-ctx-window-mask"
-          onClick={() => void close()}
-          onContextMenu={(e) => {
-            e.preventDefault();
-            void close();
-          }}
-        />
-        <ContextMenuPanel
-          key={openSeq}
-          active={{
-            bold: state.bold,
-            strike: state.strike,
-            italic: state.italic,
-            underline: state.underline,
-          }}
-          colorValue={state.color}
-          style={{ left: CTX_PANEL_OFFSET }}
-          viewArea={viewArea}
-          onAction={(action) => void handleAction(action)}
-        />
-      </div>
-    </ConfigProvider>
+      />
+      <ContextMenuPanel
+        key={openSeq}
+        active={{
+          bold: state.bold,
+          strike: state.strike,
+          italic: state.italic,
+          underline: state.underline,
+        }}
+        colorValue={state.color}
+        style={{ left: CTX_PANEL_OFFSET }}
+        viewArea={viewArea}
+        onAction={(action) => void handleAction(action)}
+      />
+    </div>
   );
 }

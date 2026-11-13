@@ -311,7 +311,7 @@ export function ContextMenuPanel({
         onMouseEnter={(e) => openSubmenu("color", e.currentTarget)}
       >
         <span className="md-ctx-label">
-          <FontColorsOutlined style={{ color: "#e5484d" }} />
+          <FontColorsOutlined style={{ color: "var(--memora-danger)" }} />
           文字颜色
         </span>
         <span className="md-ctx-arrow">›</span>
@@ -334,7 +334,7 @@ export function ContextMenuPanel({
                   display: "inline-block",
                   width: "16px",
                   height: "16px",
-                  background: "#000000",
+                  background: "var(--text)",
                   borderRadius: "3px",
                   marginRight: "8px",
                 }}

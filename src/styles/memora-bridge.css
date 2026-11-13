@@ -1,0 +1,79 @@
+/**
+ * MEMORA 品牌令牌 → 应用既有 CSS 变量的桥接层。
+ *
+ * index.css 有 4900+ 行样式引用 --panel-rgb / --text / --note 等旧变量名。
+ * 这里把旧变量重新指向品牌令牌，既有样式无需重写即可整体换上 MEMORA 配色。
+ * 必须在 index.css 之后导入（同为 :root 特异性，靠顺序覆盖）。
+ *
+ * 注意：--*-rgb 是 rgba() 的数值分量，无法用 var(--memora-bg) 表达，
+ * 只能写出与品牌 hex 等值的三元组；改品牌背景色时这里要同步。
+ */
+
+:root {
+  /* Background #F8FAFC */
+  --panel-rgb: 248, 250, 252;
+  /* 结构层（标题栏 / 工具条）比页面背景深一档：#F1F5F9 */
+  --panel-soft-rgb: 241, 245, 249;
+  /* Surface #FFFFFF */
+  --field-rgb: 255, 255, 255;
+  --field: rgb(var(--field-rgb));
+
+  --text: var(--memora-text);
+  --text-muted: var(--memora-text-secondary);
+  --border: var(--memora-border);
+  --control-border: #d3dbe8;
+
+  /* 分类强调色收敛到品牌语义色：备忘=主色 / 提醒=危险珊瑚 / 待办=成功绿 / 涂鸦=AI 紫 */
+  --note: var(--memora-primary);
+  --reminder: var(--memora-danger);
+  --todo: var(--memora-success);
+  --draw: var(--memora-violet);
+  --danger: var(--memora-danger);
+  /* 分类点缀色兜底：右键菜单/快捷搜索等窗口没有条目上下文，
+     App 与小窗会以内联样式覆盖为当前分类色（内联优先级更高） */
+  --kind-accent: var(--memora-primary);
+
+  --hover-fill: rgba(20, 33, 61, 0.05);
+  --radius: var(--memora-radius-lg);
+  --shadow: var(--memora-shadow-lg);
+  --shadow-lift: 0 18px 44px rgba(31, 51, 105, 0.16);
+
+  /* 玻璃高光：低透明度时窗口的亮边，收敛为品牌冷调 */
+  --glass-edge: rgba(255, 255, 255, 0.7);
+  --glass-highlight: rgba(255, 255, 255, 0.75);
+
+  --card-bg: rgb(var(--field-rgb));
+  --card-border-hover: color-mix(in srgb, var(--memora-primary) 42%, var(--border));
+  --card-active-bg: var(--memora-primary-soft);
+  --card-active-border: var(--memora-primary);
+  --card-hover-shadow: var(--memora-shadow);
+}
+
+:root[data-theme='dark'] {
+  /* Background #111827 */
+  --panel-rgb: 17, 24, 39;
+  /* Surface #182235 */
+  --panel-soft-rgb: 24, 34, 53;
+  /* Elevated Surface #202C42 */
+  --field-rgb: 32, 44, 66;
+  --field: rgb(var(--field-rgb));
+
+  --text: var(--memora-text);
+  --text-muted: var(--memora-text-secondary);
+  --border: var(--memora-border);
+  --control-border: #3b4c6b;
+
+  --hover-fill: rgba(232, 237, 250, 0.08);
+  --shadow: var(--memora-shadow-lg);
+  --shadow-lift: 0 18px 44px rgba(0, 0, 0, 0.5);
+
+  /* 深色底上白亮边是一圈刺眼白线，压到极低 */
+  --glass-edge: rgba(168, 180, 204, 0.16);
+  --glass-highlight: rgba(168, 180, 204, 0.07);
+
+  --card-bg: rgb(var(--field-rgb));
+  --card-border-hover: color-mix(in srgb, var(--memora-primary) 55%, var(--border));
+  --card-active-bg: var(--memora-primary-soft);
+  --card-active-border: var(--memora-primary);
+  --card-hover-shadow: 0 6px 20px rgba(0, 0, 0, 0.42);
+}

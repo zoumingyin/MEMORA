@@ -100,7 +100,7 @@ export function PomodoroDialog({
             type="circle"
             percent={Math.round(percent)}
             size={168}
-            strokeColor={mode === "work" ? "#d9686b" : "#57a878"}
+            strokeColor={mode === "work" ? "#e56875" : "#16a78a"}
             trailColor="rgba(128,128,128,0.18)"
             format={() => <span className="pomodoro-time">{fmt(remainingMs)}</span>}
           />

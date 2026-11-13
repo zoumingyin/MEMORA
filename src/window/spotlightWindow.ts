@@ -9,7 +9,7 @@ import { useEntryStore } from "../store/useEntryStore";
  * 常驻复用的全局快捷搜索（Spotlight 式）窗口。
  *
  * 与右键菜单窗口同一套路：应用启动后预热一个隐藏窗口，Ctrl+Shift+F 唤起时
- * 主窗口把条目快照（标题/预览/标签/主题变量）+ 定位信息发给它，搜索窗口
+ * 主窗口把条目快照（标题/预览/标签）+ 定位信息发给它，搜索窗口
  * 自己定位到主窗口所在显示器顶部居中并 show + 聚焦，回车跳回主窗口对应便签。
  *
  * 窗口能力见 capabilities/spotlight.json（按 spotlight 匹配）。
@@ -18,7 +18,7 @@ import { useEntryStore } from "../store/useEntryStore";
 /** 搜索窗口标签 */
 export const SPOTLIGHT_LABEL = "spotlight";
 
-/** 主窗口 → 搜索窗口：打开一次搜索（payload 为条目快照 + 主题 + 工作区） */
+/** 主窗口 → 搜索窗口：打开一次搜索（payload 为条目快照 + 工作区） */
 export const SPOTLIGHT_OPEN_EVENT = "spotlight:open";
 /** 搜索窗口 → 主窗口：页面已加载并注册好事件监听 */
 export const SPOTLIGHT_READY_EVENT = "spotlight:ready";
@@ -43,12 +43,9 @@ export interface SpotlightEntry {
   updatedAt: number;
 }
 
-/** 主窗口 → 搜索窗口的打开快照 */
+/** 主窗口 → 搜索窗口的打开快照（主题由全局 ThemeProvider 解析，不再随快照下发） */
 export interface SpotlightSnapshot {
   entries: SpotlightEntry[];
-  isDark: boolean;
-  /** 主窗口当前主题的 CSS 变量快照，注入本窗口保持视觉一致 */
-  cssVars: Record<string, string>;
   /** 主窗口所在显示器的工作区（物理像素）：搜索窗口定位到其顶部居中 */
   workArea: WorkArea | null;
 }
@@ -77,25 +74,6 @@ export function buildSpotlightEntries(): SpotlightEntry[] {
     tags: entry.tags,
     updatedAt: entry.updatedAt,
   }));
-}
-
-/** 快照主窗口当前主题 CSS 变量（与右键菜单快照同一组 + --note 主色） */
-export function buildSpotlightCssVars(): Record<string, string> {
-  const cssVars: Record<string, string> = {};
-  for (const key of [
-    "--field-rgb",
-    "--border",
-    "--text",
-    "--text-muted",
-    "--hover-fill",
-    "--kind-accent",
-    "--note",
-  ]) {
-    cssVars[key] = getComputedStyle(document.documentElement)
-      .getPropertyValue(key)
-      .trim();
-  }
-  return cssVars;
 }
 
 /** 等待搜索窗口回报就绪的超时时间；超时视为窗口失效并重建 */
@@ -239,8 +217,6 @@ export async function toggleSpotlightWindow(): Promise<void> {
     try {
       const snapshot: SpotlightSnapshot = {
         entries: buildSpotlightEntries(),
-        isDark: document.documentElement.classList.contains("dark-glass"),
-        cssVars: buildSpotlightCssVars(),
         workArea: await currentWorkArea().catch(() => null),
       };
       await emitTo(SPOTLIGHT_LABEL, SPOTLIGHT_OPEN_EVENT, snapshot);

@@ -27,6 +27,8 @@ import { FreeBadge } from "./FreeBadge";
 import { ModalityBadge } from "./ModalityBadge";
 import { TagManager } from "./TagManager";
 import { AutoBackupSetting } from "./AutoBackupSetting";
+import { BrandLogo } from "./BrandLogo";
+import { ThemeModePicker } from "./ThemeModePicker";
 import {
   isNonTextModality,
   type AiFreeSource,
@@ -150,8 +152,8 @@ const SETTING_TREE: SettingGroup[] = [
     children: [
       {
         key: "theme",
-        label: "主题",
-        hint: "亮色 / 暗色主题切换",
+        label: "主题模式",
+        hint: "浅色 / 深色 / 跟随系统",
       },
       {
         key: "opacity",
@@ -320,9 +322,8 @@ export function SettingsDialog({
   onClose,
   initialSection,
 }: SettingsDialogProps) {
-  const { alwaysOnTop, opacity, edgeDocking, theme } = useWindowStore();
-  const { setAlwaysOnTop, setOpacity, setEdgeDocking, setTheme } =
-    useWindowStore();
+  const { alwaysOnTop, opacity, edgeDocking } = useWindowStore();
+  const { setAlwaysOnTop, setOpacity, setEdgeDocking } = useWindowStore();
   // 当前树节点：默认「主题」；由「去设置」跳转时直接定位到目标页
   const [activeKey, setActiveKey] = useState(() =>
     initialSection && SETTING_LEAF_KEYS.has(initialSection)
@@ -893,16 +894,14 @@ export function SettingsDialog({
     switch (key) {
       case "theme":
         return (
-          <div className="settings-item">
+          <div className="settings-item grid">
             <div className="settings-item-main">
-              <span className="settings-item-label">主题</span>
-              <span className="settings-item-hint">亮色 / 暗色主题切换</span>
+              <span className="settings-item-label">主题模式</span>
+              <span className="settings-item-hint">
+                浅色 / 深色 / 跟随系统，全部窗口同步生效
+              </span>
             </div>
-            <Switch
-              size="small"
-              checked={theme === "dark"}
-              onChange={(checked) => setTheme(checked ? "dark" : "light")}
-            />
+            <ThemeModePicker />
           </div>
         );
       case "opacity":
@@ -1520,11 +1519,15 @@ export function SettingsDialog({
       case "about-info":
         return (
           <div className="flex flex-col gap-2.5">
+            <div className="about-brand">
+              <BrandLogo height={30} />
+              <span className="about-brand-tag">THINK · NOTE · DO</span>
+            </div>
             <div className="settings-item">
               <div className="settings-item-main">
-                <span className="settings-item-label">便签</span>
+                <span className="settings-item-label">MEMORA</span>
                 <span className="settings-item-hint">
-                  本地优先的桌面便签，数据仅保存在本机
+                  本地优先的桌面效率工具，便签数据仅保存在本机
                 </span>
               </div>
             </div>

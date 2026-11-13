@@ -3,23 +3,9 @@ import type { Dayjs } from "dayjs";
 import dayjs from "dayjs";
 import { useMemo, useState, type ReactNode } from "react";
 import { useEntryStore } from "../store/useEntryStore";
-import type { Entry, EntryKind } from "../types/entry";
+import type { Entry } from "../types/entry";
+import { ENTRY_KIND_COLOR, ENTRY_KIND_LABEL } from "../utils/entryLabels";
 import { formatShort } from "../utils/format";
-
-/** 条目在日历上的打点颜色（与分类主题色一致） */
-const DOT_COLOR: Record<EntryKind, string> = {
-  note: "#2563eb",
-  reminder: "#d9686b",
-  todo: "#57a878",
-  draw: "#8b5cf6",
-};
-
-const KIND_LABEL: Record<EntryKind, string> = {
-  note: "备忘",
-  reminder: "提醒",
-  todo: "待办",
-  draw: "涂鸦",
-};
 
 /** 某条目的「发生日期」：提醒按最近闹钟时间，备忘/待办/涂鸦按最近更新时间 */
 function entryDates(entry: Entry): number[] {
@@ -83,7 +69,7 @@ export function CalendarPane({ onSelect }: { onSelect: (id: string) => void }) {
           <i
             key={kind}
             className="calendar-dot"
-            style={{ background: DOT_COLOR[kind] }}
+            style={{ background: ENTRY_KIND_COLOR[kind] }}
           />
         ))}
       </span>
@@ -117,13 +103,13 @@ export function CalendarPane({ onSelect }: { onSelect: (id: string) => void }) {
             >
               <i
                 className="calendar-day-kind"
-                style={{ background: DOT_COLOR[entry.kind] }}
+                style={{ background: ENTRY_KIND_COLOR[entry.kind] }}
               />
               <span className="calendar-day-title">
                 {entry.title.trim() || "（无标题）"}
               </span>
               <span className="calendar-day-meta">
-                {KIND_LABEL[entry.kind]}
+                {ENTRY_KIND_LABEL[entry.kind]}
                 {entry.kind === "reminder"
                   ? ` · ${formatShort(entry.remindAt)}`
                   : ` · ${formatShort(entry.updatedAt)}`}
