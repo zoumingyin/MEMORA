@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
+import dayjs from 'dayjs'
 import { App as AntdApp, Button, Dropdown, Flex, Popconfirm, Select, Tooltip } from 'antd'
 import { openExternal } from '../utils/openExternal'
 import {
@@ -11,6 +12,7 @@ import {
   Copy,
   FileText,
   Globe,
+  History,
   ListChecks,
   Pencil,
   Plus,
@@ -32,16 +34,44 @@ import {
   cancelDeleteProposal,
   confirmDeleteProposal,
 } from '../services/deleteExecution'
+import {
+  recordDeleteCancelled,
+  recordDeleteConfirmed,
+} from '../services/deleteConfirmationHistory'
+import {
+  ALARM_METHOD_LABEL,
+  ALARM_MODE_LABEL,
+} from '../services/reminderAlarms'
+import {
+  cancelAlarmSelection,
+  expireAlarmSelection,
+} from '../services/alarmSelections'
+import { confirmAlarmSelection } from '../services/alarmSelectionExecution'
+import { createAgentToolEnv } from '../services/agentTools'
+import {
+  buildTaskChecklist,
+  countTaskStatuses,
+  TASK_STATUS_LABEL,
+  taskStatusFromStep,
+} from '../services/agentProgress'
+import {
+  executionSummaryLines,
+  summarizeExecution,
+} from '../services/agentExecution'
 import { FreeBadge } from './FreeBadge'
 import { ModalityBadge } from './ModalityBadge'
 import { ProviderMark } from './ProviderMark'
+import { AgentHistoryPanel } from './AgentHistoryPanel'
 import { useAssistantStore } from '../store/useAssistantStore'
 import { useAiProfileStore } from '../store/useAiProfileStore'
 import { useEntryStore } from '../store/useEntryStore'
 import { useUiStore } from '../store/useUiStore'
 import {
   isNonTextModality,
+  type AssistantAlarmSelection,
   type AssistantMessage,
+  type AssistantPhase,
+  type AssistantTaskStatus,
   type AiProfileStatus,
   type ReasoningEffort,
 } from '../types/ai'
@@ -178,7 +208,7 @@ function ErrorCard({
 
   return (
     <div className="mt-2 rounded-[var(--memora-radius)] border border-[color-mix(in_srgb,var(--memora-danger)_45%,transparent)] bg-[color-mix(in_srgb,var(--memora-danger)_10%,var(--field))] px-3 py-2.5">
-      <div className="flex items-center gap-1.5 text-[12.5px] font-semibold text-[var(--memora-danger)]">
+      <div className="flex items-center gap-1.5 text-[12.5px] font-semibold text-[var(--memora-danger-text)]">
         <TriangleAlert size={13} />
         {errorTitle(error.code)}
       </div>
@@ -251,6 +281,205 @@ function CopyReplyButton({ text }: { text: string }) {
   )
 }
 
+/** 执行阶段文案：与 agent loop 的真实阶段一一对应，不做假进度 */
+const PHASE_META: Record<
+  AssistantPhase,
+  { label: string; tone: 'active' | 'success' | 'warning' | 'danger' }
+> = {
+  understanding: { label: '正在理解任务', tone: 'active' },
+  searching: { label: '正在搜索资料', tone: 'active' },
+  executing: { label: '正在执行操作', tone: 'active' },
+  composing: { label: '正在整理结果', tone: 'active' },
+  done: { label: '已完成', tone: 'success' },
+  partial: { label: '部分完成', tone: 'warning' },
+  failed: { label: '执行失败', tone: 'danger' },
+  needs_input: { label: '等待用户补充信息', tone: 'warning' },
+}
+
+const PHASE_TONE_CLASS: Record<
+  (typeof PHASE_META)[AssistantPhase]['tone'],
+  string
+> = {
+  active: 'bg-[var(--hover-fill)] text-[var(--text-muted)]',
+  success:
+    'bg-[color-mix(in_srgb,var(--memora-success)_10%,transparent)] text-[var(--memora-success-text)]',
+  warning:
+    'bg-[color-mix(in_srgb,var(--memora-warning)_12%,transparent)] text-[var(--memora-warning-text)]',
+  danger:
+    'bg-[color-mix(in_srgb,var(--memora-danger)_12%,transparent)] text-[var(--memora-danger-text)]',
+}
+
+const PHASE_ICON: Record<
+  (typeof PHASE_META)[AssistantPhase]['tone'],
+  ReactNode
+> = {
+  active: <Search size={10} />,
+  success: <Check size={11} />,
+  warning: <CircleAlert size={11} />,
+  danger: <TriangleAlert size={11} />,
+}
+
+function PhaseBadge({ phase, live }: { phase: AssistantPhase; live: boolean }) {
+  const meta = PHASE_META[phase]
+  return (
+    <div
+      className={`mb-1 inline-flex items-center gap-1 rounded-[var(--memora-radius-sm)] px-1.5 py-0.5 text-[10.5px] leading-snug ${PHASE_TONE_CLASS[meta.tone]}`}
+    >
+      {live && meta.tone === 'active' ? (
+        <TypingDots />
+      ) : (
+        PHASE_ICON[meta.tone]
+      )}
+      <span>{meta.label}</span>
+    </div>
+  )
+}
+
+function TaskStatusMark({ status }: { status: AssistantTaskStatus }) {
+  if (status === 'running') return <TypingDots />
+  if (status === 'success') {
+    return <Check size={11} className="shrink-0 text-[var(--memora-success-text)]" />
+  }
+  if (status === 'failed') {
+    return <TriangleAlert size={11} className="shrink-0 text-[var(--memora-danger-text)]" />
+  }
+  if (status === 'needs_input' || status === 'execution_unknown') {
+    return <CircleAlert size={11} className="shrink-0 text-[var(--memora-warning-text)]" />
+  }
+  if (status === 'interrupted') {
+    return <CircleAlert size={11} className="shrink-0 text-[var(--text-muted)]" />
+  }
+  return <CircleAlert size={11} className="shrink-0 text-[var(--text-muted)]" />
+}
+
+function taskTone(status: AssistantTaskStatus): string {
+  if (status === 'success') return 'text-[var(--memora-success-text)]'
+  if (status === 'failed') return 'text-[var(--memora-danger-text)]'
+  if (status === 'needs_input' || status === 'execution_unknown') {
+    return 'text-[var(--memora-warning-text)]'
+  }
+  if (status === 'running') return 'text-[var(--text)]'
+  return 'text-[var(--text-muted)]'
+}
+
+function taskDetailVisible(status: AssistantTaskStatus): boolean {
+  return (
+    status === 'failed' ||
+    status === 'needs_input' ||
+    status === 'execution_unknown'
+  )
+}
+
+/**
+ * 执行进度：已执行项来自 toolSteps，未执行项来自 toolTasks；
+ * 计划项在真实执行前只能是待执行 / 执行中，结果详情默认折叠。
+ */
+function ExecutionProgress({ message }: { message: AssistantMessage }) {
+  const steps = message.toolSteps ?? []
+  const tasks = buildTaskChecklist(message)
+  const counts = countTaskStatuses(tasks)
+  const summary = summarizeExecution(steps)
+  const lines = executionSummaryLines(summary)
+  const live = message.status === 'streaming'
+  const hasAttention =
+    counts.failed > 0 ||
+    counts.needsInput > 0 ||
+    counts.skipped > 0 ||
+    counts.unknown > 0
+  const pending = counts.pending + counts.running
+  if (tasks.length === 0) return null
+
+  return (
+    <div className="mt-2 rounded-[var(--memora-radius)] border border-[var(--border)] bg-[var(--hover-fill)] px-2.5 py-2">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[10.5px] text-[var(--text-muted)]">
+        <span className="inline-flex items-center gap-1">
+          <ListChecks size={11} />
+          {live ? '执行进度' : '执行结果'} · 完成 {counts.success}/{counts.total}
+        </span>
+        {pending > 0 && <span>待执行 {pending}</span>}
+        {counts.failed > 0 && (
+          <span className="text-[var(--memora-danger-text)]">失败 {counts.failed}</span>
+        )}
+        {counts.needsInput > 0 && (
+          <span className="text-[var(--memora-warning-text)]">
+            待补充 / 确认 {counts.needsInput}
+          </span>
+        )}
+        {counts.unknown > 0 && (
+          <span className="text-[var(--memora-warning-text)]">
+            状态待核对 {counts.unknown}
+          </span>
+        )}
+        {counts.interrupted > 0 && <span>已中断 {counts.interrupted}</span>}
+        {counts.skipped > 0 && <span>已跳过 {counts.skipped}</span>}
+        {counts.cancelled > 0 && <span>已取消 {counts.cancelled}</span>}
+      </div>
+      <ul className="mt-1 flex flex-col gap-1">
+        {tasks.map((task) => (
+          <li
+            key={task.callId}
+            className="rounded-[var(--memora-radius-sm)] bg-[var(--field)] px-2 py-1"
+          >
+            <div className="flex items-center gap-1 text-[10.5px]">
+              <TaskStatusMark status={task.status} />
+              <span className="min-w-0 flex-1 truncate text-[var(--text)]">
+                {task.label}
+              </span>
+              <span className={`shrink-0 ${taskTone(task.status)}`}>
+                {TASK_STATUS_LABEL[task.status]}
+              </span>
+            </div>
+            {task.detail && taskDetailVisible(task.status) && (
+              <div className="mt-0.5 break-words text-[10px] leading-snug text-[var(--text-muted)]">
+                {task.detail}
+              </div>
+            )}
+          </li>
+        ))}
+      </ul>
+      {(lines.length > 0 || steps.length > 0) && !live && (
+        <details className="mt-1">
+          <summary className="cursor-pointer text-[10.5px] text-[var(--text-muted)]">
+            查看执行详情
+          </summary>
+          {lines.length > 0 && (
+            <ul className="mt-1 flex flex-col gap-0.5 text-[10.5px] leading-relaxed text-[var(--text)]">
+              {lines.map((line) => (
+                <li key={line}>{line}</li>
+              ))}
+            </ul>
+          )}
+          <ul className="mt-1 flex flex-col gap-1">
+            {steps.map((step) => (
+              <li
+                key={step.callId}
+                className="rounded-[var(--memora-radius-sm)] bg-[var(--hover-fill)] px-2 py-1"
+              >
+                <div className="flex items-center gap-1 text-[10px]">
+                  <span className="min-w-0 flex-1 truncate text-[var(--text)]">
+                    {step.label}
+                  </span>
+                  <span className={`shrink-0 ${taskTone(taskStatusFromStep(step))}`}>
+                    {TASK_STATUS_LABEL[taskStatusFromStep(step)]}
+                  </span>
+                </div>
+                <div className="mt-0.5 break-words text-[10px] leading-snug text-[var(--text-muted)]">
+                  {step.message}
+                </div>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+      {hasAttention && live && (
+        <div className="mt-1 text-[10px] leading-snug text-[var(--text-muted)]">
+          失败或等待补充的步骤会在结束后保留原因。
+        </div>
+      )}
+    </div>
+  )
+}
+
 const ACTION_META: Record<EntryKind, { label: string; icon: ReactNode }> = {
   note: { label: '备忘', icon: <FileText size={12} /> },
   todo: { label: '待办', icon: <ListChecks size={12} /> },
@@ -263,12 +492,14 @@ function ActionCard({
   action,
   done,
   cancelled,
+  invalidated,
   onDone,
   onCancelled,
 }: {
   action: AssistantAction
   done: boolean
   cancelled: boolean
+  invalidated: boolean
   onDone: () => void
   onCancelled: () => void
 }) {
@@ -284,16 +515,18 @@ function ActionCard({
   )
   const meta = ACTION_META[target?.kind ?? action.kind]
   const title = target?.title.trim() || action.title || '无标题'
-  const resolved = done || cancelled || (failure !== null && !retryable)
+  const resolved = done || cancelled || invalidated || (failure !== null && !retryable)
   const stateLabel = done
     ? '已移入废纸篓'
     : cancelled
       ? '已取消'
-      : failure
-        ? retryable
-          ? '删除失败，可重试'
-          : '已失效'
-        : '待确认'
+      : invalidated
+        ? '已失效'
+        : failure
+          ? retryable
+            ? '删除失败，可重试'
+            : '已失效'
+          : '待确认'
 
   const handleConfirm = async (): Promise<void> => {
     if (busy || resolved) return
@@ -309,6 +542,8 @@ function ActionCard({
           useEntryStore.getState().entries.some((entry) => entry.id === id),
       },
     })
+    // 只回写历史表中的真实结果；历史缺失或失败不影响业务删除
+    await recordDeleteConfirmed(action, result)
     setBusy(false)
     if (!result.ok) {
       setFailure(result.message)
@@ -319,9 +554,12 @@ function ActionCard({
     antdMessage.success('已移入废纸篓')
   }
 
-  const handleCancel = (): void => {
+  const handleCancel = async (): Promise<void> => {
     if (busy || resolved) return
+    setBusy(true)
     cancelDeleteProposal(action.proposalId)
+    await recordDeleteCancelled(action)
+    setBusy(false)
     onCancelled()
     antdMessage.info('已取消删除，便签没有任何改动')
   }
@@ -337,7 +575,7 @@ function ActionCard({
       }`}
     >
       <div className="flex items-center gap-1.5 text-[10.5px] text-[var(--text-muted)]">
-        <span className="flex-center text-[var(--memora-danger)]">
+        <span className="flex-center text-[var(--memora-danger-text)]">
           <Trash2 size={12} />
         </span>
         <span>删除便签</span>
@@ -345,10 +583,10 @@ function ActionCard({
         <span
           className={`ml-auto flex items-center gap-0.5 ${
             done
-              ? 'font-semibold text-[var(--memora-success)]'
+              ? 'font-semibold text-[var(--memora-success-text)]'
               : cancelled || failure
                 ? ''
-                : 'text-[var(--memora-warning)]'
+                : 'text-[var(--memora-warning-text)]'
           }`}
         >
           {done ? (
@@ -369,9 +607,11 @@ function ActionCard({
           ? '已从列表移入废纸篓，可在废纸篓中恢复。'
           : cancelled
             ? '已取消删除，便签内容和数据都没有改动。'
-            : failure
-              ? failure
-              : '将移入废纸篓（可在废纸篓恢复），不会永久删除。确认前不会修改任何数据。'}
+            : invalidated
+              ? '这张确认卡片已失效（应用重启后一次性授权已丢失）。请让助手重新发起删除。'
+              : failure
+                ? failure
+                : '将移入废纸篓（可在废纸篓恢复），不会永久删除。确认前不会修改任何数据。'}
       </p>
 
       {!resolved && (
@@ -386,6 +626,199 @@ function ActionCard({
           >
             确认删除
           </Button>
+          <Button size="small" type="text" onClick={handleCancel}>
+            取消
+          </Button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** 多闹钟提醒的目标选择：只有用户点击候选才产生一次性修改授权 */
+function AlarmSelectionCard({
+  selection,
+  done,
+  cancelled,
+  invalidated,
+  onDone,
+  onCancelled,
+  onInvalidated,
+  onRetry,
+}: {
+  selection: AssistantAlarmSelection
+  done: boolean
+  cancelled: boolean
+  invalidated: boolean
+  onDone: () => void
+  onCancelled: () => void
+  onInvalidated: () => void
+  onRetry: () => void
+}) {
+  const { message: antdMessage } = AntdApp.useApp()
+  const [busy, setBusy] = useState<string | null>(null)
+  const [failure, setFailure] = useState<string | null>(null)
+  const [success, setSuccess] = useState<string | null>(null)
+  const [expired, setExpired] = useState(
+    () => selection.expiresAt <= Date.now(),
+  )
+  const resolved =
+    done || cancelled || invalidated || expired || success !== null || failure !== null
+  const stateLabel = done || success
+    ? '已修改'
+    : cancelled
+      ? '已取消'
+      : invalidated
+        ? '已失效'
+        : expired
+          ? '已过期'
+          : failure
+            ? '已失效'
+            : '等待选择'
+  const canRetry = !done && !cancelled && (invalidated || expired || failure !== null)
+
+  useEffect(() => {
+    if (expired) return
+    const remaining = selection.expiresAt - Date.now()
+    if (remaining <= 0) {
+      // 初始已过期：只同步注册表状态，渲染期已由 useState 初始值标记为过期
+      expireAlarmSelection(selection.proposalId)
+      return
+    }
+    const timer = window.setTimeout(() => {
+      setExpired(true)
+      expireAlarmSelection(selection.proposalId)
+    }, remaining)
+    return () => window.clearTimeout(timer)
+  }, [expired, selection.expiresAt, selection.proposalId])
+
+  const handlePick = async (alarmId: string): Promise<void> => {
+    if (busy || resolved) return
+    setBusy(alarmId)
+    setFailure(null)
+    const result = await confirmAlarmSelection({
+      proposalId: selection.proposalId,
+      entryId: selection.entryId,
+      alarmId,
+      env: createAgentToolEnv(),
+    })
+    setBusy(null)
+    if (!result.ok) {
+      // busy 表示同一次点击仍在执行，保持等待状态；其余失败均消费授权并显示失效
+      if (result.reason !== 'busy') {
+        setFailure(result.message)
+        onInvalidated()
+      }
+      return
+    }
+    setSuccess(result.message)
+    onDone()
+    antdMessage.success('已修改选中的闹钟')
+  }
+
+  const handleCancel = (): void => {
+    if (busy || resolved) return
+    cancelAlarmSelection(selection.proposalId)
+    onCancelled()
+    antdMessage.info('已取消，闹钟没有任何改动')
+  }
+
+  return (
+    <div
+      className={`rounded-[var(--memora-radius)] border px-3 py-2.5 ${
+        done || success
+          ? 'border-[color-mix(in_srgb,var(--memora-success)_45%,transparent)] bg-[color-mix(in_srgb,var(--memora-success)_8%,var(--field))]'
+          : cancelled || invalidated || expired || failure
+            ? 'border-[var(--border)] bg-[var(--field)] opacity-80'
+            : 'border-[color-mix(in_srgb,var(--memora-warning)_40%,transparent)] bg-[var(--field)]'
+      }`}
+    >
+      <div className="flex items-center gap-1.5 text-[10.5px] text-[var(--text-muted)]">
+        <span className="flex-center text-[var(--memora-warning-text)]">
+          <Bell size={12} />
+        </span>
+        <span>选择要修改的闹钟</span>
+        <span
+          className={`ml-auto flex items-center gap-0.5 ${
+            done || success
+              ? 'font-semibold text-[var(--memora-success-text)]'
+              : cancelled || invalidated || expired || failure
+                ? ''
+                : 'text-[var(--memora-warning-text)]'
+          }`}
+        >
+          {done || success ? (
+            <Check size={11} />
+          ) : cancelled || invalidated || expired || failure ? null : (
+            <CircleAlert size={11} />
+          )}
+          {stateLabel}
+        </span>
+      </div>
+
+      <div className="mt-1 break-words text-[12.5px] font-semibold leading-snug text-[var(--text)]">
+        {selection.title}
+      </div>
+      <p className="mt-1 text-[11.5px] leading-relaxed text-[var(--text-muted)]">
+        {success
+          ? success
+          : done
+            ? '已修改选中的闹钟；其它闹钟与重复规则未改动。'
+            : cancelled
+              ? '已取消选择，闹钟没有任何改动。'
+              : invalidated
+                ? '已开始新任务或应用已重启，这次选择已失效；闹钟没有任何改动。'
+                : expired
+                  ? '这次选择已过期；闹钟没有任何改动。'
+                  : failure
+                    ? failure
+                    : `这条提醒有 ${selection.candidates.length} 个闹钟，请选择要把时间改到 ${dayjs(
+                        selection.remindAt,
+                      ).format('YYYY-MM-DD HH:mm')} 的那一个。只修改选中的闹钟，其它闹钟与重复规则保持不变。`}
+      </p>
+
+      {(selection.changes ?? []).length > 0 && (
+        <div className="mt-1 rounded-[var(--memora-radius-sm)] bg-[var(--hover-fill)] px-2 py-1 text-[11px] leading-relaxed text-[var(--text-muted)]">
+          <span className="font-medium text-[var(--text)]">本次点击将一并授权：</span>
+          {(selection.changes ?? []).map((change) => change.label).join('；')}
+        </div>
+      )}
+
+      {!resolved && (
+        <div className="mt-2 flex flex-col gap-1.5">
+          {selection.candidates.map((candidate) => (
+            <button
+              key={candidate.alarmId}
+              type="button"
+              disabled={busy !== null}
+              className="flex w-full items-center gap-2 rounded-[var(--memora-radius-sm)] border border-[var(--border)] bg-[var(--field)] px-2 py-1.5 text-left text-[11.5px] text-[var(--text)] transition-colors hover:border-[color-mix(in_srgb,var(--memora-warning)_45%,var(--border))] hover:bg-[var(--hover-fill)] disabled:cursor-default disabled:opacity-60"
+              onClick={() => void handlePick(candidate.alarmId)}
+            >
+              <span className="inline-flex items-center gap-1 font-medium">
+                <Bell size={11} className="text-[var(--memora-warning-text)]" />
+                {ALARM_MODE_LABEL[candidate.mode] ?? candidate.mode}
+              </span>
+              <span>{dayjs(candidate.remindAt).format('MM-DD HH:mm')}</span>
+              <span className="ml-auto text-[10.5px] text-[var(--text-muted)]">
+                {busy === candidate.alarmId
+                  ? '修改中…'
+                  : ALARM_METHOD_LABEL[candidate.method] ?? candidate.method}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {canRetry && (
+        <div className="mt-2 flex items-center gap-2">
+          <Button size="small" icon={<RotateCcw size={12} />} onClick={onRetry}>
+            重新发起
+          </Button>
+        </div>
+      )}
+
+      {!resolved && (
+        <div className="mt-2">
           <Button size="small" type="text" onClick={handleCancel}>
             取消
           </Button>
@@ -424,6 +857,15 @@ function MessageBubble({
   const markToolActionDone = useAssistantStore((state) => state.markToolActionDone)
   const markToolActionCancelled = useAssistantStore(
     (state) => state.markToolActionCancelled,
+  )
+  const markToolSelectionDone = useAssistantStore(
+    (state) => state.markToolSelectionDone,
+  )
+  const markToolSelectionCancelled = useAssistantStore(
+    (state) => state.markToolSelectionCancelled,
+  )
+  const markToolSelectionInvalidated = useAssistantStore(
+    (state) => state.markToolSelectionInvalidated,
   )
   /** 回复里的交互元素：便签引用胶囊（.note-ref-link，消毒后由前端注入）点击跳转选中对应便签；
    * 超链接走系统浏览器打开（阻止默认行为，避免 WebView2 整窗导航/opener 权限报错） */
@@ -481,14 +923,31 @@ function MessageBubble({
         : webSearch?.status === 'failed'
           ? `联网搜索失败：${webSearch.error ?? '未知原因'}`
           : null
-  // agent 工具提示：本回答执行过几轮工具调用（查询 / 新增 / 修改自动生效，删除待确认）
+  // 旧消息只保存了轮数、没有执行记录时，退回显示轮数提示
+  const toolSteps = message.toolSteps ?? []
+  const toolTasks = message.toolTasks ?? []
+  const hasExecution =
+    toolSteps.length > 0 || toolTasks.length > 0 || message.toolLimitReached === true
   const toolHint =
-    (message.toolRounds ?? 0) > 0
+    (message.toolRounds ?? 0) > 0 && toolSteps.length === 0
       ? `已执行 ${message.toolRounds} 轮便签工具`
       : null
+  const phase = message.phase
+  const livePhase = message.status === 'streaming' ? phase : undefined
+  // 终态徽标：只在有实际执行、或结果不是「已完成」时展示，普通问答不额外加徽标
+  const terminalPhase =
+    message.status !== 'streaming' &&
+    phase &&
+    (phase !== 'done' || hasExecution)
+      ? phase
+      : null
+  const phaseLabel = phase ? PHASE_META[phase].label : '思考中'
 
   return (
-    <div className="group flex items-start gap-2">
+    <div
+      className="group flex items-start gap-2"
+      data-message-id={message.id}
+    >
       <div className="flex-center h-6 w-6 shrink-0 rounded-full bg-[var(--card-active-bg)] text-[var(--kind-accent)]">
         <Sparkles size={13} />
       </div>
@@ -499,7 +958,7 @@ function MessageBubble({
               <ThinkingIndicator
                 startedAt={message.createdAt}
                 label={
-                  webSearch?.status === 'searching' ? '正在联网搜索…' : '思考中'
+                  webSearch?.status === 'searching' ? '正在联网搜索…' : phaseLabel
                 }
               />
             )}
@@ -515,13 +974,14 @@ function MessageBubble({
                   size={10}
                   className={
                     webSearch?.status === 'failed'
-                      ? 'text-[var(--memora-danger)]'
+                      ? 'text-[var(--memora-danger-text)]'
                       : undefined
                   }
                 />
                 <span>{searchHint}</span>
               </div>
             )}
+            {livePhase && parsed.text && <PhaseBadge phase={livePhase} live />}
             {toolHint && (
               <div className="mb-1 inline-flex items-center gap-1 rounded-[var(--memora-radius-sm)] bg-[color-mix(in_srgb,var(--memora-violet)_12%,transparent)] px-1.5 py-0.5 text-[10.5px] leading-snug text-[var(--text-muted)]">
                 <Search size={10} className="text-[var(--memora-violet)]" />
@@ -553,6 +1013,16 @@ function MessageBubble({
             )}
           </div>
         )}
+        {(terminalPhase || hasExecution) && (
+          <div className="mt-2 flex flex-col gap-1">
+            {terminalPhase && (
+              <div className="self-start">
+                <PhaseBadge phase={terminalPhase} live={false} />
+              </div>
+            )}
+            {hasExecution && <ExecutionProgress message={message} />}
+          </div>
+        )}
         {message.status !== 'streaming' && parsed.invalidCount > 0 && (
           <div className="mt-2 flex items-start gap-1 text-[11px] leading-snug text-[var(--text-muted)]">
             <TriangleAlert size={11} className="mt-[2px] shrink-0" />
@@ -560,6 +1030,41 @@ function MessageBubble({
               有 {parsed.invalidCount} 个操作卡片解析失败（格式异常或被截断），可让
               AI 重新生成。
             </span>
+          </div>
+        )}
+        {message.status !== 'streaming' && (message.toolSelections ?? []).length > 0 && (
+          <div className="mt-2 flex flex-col gap-2">
+            {(message.toolSelections ?? []).map((selection) => (
+              <AlarmSelectionCard
+                key={selection.proposalId}
+                selection={selection}
+                done={(message.toolSelectionsDone ?? []).includes(
+                  selection.proposalId,
+                )}
+                cancelled={(message.toolSelectionsCancelled ?? []).includes(
+                  selection.proposalId,
+                )}
+                invalidated={(message.toolSelectionsInvalidated ?? []).includes(
+                  selection.proposalId,
+                )}
+                onDone={() =>
+                  markToolSelectionDone(message.id, selection.proposalId)
+                }
+                onCancelled={() =>
+                  markToolSelectionCancelled(message.id, selection.proposalId)
+                }
+                onInvalidated={() =>
+                  markToolSelectionInvalidated(message.id, selection.proposalId)
+                }
+                onRetry={() =>
+                  void useAssistantStore
+                    .getState()
+                    .send(
+                      `请重新发起「${selection.title}」的提醒时间修改（之前的选择已失效）。`,
+                    )
+                }
+              />
+            ))}
           </div>
         )}
         {message.status !== 'streaming' && (message.toolActions ?? []).length > 0 && (
@@ -570,6 +1075,7 @@ function MessageBubble({
                 action={action}
                 done={(message.toolActionsDone ?? []).includes(index)}
                 cancelled={(message.toolActionsCancelled ?? []).includes(index)}
+                invalidated={(message.toolActionsInvalidated ?? []).includes(index)}
                 onDone={() => markToolActionDone(message.id, index)}
                 onCancelled={() => markToolActionCancelled(message.id, index)}
               />
@@ -622,6 +1128,7 @@ function AssistantPanelBody() {
   const atBottomRef = useRef(true)
   // 弹层高度：按触发器上下可用空间取大者，避免小窗口下列表被裁掉
   const [modelListHeight, setModelListHeight] = useState(240)
+  const [historyOpen, setHistoryOpen] = useState(false)
 
   const fitModelDropdown = () => {
     const rect = modelSelectRef.current?.getBoundingClientRect()
@@ -688,11 +1195,15 @@ function AssistantPanelBody() {
       if (event.key !== 'Escape') return
       // 设置弹窗打开时由弹窗处理 Esc，避免同时关闭面板
       if (useUiStore.getState().settingsOpen) return
+      if (historyOpen) {
+        setHistoryOpen(false)
+        return
+      }
       togglePanel()
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [togglePanel])
+  }, [historyOpen, togglePanel])
 
   const handleScroll = () => {
     const element = scrollRef.current
@@ -704,6 +1215,27 @@ function AssistantPanelBody() {
   const handleSend = (text?: string) => {
     atBottomRef.current = true
     void send(text)
+  }
+
+  /** 从执行历史回到原对话：消息可能因清空或保留条数上限而不存在，需明确提示 */
+  const handleJumpToMessage = (messageId: string) => {
+    setHistoryOpen(false)
+    window.setTimeout(() => {
+      const target = Array.from(
+        scrollRef.current?.querySelectorAll<HTMLElement>('[data-message-id]') ?? [],
+      ).find((element) => element.dataset.messageId === messageId)
+      if (!target) {
+        antdMessage.warning('原对话已不在当前会话中（可能已被清空或超出保留条数）')
+        return
+      }
+      target.scrollIntoView({ block: 'center' })
+      target.style.outline = '2px solid var(--kind-accent)'
+      target.style.outlineOffset = '4px'
+      window.setTimeout(() => {
+        target.style.outline = ''
+        target.style.outlineOffset = ''
+      }, 1600)
+    }, 60)
   }
 
   /** 推理强度保存在模型配置里：切换后同一条配置的后续提问都生效 */
@@ -745,6 +1277,17 @@ function AssistantPanelBody() {
             {sending ? '正在回答…' : '基于你的便签回答'}
           </div>
         </div>
+        <Tooltip title="执行历史">
+          <button
+            type="button"
+            className={`titlebar-btn ${historyOpen ? 'text-[var(--kind-accent)]' : ''}`}
+            aria-label="查看执行历史"
+            aria-pressed={historyOpen}
+            onClick={() => setHistoryOpen((open) => !open)}
+          >
+            <History size={14} />
+          </button>
+        </Tooltip>
         <Tooltip title="管理模型配置">
           <button
             type="button"
@@ -766,6 +1309,13 @@ function AssistantPanelBody() {
         </button>
       </header>
 
+      {historyOpen ? (
+        <AgentHistoryPanel
+          onClose={() => setHistoryOpen(false)}
+          onJumpToMessage={handleJumpToMessage}
+        />
+      ) : (
+        <>
       <div
         ref={scrollRef}
         onScroll={handleScroll}
@@ -1013,6 +1563,8 @@ function AssistantPanelBody() {
           </div>
         </div>
       </footer>
+        </>
+      )}
     </section>
   )
 }

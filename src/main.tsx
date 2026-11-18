@@ -8,6 +8,7 @@ import App from './App.tsx'
 import { AlarmDialog } from './components/AlarmDialog.tsx'
 import { ImagePreviewDialog } from './components/ImagePreviewDialog.tsx'
 import { isTauriRuntime } from './repository'
+import { recoverInterruptedExecutions } from './services/executionHistoryRecovery'
 
 // dayjs 全局中文：Calendar/DatePicker 的星期名、月份名、dddd 等格式化输出中文
 // （antd 的 zhCN locale 只覆盖组件文案，月份/星期这类由 dayjs 按 locale 生成，需单独设置）
@@ -36,6 +37,11 @@ if (!isAlarmDialog && !isImagePreviewDialog && isTauriRuntime()) {
   void invoke('splash_report', { progress: 0.6, status: '正在加载界面…' }).catch(
     () => undefined,
   )
+}
+
+// 执行历史恢复：上次应用退出时仍在执行的记录标记为中断 / 状态未知，不自动重放
+if (!isAlarmDialog && !isImagePreviewDialog) {
+  void recoverInterruptedExecutions()
 }
 
 createRoot(document.getElementById('root')!).render(

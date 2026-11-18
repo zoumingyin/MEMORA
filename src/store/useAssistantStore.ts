@@ -1,20 +1,75 @@
 import { create } from 'zustand'
 import { buildAssistantContext } from '../services/assistantContext'
+import { createAgentToolScope, executeAgentTool } from '../services/agentTools'
 import {
-  AGENT_TOOLS,
-  AGENT_TOOL_PROMPT,
-  NO_TOOL_PROMPT,
-  createAgentToolScope,
-  executeAgentTool,
+  commitStagedCandidates,
+  seedTrustedTargets,
   type AgentToolScope,
-} from '../services/agentTools'
+  type ToolPermission,
+  type WriteAttempt,
+} from '../services/agentToolExecutor'
+import {
+  buildConversationMemory,
+  buildMemoryPromptBlock,
+  createConversationMemoryCache,
+} from '../services/conversationMemory'
+import { resolveConversationReferent } from '../services/conversationReferents'
+import {
+  buildExecutionOutcomeNotice,
+  buildPlannedTasks,
+  buildRoundLimitTasks,
+  cancelUnfinishedTasks,
+  taskStatusFromOutcome,
+} from '../services/agentProgress'
+import {
+  buildContinuationContext,
+  isContinuationRequest,
+} from '../services/agentContinuation'
+import {
+  hasReferentWriteClause,
+  hasSelectedReferentWriteIntent,
+  resolveExplicitIdTargets,
+  resolveExplicitTitleTargets,
+} from '../services/agentTargets'
+import {
+  buildRetryLedger,
+  mergeRetryLedger,
+  retryBlockedWriteTools,
+  retrySystemNote,
+  retryWriteSignatures,
+  type RetryLedger,
+} from '../services/agentRetryLedger'
+import {
+  MAX_TOOL_ROUNDS,
+  appendNotice,
+  buildRoundLimitNotice,
+  callsAreReadOnly,
+  deriveFinalPhase,
+  executeToolBatch,
+  shouldDegradeTools,
+} from '../services/agentExecution'
+import { classifyModelFailure } from '../services/agentFailure'
+import type { AgentFailure } from '../services/agentFailure'
+import { getExecutionRecorder } from '../services/executionRecorder'
+import {
+  buildExecutionTitle,
+  deriveExecutionStatus,
+  summarizeUserInput,
+} from '../services/executionHistory'
+import {
+  analyzeAssistantIntent,
+  degradeToolPrompt,
+  planAssistantTools,
+} from '../services/assistantIntent'
 import { resetDeleteProposals } from '../services/deleteProposals'
+import { invalidatePendingSelections, invalidatePendingToolActions } from '../utils/assistantSelectionLifecycle'
+import {
+  cancelPendingAlarmSelections,
+  resetAlarmSelections,
+} from '../services/alarmSelections'
 import { cancelChat, streamChat } from '../services/aiClient'
 import { formatWebResults, searchWeb } from '../services/webSearch'
-import {
-  parseAssistantActions,
-  type AssistantAction,
-} from '../utils/assistantActions'
+import { type AssistantAction } from '../utils/assistantActions'
 import { useAiProfileStore } from './useAiProfileStore'
 import { useEntryStore } from './useEntryStore'
 import type {
@@ -23,27 +78,27 @@ import type {
   AiToolCall,
   AiToolDefinition,
   AssistantMessage,
+  AssistantPhase,
+  AssistantToolStep,
+  AssistantToolTask,
+  AssistantWriteAttempt,
 } from '../types/ai'
 
 /** 对话持久化：仅保留最近若干条，避免 localStorage 无限增长 */
 const STORAGE_KEY = 'bianqian.assistant.v1'
 const MAX_STORED_MESSAGES = 40
-/** 每次请求携带的历史条数与总字数上限（不含 system）：输入越小首字越快 */
-const MAX_HISTORY_MESSAGES = 12
-const MAX_MESSAGE_CHARS = 2000
-const MAX_HISTORY_CHARS = 8000
 /** 流式增量合并刷新间隔：逐 token setState 会导致整个消息列表高频重渲染 */
 const FLUSH_INTERVAL_MS = 50
-/** agent loop 工具轮数上限：防止模型连环调用不收敛（超限后按普通回答收尾）；
- * 批量编排（检索 1 轮 + 每轮可并行多个写入）8 轮足够覆盖常见整理任务 */
-const MAX_TOOL_ROUNDS = 8
-/** 这些错误码出现在「带 tools 的首次请求且无任何输出」时，按不支持工具降级重试 */
-const TOOL_UNSUPPORTED_CODES = new Set(['http_error', 'endpoint_not_found', 'server_error'])
+
+/** 摘要缓存只服务当前会话；清空会话时一并丢弃，避免跨会话复用 */
+const conversationMemoryCache = createConversationMemoryCache()
 
 interface PersistedAssistant {
   messages: AssistantMessage[]
   contextEnabled: boolean
   webSearch: boolean
+  /** 当前对话标识：执行历史据此关联原始对话（清空对话后重新生成） */
+  conversationId: string
 }
 
 function isMessage(value: unknown): value is AssistantMessage {
@@ -60,10 +115,18 @@ function isMessage(value: unknown): value is AssistantMessage {
   )
 }
 
+
 function loadPersisted(): PersistedAssistant {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
-    if (!raw) return { messages: [], contextEnabled: true, webSearch: false }
+    if (!raw) {
+      return {
+        messages: [],
+        contextEnabled: true,
+        webSearch: false,
+        conversationId: crypto.randomUUID(),
+      }
+    }
     const parsed = JSON.parse(raw) as Partial<PersistedAssistant>
     const messages = Array.isArray(parsed.messages)
       ? parsed.messages
@@ -73,8 +136,11 @@ function loadPersisted(): PersistedAssistant {
             message.status === 'streaming'
               ? {
                   ...message,
-                  // 上次异常退出时残留的「生成中」消息：有内容则视为完成，空消息直接丢弃
+                  // 上次异常退出时残留的「生成中」消息：有内容则视为完成，空消息直接丢弃；
+                  // 清理未结束的阶段标记，避免重启后仍显示「正在执行」
                   status: message.content ? 'done' : 'error',
+                  phase: undefined,
+                  needsInput: undefined,
                   error: message.content
                     ? message.error
                     : { code: 'interrupted', message: '上次回答因应用退出中断，可点击重试。' },
@@ -82,19 +148,36 @@ function loadPersisted(): PersistedAssistant {
               : message,
           )
           .filter((message) => message.status !== 'error' || message.content.length > 0)
+          // 重启后没有执行器可继续推进：未开始的计划项按取消展示，不能显示为执行中
+          .map((message) =>
+            message.toolTasks?.length
+              ? { ...message, toolTasks: cancelUnfinishedTasks(message.toolTasks) }
+              : message,
+          )
       : []
     return {
-      messages,
+      // 应用重启后内存授权表为空：所有未完成的候选卡片都必须显示为已失效
+      // 删除提议同样只存在内存中，重启后旧卡片不能再次获得授权
+      messages: invalidatePendingToolActions(invalidatePendingSelections(messages)),
       contextEnabled:
         typeof parsed.contextEnabled === 'boolean' ? parsed.contextEnabled : true,
       webSearch: parsed.webSearch === true,
+      conversationId:
+        typeof parsed.conversationId === 'string' && parsed.conversationId
+          ? parsed.conversationId
+          : crypto.randomUUID(),
     }
   } catch {
-    return { messages: [], contextEnabled: true, webSearch: false }
+    return {
+      messages: [],
+      contextEnabled: true,
+      webSearch: false,
+      conversationId: crypto.randomUUID(),
+    }
   }
 }
 
-/** 持久化当前快照：消息 + 两个会话开关 */
+/** 持久化当前快照：消息 + 两个会话开关 + 对话标识 */
 function persistSnapshot(
   messages: AssistantMessage[],
   contextEnabled: boolean,
@@ -111,19 +194,72 @@ function persistSnapshot(
       )
     localStorage.setItem(
       STORAGE_KEY,
-      JSON.stringify({ messages: stored, contextEnabled, webSearch }),
+      JSON.stringify({ messages: stored, contextEnabled, webSearch, conversationId }),
     )
   } catch {
     // 存储不可用（隐私模式 / 配额满）时静默跳过，不影响对话
   }
 }
 
-/** 当前进行中的请求：用于停止生成与丢弃取消后的迟到事件 */
-let active: { requestId: string; assistantId: string } | null = null
+/** 当前进行中的请求：用于停止生成、丢弃取消后的迟到事件，以及停止时保留已执行记录 */
+let active: {
+  requestId: string
+  assistantId: string
+  steps: AssistantToolStep[]
+  /** 与执行作用域共享同一数组：停止时也能知道哪些写入已经成功 */
+  writeAttempts: WriteAttempt[]
+  /** 续办来源消息已携带的成功签名：收尾时并入新消息，避免多轮续办丢失幂等保护 */
+  carriedWriteAttempts: AssistantWriteAttempt[]
+} | null = null
+
+/** 最近一次请求级失败的重试账本：只服务于同一次 retry，新用户消息不继承 */
+let retryLedger: RetryLedger | null = null
+/** retry() 与 send() 之间的短生命周期交接，避免公开 send 签名变化 */
+let pendingRetryLedger: RetryLedger | null = null
 
 function errorText(error: unknown): string {
   if (error instanceof Error) return error.message
   return String(error)
+}
+
+/**
+ * 续办幂等携带的创建 / 修改签名：
+ * - 成功写入必须携带，避免续办重复执行；
+ * - 写入状态不确定（回读失败 / 执行异常）也必须携带，宁可少写不可重复写；
+ * - 明确失败（未生效）不携带，允许重新校验后重试。
+ */
+function carryWriteAttempts(
+  attempts: WriteAttempt[],
+  steps: AssistantToolStep[],
+): AssistantWriteAttempt[] {
+  const stepByCall = new Map(steps.map((step) => [step.callId, step]))
+  return attempts
+    .filter((attempt) => {
+      if (attempt.tool !== 'create_entry' && attempt.tool !== 'update_entry') {
+        return false
+      }
+      const step = stepByCall.get(attempt.callId)
+      // 进入执行器但没有记录的写入同样视为不确定
+      if (!step) return true
+      return step.status === 'ok' || step.failure?.writeState === 'unknown'
+    })
+    .map((attempt) => ({
+      callId: attempt.callId,
+      tool: attempt.tool as AssistantWriteAttempt['tool'],
+      signature: attempt.signature,
+    }))
+}
+
+/** 续办链上累计成功签名：同签名只保留最新一条 */
+function mergeWriteAttempts(
+  carried: AssistantWriteAttempt[],
+  current: AssistantWriteAttempt[],
+): AssistantWriteAttempt[] {
+  const bySignature = new Map<string, AssistantWriteAttempt>()
+  for (const attempt of [...carried, ...current]) {
+    bySignature.set(attempt.signature, attempt)
+  }
+  return Array.from(bySignature.values())
 }
 
 interface AssistantState {
@@ -149,9 +285,17 @@ interface AssistantState {
   markToolActionDone: (messageId: string, index: number) => void
   /** 记录删除提议已被用户取消：取消后不能再执行 */
   markToolActionCancelled: (messageId: string, index: number) => void
+  /** 记录候选闹钟选择已由用户执行，避免刷新后重复展示为待选择 */
+  markToolSelectionDone: (messageId: string, proposalId: string) => void
+  /** 记录候选闹钟选择已被用户取消 */
+  markToolSelectionCancelled: (messageId: string, proposalId: string) => void
+  /** 记录候选闹钟选择执行失败后已失效（重开面板也不能再次显示为等待选择） */
+  markToolSelectionInvalidated: (messageId: string, proposalId: string) => void
 }
 
 const initial = loadPersisted()
+/** 当前对话标识：随消息快照持久化，清空对话时重新生成；不构成任何授权 */
+let conversationId = initial.conversationId
 
 export const useAssistantStore = create<AssistantState>((set, get) => ({
   open: false,
@@ -181,6 +325,55 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
     if (state.sending) return
     const content = (text ?? state.input).trim()
     if (!content) return
+
+    const retryContext = pendingRetryLedger
+    pendingRetryLedger = null
+    // 普通新消息不继承失败重试账本；retry() 会在调用前显式交接
+    if (!retryContext) retryLedger = null
+
+    // 新任务开始：上一轮遗留的候选闹钟授权全部作废，禁止跨请求复用
+    cancelPendingAlarmSelections()
+    const baseMessages = invalidatePendingSelections(state.messages)
+
+    const entriesState = useEntryStore.getState()
+    // 「删除「周报」这条」里的「这条」是同位语：当前消息已唯一命中真实条目时，
+    // 不再走历史指代解析，避免被解析不到的历史候选强制降为只读。
+    const explicitTargetIds = new Set(
+      [
+        ...resolveExplicitIdTargets(content, entriesState.entries),
+        ...resolveExplicitTitleTargets(content, entriesState.entries),
+      ].map((entry) => entry.id),
+    )
+    const hasExplicitTarget = explicitTargetIds.size === 1
+    // 对话记忆：最近原始消息 + 较早消息摘要 + 当前任务 + 指代候选项。
+    // 记忆只用于理解指代，不产生写入授权；真实授权仍由执行层按本轮消息校验。
+    const memory = buildConversationMemory(state.messages, {
+      cache: conversationMemoryCache,
+    })
+    // 用户明确说「这条 / 当前选中」时，列表选中项优先于历史指代；
+    // 避免把「把这条笔记改成……」误判成需要历史解析。
+    const selectedReferentWrite =
+      Boolean(entriesState.selectedId) && hasSelectedReferentWriteIntent(content)
+    const referent =
+      selectedReferentWrite || hasExplicitTarget
+        ? null
+        : resolveConversationReferent(content, memory, entriesState.entries)
+    const referentWrite =
+      referent !== null && hasReferentWriteClause(content, content.indexOf(referent.phrase))
+    const resolvedReferent = referentWrite && referent.status === 'resolved' ? referent : null
+    const referentQuestion =
+      referentWrite && referent && referent.status !== 'resolved'
+        ? referent.question
+        : null
+
+    // 续办：只读取历史真实执行记录，生成限制说明；不恢复旧请求的权限与目标
+    const continuation = isContinuationRequest(content)
+      ? buildContinuationContext(state.messages, {
+          cancelled: memory.activeContext?.cancelled === true,
+        })
+      : null
+    const continuationQuestion =
+      continuation && !continuation.hasActionableWork ? continuation.question : null
 
     // 仅开发环境：记录首字/总耗时与实际接收量，便于区分「上游慢」与「本地处理慢」
     const devTiming = import.meta.env.DEV
@@ -220,10 +413,11 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
       content: '',
       createdAt: now,
       status: 'streaming',
+      phase: 'understanding',
     }
 
     set({
-      messages: [...state.messages, userMessage, assistantMessage],
+      messages: [...baseMessages, userMessage, assistantMessage],
       input: '',
       sending: true,
       open: true,
@@ -231,32 +425,65 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
     persistSnapshot(get().messages, state.contextEnabled, state.webSearch)
 
     const requestId = crypto.randomUUID()
-    active = { requestId, assistantId }
+    // 执行记录与 active 共享同一数组：用户点停止时也能看到停止前已完成的步骤
+    const steps: AssistantToolStep[] = []
+    active = {
+      requestId,
+      assistantId,
+      steps,
+      writeAttempts: [],
+      carriedWriteAttempts: continuation?.writeAttempts ?? [],
+    }
     // 幂等集合与过期判断都绑定本次请求：旧请求不会执行未开始的工具
     const isStale = () => active?.requestId !== requestId
-    const toolScope: AgentToolScope = createAgentToolScope(requestId, isStale)
+    let toolScope: AgentToolScope | null = null
 
-    // 历史消息：排除出错的回答，剥掉 <action> 操作块，从新到旧累加并受总字数约束；
-    // 输入越小，首字越快（免费网关排队时长也随输入体积增长）
-    const history: AiChatMessage[] = []
-    let historyChars = content.length
-    for (let index = state.messages.length - 1; index >= 0; index -= 1) {
-      if (history.length >= MAX_HISTORY_MESSAGES) break
-      const message = state.messages[index]
-      if (message.status === 'error') continue
-      const text = (
-        message.role === 'assistant'
-          ? parseAssistantActions(message.content).text
-          : message.content
-      ).slice(0, MAX_MESSAGE_CHARS)
-      if (!text) continue
-      if (historyChars + text.length > MAX_HISTORY_CHARS) break
-      history.unshift({ role: message.role, content: text })
-      historyChars += text.length
+    // 执行历史独立于聊天消息：请求开始即建记录，工具事件与收尾异步落盘。
+    // 历史写入失败不会中断 Agent，也不参与任何权限 / 幂等判断。
+    const historyRecorder = getExecutionRecorder()
+    historyRecorder.start({
+      id: requestId,
+      conversationId,
+      messageId: assistantId,
+      requestId,
+      title: buildExecutionTitle(content),
+      userInput: summarizeUserInput(content),
+      startedAt: now,
+    })
+    const finishHistory = (input: {
+      phase: AssistantPhase
+      tasks?: AssistantToolTask[]
+      stopped?: boolean
+      requestFailed?: boolean
+      needsInput?: boolean
+      limitReached?: boolean
+      failure?: AgentFailure
+      errorMessage?: string
+    }) => {
+      historyRecorder.finish({
+        executionId: requestId,
+        status: deriveExecutionStatus({
+          steps,
+          ...(input.tasks ? { tasks: input.tasks } : {}),
+          ...(input.stopped ? { stopped: true } : {}),
+          ...(input.requestFailed ? { requestFailed: true } : {}),
+          ...(input.needsInput ? { needsInput: true } : {}),
+          ...(input.limitReached ? { limitReached: true } : {}),
+        }),
+        phase: input.phase,
+        finishedAt: Date.now(),
+        steps,
+        ...(input.tasks ? { tasks: input.tasks } : {}),
+        ...(input.failure ? { failure: input.failure } : {}),
+        ...(input.errorMessage ? { errorMessage: input.errorMessage } : {}),
+      })
     }
-    history.push({ role: 'user', content })
 
-    const entriesState = useEntryStore.getState()
+    // 历史消息：最近原始对话由对话记忆提供（已剥离 <action> 块并受条数 / 字数约束），
+    // 更早内容压缩进 system 的记忆块；当前用户消息始终保留。
+    const history: AiChatMessage[] = [...memory.recent, { role: 'user', content }]
+    const historyChars = history.reduce((total, message) => total + message.content.length, 0)
+
     const contextStartedAt = performance.now()
     const context = buildAssistantContext(
       entriesState.entries,
@@ -318,11 +545,21 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
       }))
     }
 
+    /** 过程反馈：只在真实阶段切换时更新，避免长时间无意义的加载文案 */
+    const setPhase = (phase: AssistantPhase) => {
+      set((current) => ({
+        messages: current.messages.map((message) =>
+          message.id === assistantId ? { ...message, phase } : message,
+        ),
+      }))
+    }
+
     try {
       // 联网搜索：开启时先搜必应，结果并入 system 提示词；失败降级为普通回答
       let webBlock: string | null = null
       if (state.webSearch) {
         updateWebSearch({ status: 'searching' })
+        setPhase('searching')
         try {
           const results = await searchWeb(content)
           webBlock = formatWebResults(results, content)
@@ -335,16 +572,82 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
         }
         // 搜索期间用户可能已点停止：丢弃结果，不再发起对话
         if (isStale()) return
+        setPhase('understanding')
       }
 
       // agent 工具：仅在用户允许读取便签时提供（隐私不变量：
-      // contextEnabled 关闭时不下发任何工具，模型无法触达便签数据）
-      const toolsAvailable = state.contextEnabled ? AGENT_TOOLS : null
+      // contextEnabled 关闭时不下发任何工具，模型无法触达便签数据）。
+      // 意图只用于选择本轮的 none / read / write 工具范围与提示词，不产生授权。
+      const intent = analyzeAssistantIntent(content, {
+        hasSelectedEntry: Boolean(entriesState.selectedId),
+        hasResolvedConversationReferent: resolvedReferent !== null,
+        hasExplicitTarget,
+      })
+      // 指代无法唯一解析时强制只读，并只向用户提出一个关键问题；
+      // 续办没有可安全重试的记录时同样只读，避免把旧任务当成新授权
+      const toolPlan = planAssistantTools(intent, state.contextEnabled, {
+        forceReadOnly: referentQuestion !== null || continuationQuestion !== null,
+        forceWrite: continuation?.hasActionableWork === true,
+      })
+      const toolsAvailable = toolPlan.tools
+
+      // 执行层权限来自同一份计划，但由执行器强制校验；下发给模型的 tools 不是授权
+      const permission: ToolPermission = toolPlan.mode
+      toolScope = createAgentToolScope(requestId, isStale, assistantId, {
+        permission,
+        blockedWriteTools: retryBlockedWriteTools(retryContext),
+        writeSignatures: [
+          ...retryWriteSignatures(retryContext),
+          ...(continuation?.writeSignatures ?? []),
+        ],
+        onBlocked: (event) => {
+          console.warn(`[AI] 工具调用被拦截：${event.tool} / ${event.code}`)
+        },
+      })
+      // 共享同一数组：用户停止时也能拿到真实写入尝试，供后续续办幂等使用
+      if (active) active.writeAttempts = toolScope.writeAttempts
+      seedTrustedTargets(toolScope, {
+        userText: content,
+        entries: entriesState.entries,
+        selectedId: entriesState.selectedId,
+        allowSelectedReferent:
+          intent.reason === 'referent_resolved' &&
+          hasSelectedReferentWriteIntent(content),
+        // 只登记本轮唯一解析、且真实存在的对话指代目标；模糊 / 失效目标不进入授权
+        conversationTargets:
+          resolvedReferent && resolvedReferent.entry
+            ? [
+                {
+                  id: resolvedReferent.entry.id,
+                  kind: resolvedReferent.entry.kind,
+                  title: resolvedReferent.entry.title,
+                },
+              ]
+            : [],
+      })
+
+      const memoryBlock = buildMemoryPromptBlock({
+        memory,
+        entries: entriesState.entries,
+        referent:
+          referentWrite && referent
+            ? {
+                status: referent.status,
+                phrase: referent.phrase,
+                ...(referent.entry
+                  ? { entryId: referent.entry.id, title: referent.entry.title }
+                  : {}),
+                question: referent.question,
+              }
+            : null,
+      })
 
       const systemContent = [
         context.systemPrompt,
-        // 工具可用时附上使用说明；不可用时明确告知只能回答、不能写数据
-        toolsAvailable ? AGENT_TOOL_PROMPT : NO_TOOL_PROMPT,
+        memoryBlock,
+        continuation?.guard,
+        toolPlan.prompt,
+        retrySystemNote(retryContext),
         webBlock,
       ]
         .filter((part): part is string => Boolean(part))
@@ -418,28 +721,43 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
       let toolsEnabled = toolsAvailable != null
       let toolsDegraded = false
       let toolRounds = 0
+      // 需要用户补充：指代未唯一解析 / 续办没有可安全重试的记录
+      const requiredQuestions = [referentQuestion, continuationQuestion].filter(
+        (question): question is string => Boolean(question),
+      )
+      let needsInput = requiredQuestions.length > 0
+      /** 模型没有主动追问时，把确定性的关键问题补到回答末尾（同一问题只补一次） */
+      const withRequiredQuestions = (text: string): string =>
+        requiredQuestions.reduce(
+          (result, question) =>
+            result.includes(question) ? result : appendNotice(result, question),
+          text,
+        )
 
       for (;;) {
-        const attempt = await runAttempt(apiMessages, toolsEnabled ? AGENT_TOOLS : null)
+        // 每次请求模型前都是真实阶段：首轮在理解任务，之后在整理工具结果
+        setPhase(toolRounds === 0 ? 'understanding' : 'composing')
+        const attempt = await runAttempt(apiMessages, toolsEnabled ? toolsAvailable : null)
 
         // 降级重试：模型/网关不支持 function calling（首次带 tools 且无任何输出就报错）
         // 时，去掉工具原样重问一次，行为与旧版完全一致
         if (attempt.outcome === 'error') {
           if (
-            toolsEnabled &&
-            !toolsDegraded &&
-            !attempt.received &&
-            TOOL_UNSUPPORTED_CODES.has(attempt.error.code)
+            shouldDegradeTools({
+              toolsEnabled,
+              alreadyDegraded: toolsDegraded,
+              received: attempt.received,
+              code: attempt.error.code,
+            })
           ) {
             toolsDegraded = true
             toolsEnabled = false
+            // 降级后执行层权限一并收回：即使网关仍返回 tool_calls 也不能写入
+            if (toolScope) toolScope.permission = 'none'
             // 工具不可用时把工具说明换成降级说明，避免模型仍声称能写数据
             apiMessages = apiMessages.map((message, index) =>
               index === 0 && message.role === 'system'
-                ? {
-                    ...message,
-                    content: `${message.content.replace(AGENT_TOOL_PROMPT, '').trim()}\n\n${NO_TOOL_PROMPT}`,
-                  }
+                ? { ...message, content: degradeToolPrompt(message.content, toolPlan) }
                 : message,
             )
             if (import.meta.env.DEV) {
@@ -450,11 +768,67 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
             continue
           }
           reportTiming(`失败 ${attempt.error.code}`)
+          if (toolScope) {
+            const currentLedger = buildRetryLedger({
+              requestId,
+              assistantMessageId: assistantId,
+              userContent: content,
+              steps,
+              attempts: toolScope.writeAttempts,
+            })
+            retryLedger = mergeRetryLedger(retryContext, currentLedger)
+          }
+          const errorPhase = deriveFinalPhase({
+            steps,
+            needsInput,
+            limitReached: false,
+            stopped: false,
+            requestFailed: true,
+          })
+          const errorNotice = buildExecutionOutcomeNotice({
+            steps,
+            phase: errorPhase,
+            stopped: false,
+          })
+          const modelFailure = classifyModelFailure(
+            attempt.error.code,
+            attempt.error.message,
+            steps.length > 0,
+          )
+          const failureNotice = modelFailure.autoRetryAllowed
+            ? ''
+            : '模型请求在执行工具后失败：已完成的写入不会回滚，重试时执行层会阻止重复写入。请先核对执行结果，再决定是否继续。'
+          const combinedNotice = [errorNotice, failureNotice]
+            .filter(Boolean)
+            .join('\n')
+          const errorWriteAttempts = mergeWriteAttempts(
+            continuation?.writeAttempts ?? [],
+            carryWriteAttempts(toolScope?.writeAttempts ?? [], steps),
+          )
+          finishHistory({
+            phase: errorPhase,
+            requestFailed: true,
+            needsInput,
+            failure: modelFailure,
+            errorMessage: attempt.error.message,
+          })
           finalize((current) => ({
             sending: false,
             messages: current.messages.map((message) =>
               message.id === assistantId
-                ? { ...message, status: 'error', error: attempt.error }
+                ? {
+                    ...message,
+                    status: 'error',
+                    error: attempt.error,
+                    phase: errorPhase,
+                    content: combinedNotice
+                      ? withRequiredQuestions(appendNotice(message.content, combinedNotice))
+                      : withRequiredQuestions(message.content),
+                    toolSteps: steps.length > 0 ? [...steps] : message.toolSteps,
+                    ...(errorWriteAttempts.length > 0
+                      ? { writeAttempts: errorWriteAttempts }
+                      : {}),
+                  }
                 : message,
             ),
           }))
@@ -465,50 +839,191 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
 
         // 工具轮：执行工具并把结果回传，继续下一轮。
         // 查询 / 新增 / 修改直接执行；删除只生成确认卡片，由用户点击执行
-        if (attempt.outcome === 'toolCalls' && toolRounds < MAX_TOOL_ROUNDS) {
-          if (isStale()) return
+        if (attempt.outcome === 'toolCalls') {
+          // 轮数已用尽：不再执行本轮的调用，但必须明确告知已完成与未执行的步骤
+          if (toolRounds >= MAX_TOOL_ROUNDS) {
+            const notice = buildRoundLimitNotice(steps, attempt.calls)
+            const limitTasks = buildRoundLimitTasks(attempt.calls)
+            const limitPhase = deriveFinalPhase({
+              steps,
+              needsInput,
+              limitReached: true,
+              stopped: false,
+              requestFailed: false,
+            })
+            const limitWriteAttempts = mergeWriteAttempts(
+              continuation?.writeAttempts ?? [],
+              carryWriteAttempts(toolScope?.writeAttempts ?? [], steps),
+            )
+            reportTiming('轮次上限')
+            retryLedger = null
+            finishHistory({
+              phase: limitPhase,
+              tasks: limitTasks,
+              needsInput,
+              limitReached: true,
+            })
+            finalize((current) => ({
+              sending: false,
+              messages: current.messages.map((message) =>
+                message.id === assistantId
+                  ? {
+                      ...message,
+                      content: withRequiredQuestions(
+                        appendNotice(message.content, notice),
+                      ),
+                      status: 'done',
+                      phase: limitPhase,
+                      toolLimitReached: true,
+                      toolSteps: [...steps],
+                      toolTasks: limitTasks,
+                      toolRounds,
+                      needsInput: needsInput ? true : message.needsInput,
+                      ...(limitWriteAttempts.length > 0
+                        ? { writeAttempts: limitWriteAttempts }
+                        : {}),
+                    }
+                  : message,
+              ),
+            }))
+            return
+          }
+
           toolRounds += 1
+          // 同一轮可能同时包含查询与写入：只有全为只读时才显示「搜索资料」
+          setPhase(callsAreReadOnly(attempt.calls) ? 'searching' : 'executing')
+          // 模型本轮真实请求的调用先进入任务清单：执行前只能是待执行 / 执行中
+          const plannedTasks = buildPlannedTasks(attempt.calls)
           set((current) => ({
             messages: current.messages.map((message) =>
-              message.id === assistantId ? { ...message, toolRounds } : message,
+              message.id === assistantId
+                ? { ...message, toolRounds, toolTasks: plannedTasks }
+                : message,
             ),
           }))
-          const toolMessages: AiChatMessage[] = []
-          const confirmCards: AssistantAction[] = []
-          let aborted = false
-          for (const call of attempt.calls) {
-            // 用户点停止后：尚未开始的工具一律不再执行
-            if (isStale()) {
-              aborted = true
-              break
-            }
-            const outcome = await executeAgentTool(call, toolScope)
-            // 执行期间用户可能已停止：不再回传结果、不展示卡片；
-            // 已提交的写入不回滚，也不向用户声称已撤销
-            if (isStale()) {
-              aborted = true
-              break
-            }
-            if (outcome.confirmAction) confirmCards.push(outcome.confirmAction)
-            toolMessages.push({
-              role: 'tool',
-              tool_call_id: call.id,
-              content: outcome.result,
+
+          const batch = await executeToolBatch(
+            attempt.calls,
+            (call) => executeAgentTool(call, toolScope as AgentToolScope),
+            isStale,
+            () => {
+              if (toolScope) commitStagedCandidates(toolScope)
+            },
+            (event) => {
+              const eventAt = Date.now()
+              // 历史记录先于 UI 过期检查：用户停止时，正在执行的工具真实结果仍要落盘
+              if (event.type === 'start') {
+                historyRecorder.stepStarted(requestId, {
+                  call: event.call,
+                  startedAt: eventAt,
+                })
+              } else {
+                historyRecorder.stepFinished(requestId, {
+                  call: event.call,
+                  outcome: event.outcome,
+                  finishedAt: eventAt,
+                })
+              }
+              if (isStale()) return
+              const status =
+                event.type === 'start'
+                  ? 'running'
+                  : taskStatusFromOutcome(event.outcome)
+              set((current) => ({
+                messages: current.messages.map((message) =>
+                  message.id === assistantId
+                    ? {
+                        ...message,
+                        toolTasks: (message.toolTasks ?? []).map((task) =>
+                          task.callId === event.call.id ? { ...task, status } : task,
+                        ),
+                      }
+                    : message,
+                ),
+              }))
+            },
+          )
+
+          // 用户停止：已完成的步骤仍要展示（写入不回滚，也不声称撤销）
+          if (batch.aborted) {
+            steps.push(...batch.steps)
+            const stoppedNeedsInput = needsInput || batch.needsInput
+            const cancelledTasks = buildPlannedTasks(batch.unexecutedCalls).map(
+              (task) => ({ ...task, status: 'cancelled' as const }),
+            )
+            const stoppedWriteAttempts = mergeWriteAttempts(
+              continuation?.writeAttempts ?? [],
+              carryWriteAttempts(toolScope?.writeAttempts ?? [], steps),
+            )
+            const stoppedPhase = deriveFinalPhase({
+              steps,
+              needsInput: stoppedNeedsInput,
+              limitReached: false,
+              stopped: true,
+              requestFailed: false,
             })
-          }
-          if (aborted) return
-          if (confirmCards.length > 0) {
+            finishHistory({
+              phase: stoppedPhase,
+              tasks: cancelledTasks,
+              stopped: true,
+              needsInput: stoppedNeedsInput,
+            })
             set((current) => ({
               messages: current.messages.map((message) =>
                 message.id === assistantId
                   ? {
                       ...message,
-                      toolActions: [...(message.toolActions ?? []), ...confirmCards],
+                      toolSteps: [...steps],
+                      toolTasks: cancelledTasks,
+                      needsInput: stoppedNeedsInput ? true : message.needsInput,
+                      ...(stoppedWriteAttempts.length > 0
+                        ? { writeAttempts: stoppedWriteAttempts }
+                        : {}),
+                      phase: stoppedPhase,
                     }
                   : message,
               ),
             }))
+            persistSnapshot(get().messages, get().contextEnabled, get().webSearch)
+            return
           }
+
+          steps.push(...batch.steps)
+          if (batch.needsInput) needsInput = true
+          const confirmCards: AssistantAction[] = batch.confirmCards
+          const alarmSelections = batch.alarmSelections
+          set((current) => ({
+            messages: current.messages.map((message) =>
+              message.id === assistantId
+                ? {
+                    ...message,
+                    toolRounds,
+                    toolSteps: [...steps],
+                    // 已执行项由 toolSteps 承载，避免任务清单与执行记录重复
+                    toolTasks: [],
+                    phase: 'composing',
+                    needsInput: needsInput ? true : message.needsInput,
+                    ...(confirmCards.length > 0
+                      ? {
+                          toolActions: [
+                            ...(message.toolActions ?? []),
+                            ...confirmCards,
+                          ],
+                        }
+                      : {}),
+                    ...(alarmSelections.length > 0
+                      ? {
+                          toolSelections: [
+                            ...(message.toolSelections ?? []),
+                            ...alarmSelections,
+                          ],
+                        }
+                      : {}),
+                  }
+                : message,
+            ),
+          }))
+
           apiMessages = [
             ...apiMessages,
             {
@@ -523,14 +1038,34 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
                 },
               })),
             },
-            ...toolMessages,
+            ...batch.toolMessages,
           ]
           continue
         }
 
-        // 最终回答（或轮数用尽 / 用户停止）
-        const finishReason = attempt.outcome === 'done' ? attempt.finishReason : null
-        reportTiming(finishReason === 'cancelled' ? '已停止' : '完成')
+        // 最终回答（工具轮结束后由模型汇总，或用户停止）
+        const finishReason = attempt.finishReason
+        const stopped = finishReason === 'cancelled' || isStale()
+        const finalPhase = deriveFinalPhase({
+          steps,
+          needsInput,
+          limitReached: false,
+          stopped,
+          requestFailed: false,
+        })
+        // 终态结果由真实执行记录确定；部分成功 / 失败 / 停止时追加，纠正模型的过度声明
+        const outcomeNotice = buildExecutionOutcomeNotice({
+          steps,
+          phase: finalPhase,
+          stopped,
+        })
+        const finalWriteAttempts = mergeWriteAttempts(
+          continuation?.writeAttempts ?? [],
+          carryWriteAttempts(toolScope?.writeAttempts ?? [], steps),
+        )
+        reportTiming(stopped ? '已停止' : '完成')
+        retryLedger = null
+        finishHistory({ phase: finalPhase, stopped, needsInput })
         finalize((current) => ({
           sending: false,
           messages: current.messages.map((message) =>
@@ -538,11 +1073,22 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
               ? {
                   ...message,
                   status: 'done',
-                  stopped: finishReason === 'cancelled' ? true : message.stopped,
+                  stopped: stopped ? true : message.stopped,
+                  content: withRequiredQuestions(
+                    outcomeNotice
+                      ? appendNotice(message.content, outcomeNotice)
+                      : message.content,
+                  ),
                   // 长度截断：操作卡片 JSON 很可能没写完，界面给出「继续」提示
                   truncated:
                     finishReason === 'length' ? true : message.truncated,
                   toolRounds: toolRounds > 0 ? toolRounds : message.toolRounds,
+                  toolSteps: steps.length > 0 ? [...steps] : message.toolSteps,
+                  needsInput: needsInput ? true : message.needsInput,
+                  phase: finalPhase,
+                  ...(finalWriteAttempts.length > 0
+                    ? { writeAttempts: finalWriteAttempts }
+                    : {}),
                 }
               : message,
           ),
@@ -557,15 +1103,35 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
           flushTimer = undefined
         }
         flush()
+        const fallbackPhase: AssistantPhase = steps.some(
+          (step) => step.status === 'ok' || step.status === 'confirm',
+        )
+          ? 'partial'
+          : 'failed'
+        const fallbackWriteAttempts = mergeWriteAttempts(
+          active.carriedWriteAttempts,
+          carryWriteAttempts(active.writeAttempts, steps),
+        )
+        finishHistory({ phase: fallbackPhase, requestFailed: true })
         set((current) => ({
           sending: false,
           messages: current.messages.map((message) =>
             message.id === assistantId && message.status === 'streaming'
-              ? { ...message, status: 'done' }
+              ? {
+                  ...message,
+                  status: 'done',
+                  phase: fallbackPhase,
+                  toolSteps: steps.length > 0 ? [...steps] : message.toolSteps,
+                  toolTasks: cancelUnfinishedTasks(message.toolTasks),
+                  ...(fallbackWriteAttempts.length > 0
+                    ? { writeAttempts: fallbackWriteAttempts }
+                    : {}),
+                }
               : message,
           ),
         }))
         active = null
+        retryLedger = null
         persistSnapshot(get().messages, get().contextEnabled, get().webSearch)
       }
       // 用户停止或异常退出时收尾，确保每个请求都有且仅有一条计时日志
@@ -575,15 +1141,61 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
 
   stop: () => {
     if (!active) return
-    const { requestId, assistantId } = active
+    const { requestId, assistantId, steps, writeAttempts, carriedWriteAttempts } =
+      active
     cancelChat(requestId)
+    retryLedger = null
+    pendingRetryLedger = null
+    // 请求已停止：未执行的候选闹钟授权立即作废，之后点击也不会写入
+    cancelPendingAlarmSelections()
     active = null
+    const stoppedWriteAttempts = mergeWriteAttempts(
+      carriedWriteAttempts,
+      carryWriteAttempts(writeAttempts, steps),
+    )
+    const stoppedMessage = get().messages.find(
+      (message) => message.id === assistantId,
+    )
+    const stoppedTasks = cancelUnfinishedTasks(stoppedMessage?.toolTasks)
+    const stoppedNeedsInput = stoppedMessage?.needsInput === true
+    const stoppedPhase = deriveFinalPhase({
+      steps,
+      needsInput: stoppedNeedsInput,
+      limitReached: false,
+      stopped: true,
+      requestFailed: false,
+    })
+    getExecutionRecorder().finish({
+      executionId: requestId,
+      status: deriveExecutionStatus({
+        steps,
+        ...(stoppedTasks ? { tasks: stoppedTasks } : {}),
+        stopped: true,
+        ...(stoppedNeedsInput ? { needsInput: true } : {}),
+      }),
+      phase: stoppedPhase,
+      finishedAt: Date.now(),
+      steps,
+      ...(stoppedTasks ? { tasks: stoppedTasks } : {}),
+    })
     set((state) => ({
       sending: false,
-      messages: state.messages.map((message) =>
-        message.id === assistantId
-          ? { ...message, status: 'done', stopped: true }
-          : message,
+      messages: invalidatePendingSelections(
+        state.messages.map((message) =>
+          message.id === assistantId
+            ? {
+                ...message,
+                status: 'done',
+                stopped: true,
+                ...(steps.length > 0 ? { toolSteps: [...steps] } : {}),
+                toolTasks: cancelUnfinishedTasks(message.toolTasks),
+                ...(stoppedWriteAttempts.length > 0
+                  ? { writeAttempts: stoppedWriteAttempts }
+                  : {}),
+                phase: stoppedPhase,
+              }
+            : message,
+        ),
       ),
     }))
     persistSnapshot(get().messages, get().contextEnabled, get().webSearch)
@@ -596,6 +1208,8 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
     while (index >= 0 && messages[index].role !== 'user') index -= 1
     if (index < 0) return
     const content = messages[index].content
+    pendingRetryLedger =
+      retryLedger && retryLedger.userContent === content ? retryLedger : null
     set({ messages: messages.slice(0, index) })
     persistSnapshot(get().messages, get().contextEnabled, get().webSearch)
     await get().send(content)
@@ -603,10 +1217,33 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
 
   clear: () => {
     if (active) {
-      cancelChat(active.requestId)
+      const { requestId, assistantId, steps } = active
+      const current = get().messages.find((message) => message.id === assistantId)
+      const tasks = cancelUnfinishedTasks(current?.toolTasks)
+      getExecutionRecorder().finish({
+        executionId: requestId,
+        status: deriveExecutionStatus({ steps, stopped: true }),
+        phase: deriveFinalPhase({
+          steps,
+          needsInput: false,
+          limitReached: false,
+          stopped: true,
+          requestFailed: false,
+        }),
+        finishedAt: Date.now(),
+        steps,
+        ...(tasks ? { tasks } : {}),
+      })
+      cancelChat(requestId)
       active = null
     }
     resetDeleteProposals()
+    resetAlarmSelections()
+    conversationMemoryCache.clear()
+    retryLedger = null
+    pendingRetryLedger = null
+    // 新对话：历史记录仍保留，只更换对话标识；旧删除 / 闹钟授权不会随历史恢复
+    conversationId = crypto.randomUUID()
     set({ messages: [], input: '', sending: false })
     persistSnapshot([], get().contextEnabled, get().webSearch)
   },
@@ -635,6 +1272,54 @@ export const useAssistantStore = create<AssistantState>((set, get) => ({
               ...message,
               toolActionsCancelled: Array.from(
                 new Set([...(message.toolActionsCancelled ?? []), index]),
+              ),
+            }
+          : message,
+      ),
+    }))
+    persistSnapshot(get().messages, get().contextEnabled, get().webSearch)
+  },
+
+  markToolSelectionDone: (messageId, proposalId) => {
+    set((state) => ({
+      messages: state.messages.map((message) =>
+        message.id === messageId
+          ? {
+              ...message,
+              toolSelectionsDone: Array.from(
+                new Set([...(message.toolSelectionsDone ?? []), proposalId]),
+              ),
+            }
+          : message,
+      ),
+    }))
+    persistSnapshot(get().messages, get().contextEnabled, get().webSearch)
+  },
+
+  markToolSelectionCancelled: (messageId, proposalId) => {
+    set((state) => ({
+      messages: state.messages.map((message) =>
+        message.id === messageId
+          ? {
+              ...message,
+              toolSelectionsCancelled: Array.from(
+                new Set([...(message.toolSelectionsCancelled ?? []), proposalId]),
+              ),
+            }
+          : message,
+      ),
+    }))
+    persistSnapshot(get().messages, get().contextEnabled, get().webSearch)
+  },
+
+  markToolSelectionInvalidated: (messageId, proposalId) => {
+    set((state) => ({
+      messages: state.messages.map((message) =>
+        message.id === messageId
+          ? {
+              ...message,
+              toolSelectionsInvalidated: Array.from(
+                new Set([...(message.toolSelectionsInvalidated ?? []), proposalId]),
               ),
             }
           : message,

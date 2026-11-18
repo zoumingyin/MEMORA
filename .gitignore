@@ -25,4 +25,8 @@ dist-ssr
 .preview
 .workbuddy
 .test-build
-tests 
+
+# 本地验证与临时安装产物，不进入发布源
+.tmp-release
+.tmp-acceptance
+.installer-test

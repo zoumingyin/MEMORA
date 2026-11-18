@@ -3,6 +3,7 @@ import type { AiToolCall } from '../types/ai'
 import {
   createAgentToolScope,
   executeToolWithEnv,
+  type AgentToolEnvironment,
   type AgentToolScope,
   type ToolOutcome,
 } from './agentToolExecutor'
@@ -21,19 +22,20 @@ export { createAgentToolScope } from './agentToolExecutor'
 
 export { AGENT_TOOLS, AGENT_TOOL_PROMPT, NO_TOOL_PROMPT } from './agentToolSchema'
 
+/** 绑定应用真实 store 的执行环境（测试可传自己的 env） */
+export function createAgentToolEnv(): AgentToolEnvironment {
+  return {
+    now: () => Date.now(),
+    listEntries: () => useEntryStore.getState().entries,
+    addEntry: (input, kind) => useEntryStore.getState().addEntry(input, kind),
+    updateEntry: (id, patch) => useEntryStore.getState().updateEntry(id, patch),
+  }
+}
+
 /** 执行模型发起的工具调用：绑定真实 store 与仓储，参数校验、回读校验在执行器内完成 */
 export async function executeAgentTool(
   call: AiToolCall,
   scope: AgentToolScope = createAgentToolScope('direct'),
 ): Promise<ToolOutcome> {
-  return executeToolWithEnv(
-    call,
-    {
-      now: () => Date.now(),
-      listEntries: () => useEntryStore.getState().entries,
-      addEntry: (input, kind) => useEntryStore.getState().addEntry(input, kind),
-      updateEntry: (id, patch) => useEntryStore.getState().updateEntry(id, patch),
-    },
-    scope,
-  )
+  return executeToolWithEnv(call, createAgentToolEnv(), scope)
 }

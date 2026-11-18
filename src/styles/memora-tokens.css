@@ -10,6 +10,10 @@
   --memora-success: #16A78A;
   --memora-warning: #F5B942;
   --memora-danger: #E56875;
+  /* 语义色文字变体：原色在浅色纸面上对比度不足（警示色仅 1.6:1），仅用于文字与小图标，填充仍用原色 */
+  --memora-warning-text: #8A5A00;
+  --memora-success-text: #0B6B56;
+  --memora-danger-text: #B23340;
   --memora-text: #14213D;
   --memora-text-secondary: #64748B;
   --memora-text-tertiary: #94A3B8;
@@ -29,6 +33,10 @@
   --memora-primary-hover: #9BA7FF;
   --memora-primary-soft: #263252;
   --memora-on-primary: #14213D;
+  /* 暗色纸面上原色可用，但成功/危险色在 10% 底色上略低于 4.5:1，提亮文字变体 */
+  --memora-warning-text: #F5B942;
+  --memora-success-text: #2FC9A6;
+  --memora-danger-text: #F08793;
   --memora-text: #E8EDFA;
   --memora-text-secondary: #A8B4CC;
   --memora-text-tertiary: #7F8CA6;

@@ -1,7 +1,7 @@
 {
   "name": "bianqian",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.9.0",
   "type": "module",
   "scripts": {
     "dev": "vite --port 1420 --strictPort --host 127.0.0.1",
@@ -11,7 +11,9 @@
     "test:agent": "node scripts/run-agent-tests.mjs",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build"
+    "tauri:build": "tauri build",
+    "test:integration": "node scripts/run-integration-tests.mjs",
+    "test:real": "node scripts/run-real-model-acceptance.mjs"
   },
   "dependencies": {
     "@ant-design/icons": "^6.3.4",

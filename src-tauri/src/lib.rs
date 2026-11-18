@@ -682,6 +682,65 @@ CREATE INDEX IF NOT EXISTS idx_entries_created ON entries(created_at);
 CREATE INDEX IF NOT EXISTS idx_entries_deleted ON entries(deleted_at);
 "#,
         },
+        Migration {
+            version: 8,
+            description: "add agent execution history tables (records + real tool steps)",
+            kind: MigrationKind::Up,
+            sql: r#"
+CREATE TABLE IF NOT EXISTS agent_executions (
+  id             TEXT PRIMARY KEY,
+  conversation_id TEXT NOT NULL,
+  message_id     TEXT NOT NULL,
+  request_id     TEXT NOT NULL,
+  title          TEXT NOT NULL,
+  user_input     TEXT NOT NULL,
+  status         TEXT NOT NULL,
+  phase          TEXT NOT NULL,
+  started_at     INTEGER NOT NULL,
+  finished_at    INTEGER,
+  duration_ms    INTEGER,
+  tool_count     INTEGER NOT NULL DEFAULT 0,
+  success_count  INTEGER NOT NULL DEFAULT 0,
+  failed_count   INTEGER NOT NULL DEFAULT 0,
+  skipped_count  INTEGER NOT NULL DEFAULT 0,
+  summary        TEXT,
+  failure_json   TEXT,
+  error_message  TEXT,
+  created_at     INTEGER NOT NULL,
+  updated_at     INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_executions_request ON agent_executions(request_id);
+CREATE INDEX IF NOT EXISTS idx_agent_executions_started ON agent_executions(started_at);
+CREATE INDEX IF NOT EXISTS idx_agent_executions_status ON agent_executions(status);
+
+CREATE TABLE IF NOT EXISTS agent_execution_steps (
+  id             TEXT PRIMARY KEY,
+  execution_id   TEXT NOT NULL,
+  ordinal        INTEGER NOT NULL,
+  tool_call_id   TEXT NOT NULL,
+  tool_name      TEXT NOT NULL,
+  label          TEXT NOT NULL,
+  status         TEXT NOT NULL,
+  started_at     INTEGER,
+  finished_at    INTEGER,
+  duration_ms    INTEGER,
+  effect_json    TEXT,
+  failure_json   TEXT,
+  targets_json   TEXT,
+  input_summary  TEXT,
+  output_summary TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_agent_steps_execution ON agent_execution_steps(execution_id, ordinal);
+"#,
+        },
+        Migration {
+            version: 9,
+            description: "link delete confirmation steps to one-time proposals",
+            kind: MigrationKind::Up,
+            sql: r#"
+ALTER TABLE agent_execution_steps ADD COLUMN proposal_id TEXT;
+"#,
+        },
     ];
 
     tauri::Builder::default()

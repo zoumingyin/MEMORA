@@ -22,6 +22,7 @@ export type DeleteFailureReason =
   | 'invalid'
   | 'missing'
   | 'kind_changed'
+  | 'target_mismatch'
   | 'failed'
 
 export function deleteFailureMessage(reason: DeleteFailureReason): string {
@@ -38,6 +39,8 @@ export function deleteFailureMessage(reason: DeleteFailureReason): string {
       return '目标便签已不存在，可能已被删除'
     case 'kind_changed':
       return '目标便签类型已变化，请让助手重新确认'
+    case 'target_mismatch':
+      return '删除卡片与提议的目标不一致，已作废，请让助手重新发起删除'
     case 'failed':
       return '删除未生效，请稍后重试'
     case 'invalid':
@@ -75,6 +78,16 @@ export async function confirmDeleteProposal(input: {
       ok: false,
       reason: claim.reason,
       message: deleteFailureMessage(claim.reason),
+    }
+  }
+
+  // 卡片传入的目标必须与提议创建时绑定的目标完全一致，防止篡改 targetId/kind
+  if (claim.proposal.entryId !== targetId || claim.proposal.kind !== expectedKind) {
+    finishDeleteProposal(proposalId, 'invalid')
+    return {
+      ok: false,
+      reason: 'target_mismatch',
+      message: deleteFailureMessage('target_mismatch'),
     }
   }
 

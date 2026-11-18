@@ -1,6 +1,6 @@
 /** AI 助手：前后端共享的类型定义（与 src-tauri/src/ai.rs 对应） */
 
-import type { EntryKind } from './entry'
+import type { AlarmMethod, AlarmMode, EntryKind } from './entry'
 
 /** 操作类型：create 新建便签；complete-todo 勾选已有待办的子任务；append-note 向已有备忘追加内容；delete 删除便签（进废纸篓，可恢复） */
 export type AssistantActionOp = 'create' | 'complete-todo' | 'append-note' | 'delete'
@@ -20,6 +20,10 @@ export interface AssistantAction {
   targetId?: string
   /** 删除提议 id：确认时凭它做一次性执行与过期校验 */
   proposalId?: string
+  /** 生成该删除步骤的执行历史 id：只用于回写结果，不构成授权 */
+  executionId?: string
+  /** 生成该删除步骤的历史步骤 id：只用于精确回写，不构成授权 */
+  stepId?: string
   /** 删除提议过期时间（毫秒时间戳），过期后不可执行 */
   expiresAt?: number
 }
@@ -189,6 +193,143 @@ export interface WebSearchResult {
   content?: string | null
 }
 
+/**
+ * 执行阶段：面向前端的过程反馈。
+ * 只表示真实发生的阶段切换，结束后落到 done / partial / failed / needs_input。
+ */
+export type AssistantPhase =
+  | 'understanding'
+  | 'searching'
+  | 'executing'
+  | 'composing'
+  | 'done'
+  | 'partial'
+  | 'failed'
+  | 'needs_input'
+
+/** 工具真实返回的条目引用：仅用于对话指代理解，不构成写入授权 */
+export interface EntryReference {
+  id: string
+  kind: EntryKind
+  title: string
+}
+
+/** 一次工具调用对数据产生的影响：只记录工具真实返回的事实，用于执行记录与结果小结 */
+export interface ToolEffect {
+  op: 'search' | 'list' | 'read' | 'create' | 'update' | 'delete'
+  kind?: EntryKind
+  entryId?: string
+  title?: string
+  count?: number
+  /** 查询 / 读取 / 写入真实返回的条目（按展示顺序，最多 8 条） */
+  references?: EntryReference[]
+}
+
+/** 候选闹钟：只暴露用户做选择所需的字段 */
+export interface AlarmSelectionCandidate {
+  alarmId: string
+  mode: AlarmMode
+  remindAt: number
+  /** 提醒方式（弹窗 / 通知 / 声音） */
+  method: AlarmMethod
+}
+
+/** 候选闹钟授权可覆盖的修改字段：时间必选，其余字段必须由卡片明确展示 */
+export type AlarmSelectionPatchField =
+  | 'remindAt'
+  | 'title'
+  | 'content'
+  | 'appendContent'
+  | 'completeItems'
+  | 'addItems'
+  | 'addTags'
+  | 'removeTags'
+
+/** 时间之外、随候选点击一并授权的字段摘要（只用于展示，不携带完整正文） */
+export interface AlarmSelectionChange {
+  field: Exclude<AlarmSelectionPatchField, 'remindAt'>
+  label: string
+}
+
+/**
+ * 提醒歧义选择卡片：修改目标不明确时由执行器生成。
+ * 模型提供的 alarm_id 不构成授权，只有用户点击候选才产生一次性授权。
+ */
+export interface AssistantAlarmSelection {
+  proposalId: string
+  entryId: string
+  title: string
+  /** 用户要求修改到的时间 */
+  remindAt: number
+  candidates: AlarmSelectionCandidate[]
+  expiresAt: number
+  /** 点击候选时一并生效的其它字段；缺省表示只授权提醒时间 */
+  changes?: AlarmSelectionChange[]
+}
+
+/** 单次工具调用的执行记录（随回答持久化，内容全部来自真实工具结果） */
+export interface AssistantToolStep {
+  callId: string
+  tool: string
+  /** 用户可读的动作标签，如「新建待办「购物」」 */
+  label: string
+  status:
+    | 'ok'
+    | 'error'
+    | 'cancelled'
+    | 'duplicate'
+    | 'confirm'
+    /** 应用中断时该步骤正在执行，且无法确认是否生效 */
+    | 'execution_unknown'
+    /** 重启时仍在执行、但没有写入风险的只读步骤 */
+    | 'interrupted'
+  /** 工具真实返回结果的摘要 */
+  message: string
+  /** 需要用户补充信息才能继续（如多个闹钟未指定目标） */
+  needsInput?: boolean
+  /** 删除确认步骤关联的一次性提议 id：只用于历史对账 */
+  proposalId?: string
+  /** 执行层拦截原因（权限 / 目标来源 / 歧义 / 重试保护） */
+  blockedCode?: string
+  /** 统一失败分类：写入状态不确定时禁止自动重放 */
+  failure?: {
+    category: string
+    writeState: 'none' | 'failed' | 'unknown' | 'applied'
+    autoRetryAllowed: boolean
+    requiresVerification: boolean
+  }
+  effect?: ToolEffect
+}
+
+/** 任务清单状态：pending/running 表示模型已请求但尚无真实执行结果 */
+export type AssistantTaskStatus =
+  | 'pending'
+  | 'running'
+  | 'success'
+  | 'failed'
+  | 'skipped'
+  | 'cancelled'
+  | 'needs_input'
+  /** 重启时仍在执行，无法确认结果 */
+  | 'execution_unknown'
+  /** 中断时未完成的只读步骤，可重新发起 */
+  | 'interrupted'
+
+/** 模型真实请求、但尚未产生执行记录的调用；执行完成后由 toolSteps 承载结果 */
+export interface AssistantToolTask {
+  callId: string
+  tool: string
+  label: string
+  status: AssistantTaskStatus
+}
+
+/** 本请求中真实进入执行器的写入签名：仅用于续办时阻止重复写入 */
+export interface AssistantWriteAttempt {
+  callId: string
+  tool: 'create_entry' | 'update_entry'
+  signature: string
+}
+
 /** 对话界面中的一条消息 */
 export interface AssistantMessage {
   id: string
@@ -213,10 +354,32 @@ export interface AssistantMessage {
   }
   /** agent 自动执行的只读工具调用轮数（function calling），随消息持久化用于展示提示 */
   toolRounds?: number
+  /** 当前执行阶段：仅随真实阶段切换更新，结束后落到终态 */
+  phase?: AssistantPhase
+  /** 本次回答的工具执行记录（来自真实工具结果，用于进度反馈与结果小结） */
+  toolSteps?: AssistantToolStep[]
+  /** 未产生真实执行结果的任务项（待执行 / 已跳过 / 已取消）；执行完成项由 toolSteps 承载 */
+  toolTasks?: AssistantToolTask[]
+  /** 本请求中已成功的创建 / 修改签名：续办时由执行层拒绝重复写入 */
+  writeAttempts?: AssistantWriteAttempt[]
+  /** 达到最大工具轮次：仍有工具调用未执行 */
+  toolLimitReached?: boolean
+  /** 有工具因信息不足需要用户补充（如多个闹钟未指定目标） */
+  needsInput?: boolean
+  /** 提醒目标不明确时的候选闹钟选择卡片（由用户点击产生一次性授权） */
+  toolSelections?: AssistantAlarmSelection[]
+  /** 已由用户完成选择并执行的候选选择（存 proposalId，避免重复执行） */
+  toolSelectionsDone?: string[]
+  /** 已被用户取消的候选选择（存 proposalId） */
+  toolSelectionsCancelled?: string[]
+  /** 因重启、新任务、停止等原因失效的候选选择（存 proposalId） */
+  toolSelectionsInvalidated?: string[]
   /** agent 工具产生的待确认操作（目前只有 delete_entry），随消息持久化渲染确认卡片 */
   toolActions?: AssistantAction[]
   /** 已确认执行的 toolActions 下标（随消息持久化，避免重复执行） */
   toolActionsDone?: number[]
   /** 已被用户取消的 toolActions 下标：取消后不允许再次执行 */
   toolActionsCancelled?: number[]
+  /** 因应用重启失效的 toolActions 下标：内存提议已丢失，不能重新获得授权 */
+  toolActionsInvalidated?: number[]
 }

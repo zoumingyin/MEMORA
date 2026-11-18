@@ -1,5 +1,6 @@
 import { Channel, invoke } from '@tauri-apps/api/core'
 import { isTauriRuntime } from '../repository'
+import { normalizeToolCallName } from './toolNameNormalization'
 import {
   allFreeModels,
   ensureFreeCatalog,
@@ -661,8 +662,26 @@ export async function streamChat(
   handlers: ChatStreamHandlers,
   tools?: AiToolDefinition[],
 ): Promise<void> {
+  const allowedToolNames = new Set((tools ?? []).map((tool) => tool.function.name))
+  const effectiveHandlers: ChatStreamHandlers =
+    handlers.onToolCalls && allowedToolNames.size > 0
+      ? {
+          ...handlers,
+          onToolCalls: (calls) => {
+            handlers.onToolCalls?.(
+              calls.map((call) => {
+                const name = normalizeToolCallName(call.function.name, allowedToolNames)
+                return name === call.function.name
+                  ? call
+                  : { ...call, function: { ...call.function, name } }
+              }),
+            )
+          },
+        }
+      : handlers
+
   if (!isTauriRuntime()) {
-    await browserStreamChat(requestId, profileId, messages, handlers, tools)
+    await browserStreamChat(requestId, profileId, messages, effectiveHandlers, tools)
     return
   }
 
@@ -675,20 +694,20 @@ export async function streamChat(
       return
     }
     if (event.type === 'delta') {
-      if (!settled) handlers.onDelta(event.text)
+      if (!settled) effectiveHandlers.onDelta(event.text)
       return
     }
     if (event.type === 'toolCalls') {
       // function calling：先于 Done 收到，转交 agent loop 执行后回传
-      if (!settled) handlers.onToolCalls?.(event.calls)
+      if (!settled) effectiveHandlers.onToolCalls?.(event.calls)
       return
     }
     if (settled) return
     settled = true
     if (event.type === 'done') {
-      handlers.onDone(event.finishReason ?? null)
+      effectiveHandlers.onDone(event.finishReason ?? null)
     } else {
-      handlers.onError({ code: event.code, message: event.message })
+      effectiveHandlers.onError({ code: event.code, message: event.message })
     }
   }
 
@@ -705,12 +724,12 @@ export async function streamChat(
     // 兜底：命令正常返回但未收到终止事件（例如上游直接关闭连接）
     if (!settled) {
       settled = true
-      handlers.onDone(null)
+      effectiveHandlers.onDone(null)
     }
   } catch (error) {
     if (!settled) {
       settled = true
-      handlers.onError({ code: 'unknown', message: errorText(error) })
+      effectiveHandlers.onError({ code: 'unknown', message: errorText(error) })
     }
   }
 }
