@@ -30,3 +30,4 @@ dist-ssr
 .tmp-release
 .tmp-acceptance
 .installer-test
+docs
