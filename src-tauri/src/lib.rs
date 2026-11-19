@@ -8,6 +8,7 @@ use tauri_plugin_global_shortcut::{Code, Modifiers, ShortcutState};
 use tauri_plugin_sql::{Migration, MigrationKind};
 
 mod ai;
+mod db_safety;
 // pub 仅为让 examples/search_probe.rs 直接调用 ai_web_search 做端到端验证
 pub mod web_search;
 
@@ -271,28 +272,6 @@ fn set_window_bounds(
     Ok(())
 }
 
-/// SQLite 数据库文件实际路径：应用数据目录下的 bianqian.db
-fn db_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
-    let dir = app.path().app_data_dir().map_err(|error| error.to_string())?;
-    Ok(dir.join("bianqian.db"))
-}
-
-/// 备份数据库：把当前 SQLite 文件完整复制到用户选择的位置（设置 → 数据管理）
-#[tauri::command]
-fn backup_db(app: tauri::AppHandle, dest_path: String) -> Result<(), String> {
-    let src = db_path(&app)?;
-    std::fs::copy(&src, &dest_path).map_err(|error| format!("备份失败：{error}"))?;
-    Ok(())
-}
-
-/// 恢复数据库：用备份文件覆盖当前 SQLite（须重启应用后生效，SQLite 连接仍指向旧句柄）
-#[tauri::command]
-fn restore_db(app: tauri::AppHandle, src_path: String) -> Result<(), String> {
-    let dest = db_path(&app)?;
-    std::fs::copy(&src_path, &dest).map_err(|error| format!("恢复失败：{error}"))?;
-    Ok(())
-}
-
 /// 导出数据：把前端传来的完整 JSON 写入用户选择的位置（不经过数据库，纯应用层备份）
 #[tauri::command]
 fn write_entries_json(path: String, data: String) -> Result<(), String> {
@@ -343,9 +322,6 @@ fn write_image_file(path: String, data: String) -> Result<(), String> {
     std::fs::write(&path, bytes).map_err(|error| format!("写入失败：{error}"))
 }
 
-/// 每日自动备份保留份数
-const AUTO_BACKUP_KEEP: usize = 7;
-
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct AutoBackupConfig {
@@ -356,25 +332,6 @@ impl Default for AutoBackupConfig {
     fn default() -> Self {
         Self { enabled: true }
     }
-}
-
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct AutoBackupStatus {
-    enabled: bool,
-    dir: String,
-    last_backup_at: Option<u64>,
-    count: usize,
-}
-
-/// 自动备份目录：应用数据目录下的 backups
-fn backup_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|error| error.to_string())?
-        .join("backups");
-    Ok(dir)
 }
 
 fn backup_config_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
@@ -390,104 +347,144 @@ fn load_backup_config(app: &tauri::AppHandle) -> AutoBackupConfig {
         .unwrap_or_default()
 }
 
-/// UTC 日期戳（YYYY-MM-DD）：仅用于备份文件命名，跨时区午夜附近可能差一天
-fn utc_date_stamp() -> String {
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_secs() as i64)
-        .unwrap_or(0);
-    let days = secs.div_euclid(86_400);
-    let z = days + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = (z - era * 146_097) as u64;
-    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
-    let year_base = yoe as i64 + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = if month <= 2 { year_base + 1 } else { year_base };
-    format!("{year:04}-{month:02}-{day:02}")
-}
-
-/// 备份文件列表：按文件名（日期）从新到旧
-fn list_backups(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return Vec::new();
-    };
-    let mut files: Vec<std::path::PathBuf> = entries
-        .filter_map(|entry| entry.ok().map(|item| item.path()))
-        .filter(|path| {
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.starts_with("bianqian-") && name.ends_with(".db"))
-        })
-        .collect();
-    files.sort();
-    files.reverse();
-    files
-}
-
-fn backup_status(app: &tauri::AppHandle) -> Result<AutoBackupStatus, String> {
-    let dir = backup_dir(app)?;
-    let files = list_backups(&dir);
-    let last_backup_at = files.first().and_then(|path| {
-        path.metadata()
-            .ok()
-            .and_then(|meta| meta.modified().ok())
-            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|duration| duration.as_millis() as u64)
-    });
-    Ok(AutoBackupStatus {
-        enabled: load_backup_config(app).enabled,
-        dir: dir.to_string_lossy().to_string(),
-        last_backup_at,
-        count: files.len(),
-    })
-}
-
-/// 每日自动备份：同一天只生成一份，超过保留份数后删除最旧的
-fn run_daily_backup(app: &tauri::AppHandle) -> Result<(), String> {
-    if !load_backup_config(app).enabled {
-        return Ok(());
-    }
-    let db = db_path(app)?;
-    if !db.exists() {
-        return Ok(());
-    }
-    let dir = backup_dir(app)?;
-    std::fs::create_dir_all(&dir).map_err(|error| format!("创建备份目录失败：{error}"))?;
-    let target = dir.join(format!("bianqian-{}.db", utc_date_stamp()));
-    if !target.exists() {
-        std::fs::copy(&db, &target).map_err(|error| format!("自动备份失败：{error}"))?;
-    }
-    for stale in list_backups(&dir).into_iter().skip(AUTO_BACKUP_KEEP) {
-        let _ = std::fs::remove_file(stale);
-    }
-    Ok(())
-}
-
-#[tauri::command]
-fn auto_backup_status(app: tauri::AppHandle) -> Result<AutoBackupStatus, String> {
-    backup_status(&app)
-}
-
-#[tauri::command]
-fn set_auto_backup(app: tauri::AppHandle, enabled: bool) -> Result<AutoBackupStatus, String> {
-    let path = backup_config_path(&app)?;
+fn save_backup_config(app: &tauri::AppHandle, config: &AutoBackupConfig) -> Result<(), String> {
+    let path = backup_config_path(app)?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|error| format!("创建配置目录失败：{error}"))?;
     }
-    let config = AutoBackupConfig { enabled };
     std::fs::write(
         path,
-        serde_json::to_string_pretty(&config).map_err(|error| error.to_string())?,
+        serde_json::to_string_pretty(config).map_err(|error| error.to_string())?,
     )
-    .map_err(|error| format!("保存备份设置失败：{error}"))?;
-    if enabled {
-        run_daily_backup(&app)?;
+    .map_err(|error| format!("保存备份设置失败：{error}"))
+}
+
+/// 手动备份：VACUUM INTO 一致性快照 + 校验 + `.json` 元数据
+#[tauri::command]
+async fn backup_db(
+    app: tauri::AppHandle,
+    dest_path: String,
+    gate: tauri::State<'_, db_safety::DbGateState>,
+) -> Result<db_safety::BackupMetadata, String> {
+    if db_safety::gate_snapshot(&gate).status != "ready" {
+        return Err("数据库当前处于只读保护状态，无法备份".to_string());
     }
-    backup_status(&app)
+    db_safety::create_backup(&app, std::path::Path::new(&dest_path), "manual").await
+}
+
+/// 恢复数据库：前端须先关闭所有 SQLite 连接；后端负责校验、快照与原子替换
+#[tauri::command]
+async fn restore_db(
+    app: tauri::AppHandle,
+    src_path: String,
+    gate: tauri::State<'_, db_safety::DbGateState>,
+) -> Result<db_safety::RestoreResult, String> {
+    db_safety::restore_database(&app, src_path, &gate).await
+}
+
+#[tauri::command]
+fn auto_backup_status(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, db_safety::AutoBackupState>,
+) -> Result<db_safety::AutoBackupStatus, String> {
+    Ok(db_safety::auto_backup_status(
+        &app,
+        load_backup_config(&app).enabled,
+        &state,
+    ))
+}
+
+#[tauri::command]
+async fn set_auto_backup(
+    app: tauri::AppHandle,
+    enabled: bool,
+    state: tauri::State<'_, db_safety::AutoBackupState>,
+) -> Result<db_safety::AutoBackupStatus, String> {
+    save_backup_config(&app, &AutoBackupConfig { enabled })?;
+    if enabled {
+        if let Err(error) = db_safety::run_daily_backup(&app, true, &state).await {
+            *state.0.lock().unwrap() = Some(error.clone());
+            return Err(error);
+        }
+    }
+    Ok(db_safety::auto_backup_status(&app, enabled, &state))
+}
+
+#[tauri::command]
+async fn run_auto_backup_now(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, db_safety::AutoBackupState>,
+) -> Result<db_safety::AutoBackupStatus, String> {
+    let enabled = load_backup_config(&app).enabled;
+    match db_safety::run_backup_now(&app, enabled, &state).await {
+        Ok(status) => Ok(status),
+        Err(error) => {
+            *state.0.lock().unwrap() = Some(error.clone());
+            Err(error)
+        }
+    }
+}
+
+#[tauri::command]
+fn db_gate_status(gate: tauri::State<'_, db_safety::DbGateState>) -> db_safety::DbGateStatus {
+    db_safety::gate_snapshot(&gate)
+}
+
+#[tauri::command]
+fn db_gate_migration_complete(gate: tauri::State<'_, db_safety::DbGateState>) {
+    db_safety::mark_migration_complete(&gate, db_safety::SCHEMA_VERSION);
+}
+
+/// 前端加载/迁移失败：尝试回退到迁移前备份，失败则保持只读保护
+#[tauri::command]
+async fn db_gate_load_failed(
+    app: tauri::AppHandle,
+    gate: tauri::State<'_, db_safety::DbGateState>,
+    message: String,
+) -> Result<db_safety::DbGateStatus, String> {
+    let had_backup = db_safety::gate_snapshot(&gate).pre_migration_backup.is_some();
+    if had_backup {
+        match db_safety::recover_pre_migration_backup(&app, &gate).await {
+            Ok(_) => {
+                db_safety::mark_load_failed(
+                    &gate,
+                    "数据库迁移失败，已回退到迁移前备份；请重启应用后重试。",
+                );
+                return Ok(db_safety::gate_snapshot(&gate));
+            }
+            Err(error) => {
+                db_safety::mark_load_failed(
+                    &gate,
+                    &format!("数据库迁移失败，且自动回退失败：{error}。原始错误：{message}"),
+                );
+                return Ok(db_safety::gate_snapshot(&gate));
+            }
+        }
+    }
+    db_safety::mark_load_failed(&gate, &format!("数据库加载失败：{message}"));
+    Ok(db_safety::gate_snapshot(&gate))
+}
+
+#[tauri::command]
+async fn db_gate_retry(
+    app: tauri::AppHandle,
+    gate: tauri::State<'_, db_safety::DbGateState>,
+) -> Result<db_safety::DbGateStatus, String> {
+    Ok(db_safety::retry_gate(&app, &gate).await)
+}
+
+async fn run_startup_auto_backup(app: tauri::AppHandle) {
+    if !load_backup_config(&app).enabled {
+        return;
+    }
+    let gate = app.state::<db_safety::DbGateState>();
+    if db_safety::gate_snapshot(&gate).status != "ready" {
+        return;
+    }
+    let auto = app.state::<db_safety::AutoBackupState>();
+    if let Err(error) = db_safety::run_daily_backup(&app, true, &auto).await {
+        *auto.0.lock().unwrap() = Some(error);
+    }
 }
 
 /// 递归复制目录：WebView2 的 localStorage 是 LevelDB 目录，须整目录搬运
@@ -567,18 +564,7 @@ fn migrate_legacy_data_dir(identifier: &str) {
     }
 }
 
-/// 应用入口：注册插件（SQL / 通知 / 自启动 / 单实例）、执行数据库迁移、
-/// 构建系统托盘菜单（显示/最小化/隐藏、新建便签、AI 助手、开机自启动开关、退出）。
-/// 主窗口配置 skipTaskbar：启动时正常显示但不占任务栏，程序图标只在系统托盘；
-/// 关闭窗口只是隐藏到托盘，退出需通过托盘菜单。
-/// 透明度由前端 CSS 背景 alpha 控制（背景半透明、文字不透明），无需 Rust 自定义命令。
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run() {
-    let context = tauri::generate_context!();
-    // 必须在 SQL 插件初始化（preload 打开数据库）之前完成旧数据目录迁移
-    #[cfg(windows)]
-    migrate_legacy_data_dir(&context.config().identifier);
-
+pub(crate) fn database_migrations() -> Vec<Migration> {
     let migrations = vec![
         Migration {
             version: 1,
@@ -741,7 +727,31 @@ CREATE INDEX IF NOT EXISTS idx_agent_steps_execution ON agent_execution_steps(ex
 ALTER TABLE agent_execution_steps ADD COLUMN proposal_id TEXT;
 "#,
         },
+        Migration {
+            version: 10,
+            description: "add optimistic version to entries",
+            kind: MigrationKind::Up,
+            sql: r#"
+ALTER TABLE entries ADD COLUMN version INTEGER NOT NULL DEFAULT 1;
+"#,
+        },
     ];
+    migrations
+}
+
+/// 应用入口：注册插件（SQL / 通知 / 自启动 / 单实例）、执行数据库迁移、
+/// 构建系统托盘菜单（显示/最小化/隐藏、新建便签、AI 助手、开机自启动开关、退出）。
+/// 主窗口配置 skipTaskbar：启动时正常显示但不占任务栏，程序图标只在系统托盘；
+/// 关闭窗口只是隐藏到托盘，退出需通过托盘菜单。
+/// 透明度由前端 CSS 背景 alpha 控制（背景半透明、文字不透明），无需 Rust 自定义命令。
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    let context = tauri::generate_context!();
+    // 必须在 SQL 插件初始化（preload 打开数据库）之前完成旧数据目录迁移
+    #[cfg(windows)]
+    migrate_legacy_data_dir(&context.config().identifier);
+
+    let migrations = database_migrations();
 
     tauri::Builder::default()
         // AI 助手请求取消标记（跨命令共享）
@@ -752,6 +762,11 @@ ALTER TABLE agent_execution_steps ADD COLUMN proposal_id TEXT;
         .manage(SplashProgress(std::sync::Mutex::new(SplashState::default())))
         // 图片预览数据中转：绕过 localStorage 5MB 配额
         .manage(ImagePreviewRelay::default())
+        // 数据库启动闸门：迁移前备份与只读保护状态
+        .manage(db_safety::DbGateState(std::sync::Mutex::new(
+            db_safety::DbGateStatus::default(),
+        )))
+        .manage(db_safety::AutoBackupState::default())
         .plugin(tauri_plugin_notification::init())
         .plugin(
             tauri_plugin_sql::Builder::default()
@@ -827,6 +842,12 @@ ALTER TABLE agent_execution_steps ADD COLUMN proposal_id TEXT;
                 .build(),
         )
         .setup(|app| {
+            // 数据库启动闸门：必须在任何数据库连接（包括插件迁移）之前完成
+            // 只读检查 → 迁移前一致性备份 → 校验，失败则进入只读保护
+            {
+                let gate = app.state::<db_safety::DbGateState>();
+                tauri::async_runtime::block_on(db_safety::prepare_gate(app.handle(), &gate));
+            }
             // 启动页兜底：前端异常/卡死时不让启动页永久挡住主窗口
             // （正常路径由前端 splash_finish 关闭；失败路径留出阅读错误的时间）
             {
@@ -903,9 +924,12 @@ ALTER TABLE agent_execution_steps ADD COLUMN proposal_id TEXT;
                     }
                 }
             });
-            // 每日自动备份：启动时检查当天是否已备份，失败只记录日志，不阻塞启动
-            if let Err(error) = run_daily_backup(app.handle()) {
-                eprintln!("每日自动备份失败: {error}");
+            // 每日自动备份：后台执行，失败写入设置页可见状态，不阻塞启动
+            {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    run_startup_auto_backup(handle).await;
+                });
             }
             // 注册全局快捷键 Ctrl+Shift+N：唤起快速记录
             {
@@ -928,15 +952,15 @@ ALTER TABLE agent_execution_steps ADD COLUMN proposal_id TEXT;
                 }
             }
             splash_advance(app.handle(), 0.45, "正在准备后台服务…");
-            // 关闭拦截：点 X / Alt+F4 不退出，直接隐藏到系统托盘继续运行
-            // （提醒、闹钟、自动备份等后台能力不受影响；退出走托盘菜单「退出」）
+            // 关闭拦截：点 X / Alt+F4 不直接隐藏或退出，转发给前端按用户选择的
+            // 退出语义处理（继续到托盘 / 退出并停止提醒 / 取消），避免静默退出
             if let Some(window) = app.get_webview_window("main") {
                 let window_clone = window.clone();
                 window.on_window_event(move |event| {
                     match event {
                         WindowEvent::CloseRequested { api, .. } => {
                             api.prevent_close();
-                            let _ = window_clone.hide();
+                            let _ = window_clone.emit("app:close-requested", ());
                         }
                         // 记录可见状态下的最后客户区位置（物理像素），供显示后的漂移校正。
                         // 隐藏 / 最小化期间的屏幕外坐标（最小化约 -32000）不记录；
@@ -971,6 +995,11 @@ ALTER TABLE agent_execution_steps ADD COLUMN proposal_id TEXT;
             write_image_file,
             auto_backup_status,
             set_auto_backup,
+            run_auto_backup_now,
+            db_gate_status,
+            db_gate_migration_complete,
+            db_gate_load_failed,
+            db_gate_retry,
             ai::ai_get_status,
             ai::ai_save_profile,
             ai::ai_activate_profile,

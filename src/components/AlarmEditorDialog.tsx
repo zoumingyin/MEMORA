@@ -2,7 +2,7 @@ import { useState } from 'react'
 import dayjs from 'dayjs'
 import { Button, DatePicker, InputNumber, Modal, Select } from 'antd'
 import type { AlarmItem, AlarmMethod, AlarmMode } from '../types/entry'
-import { alarmLoopIntervalMs } from '../reminder/scheduler'
+import { alarmLoopIntervalMs } from '../reminder/nextAlarm'
 import { toMinuteStart } from '../utils/format'
 
 /** 闹钟提醒模式选项（存储值 → 界面文案），对齐参考图：单次/循环/每天/每周/每月/每年阳历/每年农历 */

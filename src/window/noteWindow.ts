@@ -32,6 +32,8 @@ export const NOTE_WINDOW_OPEN_EVENT = "note-window:open";
 export const NOTE_WINDOW_SYNC_EVENT = "note-window:sync";
 /** 小窗 → 主窗口：小窗内编辑，请求应用 patch（DetailPane 网关回传，任意字段） */
 export const NOTE_WINDOW_PATCH_EVENT = "note-window:patch";
+/** 主窗口 → 小窗：patch 应用结果（按 requestId 匹配，携带最新条目或错误） */
+export const NOTE_WINDOW_PATCH_RESULT_EVENT = "note-window:patch-result";
 /** 小窗 → 主窗口：小窗内删除便签（移入废纸篓），主窗口执行后联动关闭小窗 */
 export const NOTE_WINDOW_REMOVE_EVENT = "note-window:remove";
 

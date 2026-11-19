@@ -122,8 +122,9 @@ export async function createHarness(options?: { now?: number }): Promise<TestHar
         harness.onAdd?.()
         return created
       },
-      updateEntry: async (id, patch) => {
-        await repo.update(id, patch)
+      updateEntry: async (id, patch, expectedVersion) => {
+        const current = snapshot.find((entry) => entry.id === id)
+        await repo.update(id, patch, expectedVersion ?? current?.version ?? 1)
         snapshot = await repo.listAll()
         harness.onUpdate?.()
       },
@@ -194,6 +195,7 @@ export function makeReminder(input: {
     notified: false,
     done: input.done ?? false,
     alarms,
+    version: 1,
   }
 }
 

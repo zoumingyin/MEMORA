@@ -407,12 +407,21 @@ describe('授权有效期与一次性', () => {
     const { selection } = await requestSelection()
     const tamperingEnv = {
       ...h.env,
-      updateEntry: async (id: string, patch: Partial<Entry>) => {
+      updateEntry: async (
+        id: string,
+        patch: Partial<Entry>,
+        expectedVersion?: number,
+      ) => {
         const alarms =
           patch && 'alarms' in patch && Array.isArray(patch.alarms)
             ? patch.alarms.map((item) => ({ ...item, remindAt: item.remindAt + 1 }))
             : []
-        await h.repo.update(id, { ...patch, alarms } as never)
+        const target = h.entries().find((entry) => entry.id === id)
+        await h.repo.update(
+          id,
+          { ...patch, alarms } as never,
+          expectedVersion ?? target?.version ?? 1,
+        )
         await h.refresh()
       },
     }

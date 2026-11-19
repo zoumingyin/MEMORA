@@ -2,8 +2,15 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Button } from 'antd'
 import { BellOutlined } from '@ant-design/icons'
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import { emit } from '@tauri-apps/api/event'
-import { getRepository, isTauriRuntime } from '../repository'
+import { emit, emitTo, listen } from '@tauri-apps/api/event'
+import { isTauriRuntime } from '../repository'
+import {
+  REMINDER_CONFIRM_EVENT,
+  REMINDER_CONFIRM_RESULT_EVENT,
+  REMINDER_SNOOZE_EVENT,
+  REMINDER_SNOOZE_RESULT_EVENT,
+  type ReminderActionResult,
+} from '../reminder/events'
 import { useNow } from '../hooks/useNow'
 import type { AlarmMethod, AlarmMode } from '../types/entry'
 
@@ -133,9 +140,58 @@ function playBeep(): void {
  * 交互参考图片预览弹窗：从 URL 读参、跟随全局主题、确认即关窗口。
  * 卡片显示模拟表盘与当前时间，确认后标记闹钟已通知并关闭；声音方式挂载时播放提示音。
  */
+/**
+ * 向主窗口发起一次写操作并等待回执。
+ * 主窗口写库成功才返回；失败 / 超时抛错，弹窗保持打开供重试。
+ */
+function requestMainAction(
+  eventName: string,
+  resultEvent: string,
+  extra: Record<string, unknown>,
+): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const requestId = crypto.randomUUID()
+    let settled = false
+    let unlisten: (() => void) | null = null
+    const finish = (error?: Error): void => {
+      if (settled) return
+      settled = true
+      window.clearTimeout(timer)
+      unlisten?.()
+      if (error) reject(error)
+      else resolve()
+    }
+    const timer = window.setTimeout(
+      () => finish(new Error('主窗口未响应，请稍后重试')),
+      12_000,
+    )
+    void listen<ReminderActionResult>(resultEvent, (event) => {
+      if (event.payload?.requestId !== requestId) return
+      finish(
+        event.payload.ok
+          ? undefined
+          : new Error(event.payload.message ?? '操作失败，请重试'),
+      )
+    }).then(async (un) => {
+      if (settled) {
+        un()
+        return
+      }
+      unlisten = un
+      await emitTo('main', eventName, {
+        ...extra,
+        requestId,
+        windowLabel: getCurrentWindow().label,
+      }).catch(() => finish(new Error('无法连接主窗口，请稍后重试')))
+    })
+  })
+}
+
 export function AlarmDialog() {
   const params = readParams()
   const [confirmed, setConfirmed] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [errorText, setErrorText] = useState<string | null>(null)
   const confirmedRef = useRef(false)
   const now = useNow(1000)
 
@@ -154,57 +210,81 @@ export function AlarmDialog() {
     void win.setFocus()
   }, [])
 
-  // 标记已通知 + 关闭窗口（确认 / 进入便签 / 关闭按钮 / Esc 共用）
+  // 确认 = 主窗口原子写库成功后才关闭；失败显示原因并保留弹窗
   const finishAndClose = useCallback(
     async (openNote: boolean): Promise<void> => {
-      if (confirmedRef.current) return
+      if (confirmedRef.current || busy) return
       confirmedRef.current = true
+      setBusy(true)
+      setErrorText(null)
       setConfirmed(true)
       try {
-        if (isTauriRuntime() && params.id) {
-          await getRepository().markAlarmNotified(params.id, params.alarm)
-          if (openNote) {
-            await emit('reminder:open-note', { entryId: params.id, alarmId: params.alarm })
-          }
-          await emit('reminder:confirmed', { entryId: params.id, alarmId: params.alarm })
-          await getCurrentWindow().close()
+        if (!isTauriRuntime() || !params.id) {
+          setConfirmed(false)
+          confirmedRef.current = false
+          return
         }
+        await requestMainAction(REMINDER_CONFIRM_EVENT, REMINDER_CONFIRM_RESULT_EVENT, {
+          entryId: params.id,
+          alarmId: params.alarm,
+        })
+        if (openNote) {
+          await emit('reminder:open-note', {
+            entryId: params.id,
+            alarmId: params.alarm,
+          })
+        }
+        await getCurrentWindow().close()
       } catch (error) {
         console.error('确认提醒失败', error)
+        setErrorText(
+          error instanceof Error ? error.message : '确认失败，请重试'
+        )
         confirmedRef.current = false
         setConfirmed(false)
+      } finally {
+        setBusy(false)
       }
     },
-    [params.id, params.alarm],
+    [params.id, params.alarm, busy],
   )
 
   const handleConfirm = useCallback(() => void finishAndClose(false), [finishAndClose])
   const handleEnter = useCallback(() => void finishAndClose(true), [finishAndClose])
 
-  // 稍后提醒：把当前闹钟推到 N 分钟后并重置通知状态，主窗口解除弹窗登记后到点再次触发
+  // 稍后提醒：主窗口写库成功后再关闭；失败保留弹窗，避免提醒静默丢失
   const handleSnooze = useCallback(
     async (minutes: number): Promise<void> => {
-      if (confirmedRef.current) return
+      if (confirmedRef.current || busy) return
       confirmedRef.current = true
+      setBusy(true)
+      setErrorText(null)
       setConfirmed(true)
       try {
-        const remindAt = Date.now() + minutes * 60_000
-        if (isTauriRuntime() && params.id) {
-          await getRepository().snoozeAlarm(params.id, params.alarm, remindAt)
-          await emit('reminder:snoozed', {
-            entryId: params.id,
-            alarmId: params.alarm,
-            remindAt,
-          })
-          await getCurrentWindow().close()
+        if (!isTauriRuntime() || !params.id) {
+          setConfirmed(false)
+          confirmedRef.current = false
+          return
         }
+        const remindAt = Date.now() + minutes * 60_000
+        await requestMainAction(REMINDER_SNOOZE_EVENT, REMINDER_SNOOZE_RESULT_EVENT, {
+          entryId: params.id,
+          alarmId: params.alarm,
+          remindAt,
+        })
+        await getCurrentWindow().close()
       } catch (error) {
         console.error('稍后提醒失败', error)
+        setErrorText(
+          error instanceof Error ? error.message : '稍后提醒失败，请重试'
+        )
         confirmedRef.current = false
         setConfirmed(false)
+      } finally {
+        setBusy(false)
       }
     },
-    [params.id, params.alarm],
+    [params.id, params.alarm, busy],
   )
 
   // Esc 等同于「我知道了」关闭弹窗
@@ -248,6 +328,11 @@ export function AlarmDialog() {
 
           <h2 className="reminder-title">{params.title || '提醒'}</h2>
           {params.content && <p className="reminder-content">{params.content}</p>}
+          {errorText && (
+            <p className="reminder-content" role="alert">
+              操作失败：{errorText}
+            </p>
+          )}
 
           <button
             type="button"
@@ -267,7 +352,7 @@ export function AlarmDialog() {
               <Button
                 key={minutes}
                 size="small"
-                disabled={confirmed}
+                disabled={confirmed || busy}
                 onClick={() => void handleSnooze(minutes)}
               >
                 {minutes} 分钟
@@ -280,6 +365,7 @@ export function AlarmDialog() {
             size="large"
             block
             className="reminder-confirm"
+            loading={busy}
             onClick={() => void handleConfirm()}
           >
             我知道了

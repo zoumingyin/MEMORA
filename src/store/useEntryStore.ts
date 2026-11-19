@@ -1,6 +1,9 @@
 import { create } from 'zustand'
 import type { AlarmItem, Entry, EntryKind, NewEntryInput, TodoItem } from '../types/entry'
 import { getRepository } from '../repository'
+import { DatabaseUnavailableError, EntryWriteError, isEntryWriteError } from '../repository/errors'
+import type { DbGateStatus } from '../repository/db'
+import { nextAlarmAt, occurrenceKey } from '../reminder/nextAlarm'
 
 /** 界面状态持久化键：异常退出/重启后恢复上次筛选、选中条目与默认分类 */
 const UI_STORAGE_KEY = 'bianqian.ui.v1'
@@ -44,25 +47,44 @@ function persistUI(ui: PersistedUI): void {
     // 存储不可用时静默跳过
   }
 }
+
+export interface LoadErrorInfo {
+  type: string
+  message: string
+  at: number
+}
+
+export interface ReminderIssue {
+  id: string
+  entryId: string
+  alarmId: string
+  message: string
+  at: number
+}
+
+function toWriteError(error: unknown): EntryWriteError {
+  if (isEntryWriteError(error)) return error
+  const message = error instanceof Error ? error.message : String(error)
+  return new EntryWriteError('io', message)
+}
+
 interface EntryState {
-  /** 新建条目时的默认分类（点「+」新建时使用；filter 为 all 时生效） */
   currentKind: EntryKind
-  /** 左侧列表筛选：全部 / 备忘 / 提醒 / 待办 / 涂鸦 */
   filter: 'all' | EntryKind
-  /** 右侧详情当前选中的条目 id（可由提醒弹窗「进入便签」跳转设置） */
   selectedId: string | null
   entries: Entry[]
   initialized: boolean
   loading: boolean
-  /** 全局搜索关键词：匹配标题与正文全文 */
+  /** 最近一次加载失败：界面展示错误与重试，不把失败当空列表 */
+  loadError: LoadErrorInfo | null
+  /** 数据库只读保护/不可用信息：存在时展示故障页，禁止写入 */
+  dbFault: DbGateStatus | null
+  /** 提醒触达失败/降级记录（应用内可见） */
+  reminderIssues: ReminderIssue[]
   search: string
-  /** 标签筛选：null=全部标签 */
   tagFilter: string | null
-  /** 时间范围（按更新时间）：全部 / 今天 / 近 7 天 / 近 30 天 */
   timeRange: 'all' | 'today' | '7d' | '30d'
-  /** 列表排序：最近编辑（更新时间）/ 创建时间 */
   sortBy: 'updated' | 'created'
-  /** 左侧视图：列表（搜索+分类筛选） / 日历（月历打点+当日条目） */
   view: 'list' | 'calendar'
   setCurrentKind: (kind: EntryKind) => void
   setFilter: (filter: 'all' | EntryKind) => void
@@ -73,23 +95,30 @@ interface EntryState {
   setSortBy: (sort: 'updated' | 'created') => void
   setView: (view: 'list' | 'calendar') => void
   loadAll: () => Promise<void>
+  retryLoad: () => Promise<void>
   addEntry: (input: NewEntryInput, kind?: EntryKind) => Promise<Entry | null>
-  /** 批量导入（数据导入）：按 id 合并，返回实际新增条数 */
   importEntries: (entries: Entry[]) => Promise<number>
   toggleTodo: (id: string) => Promise<void>
   toggleReminderDone: (id: string) => Promise<void>
-  /** 废纸篓内容（软删除条目，按删除时间倒序） */
   trash: Entry[]
   loadTrash: () => Promise<void>
-  /** 删除 = 移入废纸篓（软删除），可从废纸篓恢复或彻底删除 */
   moveToTrash: (id: string) => Promise<void>
   restoreEntry: (id: string) => Promise<void>
   purgeEntry: (id: string) => Promise<void>
   emptyTrash: () => Promise<void>
-  updateEntry: (id: string, patch: Partial<Entry>) => Promise<void>
+  updateEntry: (id: string, patch: Partial<Entry>, expectedVersion?: number) => Promise<Entry>
   markNotified: (id: string) => Promise<void>
-  /** 标记某条提醒下的单个闹钟已通知（按闹钟 id） */
   markAlarmNotified: (entryId: string, alarmId: string) => Promise<void>
+  /** 确认一次到期：单次标记已处理；重复模式在同一事务内推进到下一次 */
+  confirmAlarm: (entryId: string, alarmId: string) => Promise<Entry>
+  /** 稍后提醒：把单个闹钟推到新时间并重置投递状态 */
+  snoozeAlarm: (entryId: string, alarmId: string, remindAt: number) => Promise<Entry>
+  /** 记录一次自动呈现（仅诊断，不承诺 exactly-once） */
+  presentAlarm: (entryId: string, alarmId: string) => Promise<void>
+  /** 记录触达失败：不标记已处理，按冷却重试 */
+  recordAlarmFailure: (entryId: string, alarmId: string, message: string) => Promise<void>
+  reportReminderIssue: (issue: Omit<ReminderIssue, 'id' | 'at'>) => void
+  clearReminderIssues: () => void
 }
 
 export const useEntryStore = create<EntryState>((set, get) => ({
@@ -99,6 +128,9 @@ export const useEntryStore = create<EntryState>((set, get) => ({
   entries: [],
   initialized: false,
   loading: false,
+  loadError: null,
+  dbFault: null,
+  reminderIssues: [],
   search: '',
   tagFilter: null,
   timeRange: 'all',
@@ -150,8 +182,13 @@ export const useEntryStore = create<EntryState>((set, get) => ({
     set({ loading: true })
     try {
       const entries = await getRepository().listAll()
-      set({ entries, initialized: true, loading: false })
-      // 异常恢复：数据就绪后恢复上次筛选/默认分类/选中条目（选中须仍存在，否则回落第一条由视图层处理）
+      set({
+        entries,
+        initialized: true,
+        loading: false,
+        loadError: null,
+        dbFault: null,
+      })
       const persisted = loadPersistedUI()
       if (persisted) {
         const selectedStillExists = persisted.selectedId
@@ -166,8 +203,36 @@ export const useEntryStore = create<EntryState>((set, get) => ({
       }
     } catch (error) {
       console.error('加载条目失败', error)
-      set({ loading: false })
+      if (error instanceof DatabaseUnavailableError) {
+        set({
+          loading: false,
+          dbFault: {
+            status: 'readonly',
+            errorType: error.errorType,
+            message: error.message,
+            dbPath: error.dbPath,
+            schemaVersion: 0,
+            migrationPending: false,
+            preMigrationBackup: null,
+          },
+          loadError: { type: error.errorType, message: error.message, at: Date.now() },
+        })
+      } else {
+        set({
+          loading: false,
+          loadError: {
+            type: 'load_failed',
+            message: error instanceof Error ? error.message : String(error),
+            at: Date.now(),
+          },
+        })
+      }
     }
+  },
+
+  retryLoad: async () => {
+    set({ loadError: null })
+    await get().loadAll()
   },
 
   addEntry: async (input, kind) => {
@@ -178,7 +243,7 @@ export const useEntryStore = create<EntryState>((set, get) => ({
       return entry
     } catch (error) {
       console.error('新增条目失败', error)
-      return null
+      throw toWriteError(error)
     }
   },
 
@@ -189,45 +254,28 @@ export const useEntryStore = create<EntryState>((set, get) => ({
       return imported
     } catch (error) {
       console.error('批量导入失败', error)
-      return 0
+      throw toWriteError(error)
     }
   },
+
   toggleTodo: async (id) => {
     const target = get().entries.find((entry) => entry.id === id)
     if (!target || target.kind !== 'todo') return
     const done = !target.done
-    try {
-      await getRepository().update(id, { kind: 'todo', done })
-      set((state) => ({
-        entries: state.entries.map((entry) =>
-          entry.id === id && entry.kind === 'todo'
-            ? { ...entry, done, completedAt: done ? Date.now() : null }
-            : entry,
-        ),
-      }))
-    } catch (error) {
-      console.error('更新待办状态失败', error)
-    }
+    const stored = await get().updateEntry(id, { kind: 'todo', done }, target.version)
+    void stored
   },
 
   toggleReminderDone: async (id) => {
     const target = get().entries.find((entry) => entry.id === id)
     if (!target || target.kind !== 'reminder') return
     const done = !target.done
-    // 「标记已处理」＝整条所有闹钟一并标记已通知；恢复处理则全部重新纳入调度
     const alarms = target.alarms.map((alarm) => ({ ...alarm, notified: done }))
-    try {
-      await getRepository().update(id, { kind: 'reminder', done, alarms })
-      set((state) => ({
-        entries: state.entries.map((entry) =>
-          entry.id === id && entry.kind === 'reminder'
-            ? { ...entry, done, alarms, notified: done }
-            : entry,
-        ),
-      }))
-    } catch (error) {
-      console.error('更新提醒状态失败', error)
-    }
+    await get().updateEntry(
+      id,
+      { kind: 'reminder', done, alarms, notified: done },
+      target.version,
+    )
   },
 
   trash: [],
@@ -238,6 +286,13 @@ export const useEntryStore = create<EntryState>((set, get) => ({
       set({ trash })
     } catch (error) {
       console.error('加载废纸篓失败', error)
+      set({
+        loadError: {
+          type: 'trash_load_failed',
+          message: error instanceof Error ? error.message : String(error),
+          at: Date.now(),
+        },
+      })
     }
   },
 
@@ -247,13 +302,13 @@ export const useEntryStore = create<EntryState>((set, get) => ({
       await getRepository().moveToTrash(id)
       set((state) => ({
         entries: state.entries.filter((entry) => entry.id !== id),
-        // 本地先补 deletedAt，无需重新拉取即可在废纸篓视图立即可见
         trash: target
-          ? [{ ...target, deletedAt: Date.now() }, ...state.trash]
+          ? [{ ...target, deletedAt: Date.now(), version: target.version + 1 }, ...state.trash]
           : state.trash,
       }))
     } catch (error) {
       console.error('移入废纸篓失败', error)
+      throw toWriteError(error)
     }
   },
 
@@ -261,10 +316,10 @@ export const useEntryStore = create<EntryState>((set, get) => ({
     try {
       await getRepository().restore(id)
       set((state) => ({ trash: state.trash.filter((entry) => entry.id !== id) }))
-      // 恢复后重新拉取主列表（恢复条目可能落在任意分类）
       await get().loadAll()
     } catch (error) {
       console.error('从废纸篓恢复失败', error)
+      throw toWriteError(error)
     }
   },
 
@@ -274,6 +329,7 @@ export const useEntryStore = create<EntryState>((set, get) => ({
       set((state) => ({ trash: state.trash.filter((entry) => entry.id !== id) }))
     } catch (error) {
       console.error('彻底删除条目失败', error)
+      throw toWriteError(error)
     }
   },
 
@@ -283,15 +339,14 @@ export const useEntryStore = create<EntryState>((set, get) => ({
       set({ trash: [] })
     } catch (error) {
       console.error('清空废纸篓失败', error)
+      throw toWriteError(error)
     }
   },
 
-  updateEntry: async (id, patch) => {
+  updateEntry: async (id, patch, expectedVersion) => {
     const target = get().entries.find((entry) => entry.id === id)
-    if (!target) return
-    // 仓储按 patch.kind 判别写列，这里补全条目自身类型，避免调用方漏传
+    if (!target) throw new EntryWriteError('not_found', '条目不存在或已被删除')
     const normalized = { ...patch, kind: target.kind } as Partial<Entry>
-    // 待办子任务变更时同步派生整条完成态，保证界面与数据库一致
     if (target.kind === 'todo' && Array.isArray((normalized as { items?: TodoItem[] }).items)) {
       const items = (normalized as { items: TodoItem[] }).items
       const allDone = items.length > 0 && items.every((item) => item.done)
@@ -300,7 +355,6 @@ export const useEntryStore = create<EntryState>((set, get) => ({
         ? target.completedAt ?? Date.now()
         : null
     }
-    // 提醒条目改闹钟清单时同步派生条目级 remind_at（最近一个未通知闹钟），供列表排序与显示；清空清单时保留原值
     if (target.kind === 'reminder' && Array.isArray((normalized as { alarms?: AlarmItem[] }).alarms)) {
       const alarms = (normalized as { alarms: AlarmItem[] }).alarms
       if (alarms.length > 0) {
@@ -311,46 +365,204 @@ export const useEntryStore = create<EntryState>((set, get) => ({
       }
     }
     try {
-      await getRepository().update(id, normalized)
+      const stored = await getRepository().update(
+        id,
+        normalized,
+        expectedVersion ?? target.version,
+      )
       set((state) => ({
-        entries: state.entries.map((entry) => {
-          if (entry.id !== id) return entry
-          return { ...entry, ...normalized, updatedAt: Date.now() } as Entry
-        }),
+        entries: state.entries.map((entry) => (entry.id === id ? stored : entry)),
       }))
+      return stored
     } catch (error) {
-      console.error('更新条目失败', error)
+      if (error instanceof EntryWriteError && error.latest) {
+        const latest = error.latest
+        set((state) => ({
+          entries: state.entries.map((entry) => (entry.id === id ? latest : entry)),
+        }))
+      }
+      throw toWriteError(error)
     }
   },
 
   markNotified: async (id) => {
-    try {
-      await getRepository().markNotified(id)
-      set((state) => ({
-        entries: state.entries.map((entry) =>
-          entry.id === id && entry.kind === 'reminder' ? { ...entry, notified: true } : entry,
-        ),
-      }))
-    } catch (error) {
-      console.error('更新提醒通知状态失败', error)
-    }
+    const target = get().entries.find((entry) => entry.id === id)
+    if (!target) return
+    await get().updateEntry(id, { kind: 'reminder', notified: true }, target.version)
   },
 
   markAlarmNotified: async (entryId, alarmId) => {
+    const target = get().entries.find((entry) => entry.id === entryId)
+    if (!target || target.kind !== 'reminder') return
     try {
-      await getRepository().markAlarmNotified(entryId, alarmId)
+      const stored = await getRepository().markAlarmNotified(
+        entryId,
+        alarmId,
+        target.version,
+      )
       set((state) => ({
-        entries: state.entries.map((entry) => {
-          if (entry.id !== entryId || entry.kind !== 'reminder') return entry
-          const alarms = entry.alarms.map((alarm) =>
-            alarm.id === alarmId && !alarm.notified ? { ...alarm, notified: true } : alarm,
-          )
-          const allNotified = alarms.length > 0 && alarms.every((alarm) => alarm.notified)
-          return { ...entry, alarms, notified: allNotified ? true : entry.notified }
-        }),
+        entries: state.entries.map((entry) => (entry.id === entryId ? stored : entry)),
       }))
     } catch (error) {
-      console.error('更新闹钟通知状态失败', error)
+      if (error instanceof EntryWriteError && error.latest) {
+        set((state) => ({
+          entries: state.entries.map((entry) => (entry.id === entryId ? error.latest! : entry)),
+        }))
+      }
+      throw toWriteError(error)
     }
   },
+
+  confirmAlarm: async (entryId, alarmId) => {
+    const target = get().entries.find((entry) => entry.id === entryId)
+    if (!target || target.kind !== 'reminder') {
+      throw new EntryWriteError('not_found', '提醒条目不存在或已被删除')
+    }
+    const alarm = target.alarms.find((item) => item.id === alarmId)
+    if (!alarm) throw new EntryWriteError('not_found', '闹钟不存在或已被删除')
+    const now = Date.now()
+    const alarms = target.alarms.map((item) => {
+      if (item.id !== alarmId) return item
+      if (item.mode === 'once') {
+        return {
+          ...item,
+          notified: true,
+          lastAttemptAt: now,
+          lastDeliveryStatus: 'delivered' as const,
+          lastDeliveryError: undefined,
+          occurrenceKey: occurrenceKey(item),
+        }
+      }
+      const advanced = nextAlarmAt(item)
+      return {
+        ...item,
+        remindAt: advanced,
+        notified: false,
+        lastAttemptAt: now,
+        lastDeliveryStatus: 'delivered' as const,
+        lastDeliveryError: undefined,
+        occurrenceKey: `${item.id}:${advanced}`,
+      }
+    })
+    const allNotified = alarms.length > 0 && alarms.every((item) => item.notified)
+    return get().updateEntry(
+      entryId,
+      { kind: 'reminder', alarms, notified: allNotified },
+      target.version,
+    )
+  },
+
+  snoozeAlarm: async (entryId, alarmId, remindAt) => {
+    const target = get().entries.find((entry) => entry.id === entryId)
+    if (!target || target.kind !== 'reminder') {
+      throw new EntryWriteError('not_found', '提醒条目不存在或已被删除')
+    }
+    try {
+      const stored = await getRepository().snoozeAlarm(
+        entryId,
+        alarmId,
+        remindAt,
+        target.version,
+      )
+      set((state) => ({
+        entries: state.entries.map((entry) => (entry.id === entryId ? stored : entry)),
+      }))
+      return stored
+    } catch (error) {
+      if (error instanceof EntryWriteError && error.latest) {
+        set((state) => ({
+          entries: state.entries.map((entry) => (entry.id === entryId ? error.latest! : entry)),
+        }))
+      }
+      throw toWriteError(error)
+    }
+  },
+
+  presentAlarm: async (entryId, alarmId) => {
+    try {
+      await mutateAlarm(get, set, entryId, alarmId, (alarm) => ({
+        ...alarm,
+        lastAttemptAt: Date.now(),
+        lastDeliveryStatus: 'delivered',
+        lastDeliveryError: undefined,
+        occurrenceKey: occurrenceKey(alarm),
+        presentationCount: (alarm.presentationCount ?? 0) + 1,
+      }))
+    } catch (error) {
+      console.error('记录提醒呈现失败', error)
+    }
+  },
+
+  recordAlarmFailure: async (entryId, alarmId, message) => {
+    try {
+      await mutateAlarm(get, set, entryId, alarmId, (alarm) => ({
+        ...alarm,
+        lastAttemptAt: Date.now(),
+        lastDeliveryStatus: 'failed',
+        lastDeliveryError: message.slice(0, 200),
+        occurrenceKey: occurrenceKey(alarm),
+      }))
+    } catch (error) {
+      console.error('记录提醒触达失败状态失败', error)
+    }
+    get().reportReminderIssue({
+      entryId,
+      alarmId,
+      message: message.slice(0, 200),
+    })
+  },
+
+  reportReminderIssue: (issue) => {
+    set((state) => ({
+      reminderIssues: [
+        {
+          ...issue,
+          id: `${issue.entryId}:${issue.alarmId}:${Date.now()}`,
+          at: Date.now(),
+        },
+        ...state.reminderIssues.filter(
+          (item) => !(item.entryId === issue.entryId && item.alarmId === issue.alarmId),
+        ),
+      ].slice(0, 20),
+    }))
+  },
+
+  clearReminderIssues: () => set({ reminderIssues: [] }),
 }))
+
+/** 提醒字段读改写：版本冲突时用最新 store 数据重试，避免提醒写入被普通编辑冲突吞掉 */
+async function mutateAlarm(
+  get: () => EntryState,
+  set: (partial: Partial<EntryState>) => void,
+  entryId: string,
+  alarmId: string,
+  mutate: (alarm: AlarmItem) => AlarmItem,
+): Promise<Entry> {
+  let lastError: unknown = null
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const target = get().entries.find((entry) => entry.id === entryId)
+    if (!target || target.kind !== 'reminder') {
+      throw new EntryWriteError('not_found', '提醒条目不存在或已被删除')
+    }
+    const alarm = target.alarms.find((item) => item.id === alarmId)
+    if (!alarm) throw new EntryWriteError('not_found', '闹钟不存在或已被删除')
+    const alarms = target.alarms.map((item) =>
+      item.id === alarmId ? mutate(item) : item,
+    )
+    try {
+      const stored = await get().updateEntry(
+        entryId,
+        { kind: 'reminder', alarms },
+        target.version,
+      )
+      set({
+        entries: get().entries.map((entry) => (entry.id === entryId ? stored : entry)),
+      })
+      return stored
+    } catch (error) {
+      lastError = error
+      if (!(error instanceof EntryWriteError) || error.code !== 'conflict') throw error
+    }
+  }
+  throw lastError instanceof Error ? lastError : new EntryWriteError('conflict', '提醒写入冲突')
+}

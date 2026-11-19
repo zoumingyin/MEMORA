@@ -19,6 +19,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { isTauriRuntime } from "../repository";
+import { closeDatabase, resetDatabaseCache } from "../repository/db";
+import { flushActiveEditor } from "../editor/editorRegistry";
 import { useWindowStore } from "../store/useWindowStore";
 import { useEntryStore } from "../store/useEntryStore";
 import { useAssistantStore } from "../store/useAssistantStore";
@@ -60,6 +62,11 @@ import { currentWorkArea, getBounds } from "../window/tauriWindow";
 import { collapseToStripAnimated, detectDockEdge } from "../window/edgeDock";
 import { openExternal } from "../utils/openExternal";
 import { formatShort } from "../utils/format";
+import {
+  loadCloseBehavior,
+  saveCloseBehavior,
+  type CloseBehavior,
+} from "../window/closeBehavior";
 
 interface SettingsDialogProps {
   open: boolean;
@@ -180,6 +187,11 @@ const SETTING_TREE: SettingGroup[] = [
         key: "autostart",
         label: "开机自启动",
         hint: "登录 Windows 后自动启动",
+      },
+      {
+        key: "close-behavior",
+        label: "关闭窗口行为",
+        hint: "每次询问 / 最小化到托盘 / 退出并停止提醒",
       },
     ],
   },
@@ -309,6 +321,72 @@ function parseExportFile(raw: string): Entry[] {
     throw new Error("文件格式不正确：不是有效的便签导出文件");
   }
   return parsed.entries as Entry[];
+}
+
+/** 备份文件元数据（与后端 BackupMetadata 同构） */
+interface BackupMetadata {
+  kind: string;
+  programVersion: string;
+  schemaVersion: number;
+  backupAt: number;
+  backupAtText: string;
+  localDate: string;
+  sourcePath: string;
+  fileName: string;
+  sizeBytes: number;
+  sha256: string;
+  quickCheck: string;
+  integrityCheck: string;
+  requiredTables: boolean;
+  journalMode: string;
+  walHandled: string;
+  valid: boolean;
+}
+
+interface RestoreResult {
+  backup: BackupMetadata;
+  preRestoreSnapshot: string | null;
+  schemaVersion: number;
+}
+
+function describeBackup(meta: BackupMetadata): string {
+  const sizeKb = Math.max(1, Math.round(meta.sizeBytes / 1024));
+  const checks =
+    meta.valid && meta.requiredTables
+      ? "校验通过"
+      : `校验异常（quick=${meta.quickCheck}，integrity=${meta.integrityCheck}）`;
+  return `schema v${meta.schemaVersion}，${sizeKb} KB，SHA256 ${meta.sha256.slice(0, 12)}…，${checks}，WAL：${meta.walHandled}`;
+}
+
+/** 关闭窗口行为设置：每次询问 / 记住最小化到托盘 / 记住退出并停止提醒 */
+function CloseBehaviorSetting() {
+  const [value, setValue] = useState<CloseBehavior | "ask">(
+    () => loadCloseBehavior() ?? "ask"
+  );
+  return (
+    <div className="settings-item grid">
+      <div className="settings-item-main">
+        <span className="settings-item-label">关闭窗口行为</span>
+        <span className="settings-item-hint">
+          最小化到托盘会继续提醒；退出会停止全部提醒
+        </span>
+      </div>
+      <Select
+        size="small"
+        style={{ width: 128 }}
+        value={value}
+        onChange={(next: CloseBehavior | "ask") => {
+          setValue(next);
+          saveCloseBehavior(next === "ask" ? null : next);
+        }}
+        options={[
+          { value: "ask", label: "每次询问" },
+          { value: "tray", label: "最小化到托盘" },
+          { value: "exit", label: "退出并停止提醒" },
+        ]}
+      />
+    </div>
+  );
 }
 
 /**
@@ -821,7 +899,7 @@ export function SettingsDialog({
     }
   };
 
-  /** 备份数据库：完整复制 SQLite 文件（仅桌面环境） */
+  /** 备份数据库：VACUUM INTO 一致性快照 + 完整性校验 + 元数据，仅桌面环境 */
   const handleBackupDb = async () => {
     setBusy(true);
     setDataStatus("");
@@ -836,8 +914,16 @@ export function SettingsDialog({
         filters: [{ name: "SQLite", extensions: ["db"] }],
       });
       if (!dest) return;
-      await invoke("backup_db", { destPath: dest });
-      setDataStatus(`数据库已备份到 ${dest}`);
+      const meta = await invoke<BackupMetadata>("backup_db", {
+        destPath: dest,
+      });
+      if (!meta.valid || !meta.requiredTables) {
+        setDataStatus(
+          `备份文件未通过校验，请勿用于恢复：${describeBackup(meta)}`
+        );
+        return;
+      }
+      setDataStatus(`数据库已备份到 ${dest}（${describeBackup(meta)}）`);
     } catch (error) {
       setDataStatus(
         `备份失败：${error instanceof Error ? error.message : String(error)}`
@@ -847,7 +933,7 @@ export function SettingsDialog({
     }
   };
 
-  /** 恢复数据库：用备份文件覆盖当前 SQLite，重启后生效（仅桌面环境） */
+  /** 恢复数据库：先落盘并关闭连接，后端校验 + 恢复前快照 + 原子替换，失败自动回退 */
   const handleRestoreDb = async () => {
     setBusy(true);
     setDataStatus("");
@@ -863,8 +949,29 @@ export function SettingsDialog({
         filters: [{ name: "SQLite", extensions: ["db"] }],
       });
       if (!picked || Array.isArray(picked)) return;
-      await invoke("restore_db", { srcPath: picked });
-      setDataStatus("数据库已恢复，重启应用后生效");
+      const saved = await flushActiveEditor();
+      if (!saved) {
+        setDataStatus("恢复已取消：当前便签尚未保存，请先处理保存失败");
+        return;
+      }
+      await closeDatabase();
+      try {
+        const result = await invoke<RestoreResult>("restore_db", {
+          srcPath: picked,
+        });
+        resetDatabaseCache();
+        await useEntryStore.getState().loadAll();
+        setDataStatus(
+          `数据库已恢复（schema v${result.schemaVersion}，${describeBackup(
+            result.backup
+          )}）；恢复前快照：${result.preRestoreSnapshot ?? "无"}`
+        );
+      } catch (error) {
+        // 恢复失败时后端已回退原库：重新打开连接并重载，界面不留在空数据状态
+        resetDatabaseCache();
+        await useEntryStore.getState().retryLoad().catch(() => undefined);
+        throw error;
+      }
     } catch (error) {
       setDataStatus(
         `恢复失败：${error instanceof Error ? error.message : String(error)}`
@@ -1021,6 +1128,8 @@ export function SettingsDialog({
             />
           </div>
         );
+      case "close-behavior":
+        return <CloseBehaviorSetting />;
       case "export":
         return (
           <div className="settings-item grid">
@@ -1065,7 +1174,7 @@ export function SettingsDialog({
             <div className="settings-item-main">
               <span className="settings-item-label">备份数据库</span>
               <span className="settings-item-hint">
-                完整复制 SQLite 数据库文件（桌面版）
+                生成一致性快照并校验（含 SHA256 与元数据），桌面版
               </span>
             </div>
             <button
@@ -1084,17 +1193,26 @@ export function SettingsDialog({
             <div className="settings-item-main">
               <span className="settings-item-label">恢复数据库</span>
               <span className="settings-item-hint">
-                用备份覆盖当前数据库，重启后生效
+                校验备份后原子替换；失败自动回退，恢复前自动建快照
               </span>
             </div>
-            <button
-              type="button"
-              className="data-action-btn danger w-25"
+            <Popconfirm
+              title="从备份恢复数据库？"
+              description="将关闭当前数据库连接，先创建恢复前快照，再用备份覆盖；校验或替换失败会自动回退。"
+              okText="恢复"
+              cancelText="取消"
+              okButtonProps={{ danger: true }}
               disabled={busy}
-              onClick={() => void handleRestoreDb()}
+              onConfirm={() => void handleRestoreDb()}
             >
-              恢复
-            </button>
+              <button
+                type="button"
+                className="data-action-btn danger w-25"
+                disabled={busy}
+              >
+                恢复
+              </button>
+            </Popconfirm>
           </div>
         );
       case "tags":

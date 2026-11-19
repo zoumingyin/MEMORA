@@ -18,7 +18,8 @@ export interface EntryRepository {
   listAll(): Promise<Entry[]>
   listByKind(kind: EntryKind): Promise<Entry[]>
   create(kind: EntryKind, input: NewEntryInput): Promise<Entry>
-  update(id: string, patch: Partial<Entry>): Promise<void>
+  /** 乐观并发更新：仅当数据库版本等于 expectedVersion 时写入，并返回写入后的最新条目 */
+  update(id: string, patch: Partial<Entry>, expectedVersion: number): Promise<Entry>
   /** 彻底删除（硬删除，仅废纸篓内部使用；常规删除请走 moveToTrash） */
   remove(id: string): Promise<void>
   /** 废纸篓：列出全部软删除条目 */
@@ -32,11 +33,16 @@ export interface EntryRepository {
   /** 清空废纸篓（彻底删除全部软删除条目） */
   emptyTrash(): Promise<void>
   /** 标记提醒已通知，避免重复弹窗 */
-  markNotified(id: string): Promise<void>
+  markNotified(id: string, expectedVersion: number): Promise<Entry>
   /** 标记某条提醒下的单个闹钟已通知（按闹钟 id） */
-  markAlarmNotified(entryId: string, alarmId: string): Promise<void>
+  markAlarmNotified(entryId: string, alarmId: string, expectedVersion: number): Promise<Entry>
   /** 稍后提醒：把单个闹钟推到新的触发时间并重置已通知状态 */
-  snoozeAlarm(entryId: string, alarmId: string, remindAt: number): Promise<void>
+  snoozeAlarm(
+    entryId: string,
+    alarmId: string,
+    remindAt: number,
+    expectedVersion: number,
+  ): Promise<Entry>
   /** 预留：取出待同步条目 */
   listPendingSync(): Promise<Entry[]>
   /** 预留：同步完成后批量标记 */
@@ -149,6 +155,7 @@ export function rowToEntry(row: EntryRow): Entry {
     content: row.content ?? '',
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    version: row.version ?? 1,
     syncStatus: row.sync_status,
     tags: parseTags(row.tags),
     color: parsePaperColor(row.color),

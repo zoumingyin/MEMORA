@@ -23,6 +23,7 @@ import {
   describeAlarm,
 } from './reminderAlarms'
 import { createDeleteProposal, finishDeleteProposal } from './deleteProposals'
+import { isEntryWriteError } from '../repository/errors'
 import {
   createAlarmSelection,
   pendingAlarmCandidates,
@@ -74,7 +75,11 @@ export interface AgentToolEnvironment {
   now: () => number
   listEntries: () => Entry[]
   addEntry: (input: NewEntryInput, kind: EntryKind) => Promise<Entry | null>
-  updateEntry: (id: string, patch: Partial<Entry>) => Promise<void>
+  updateEntry: (
+    id: string,
+    patch: Partial<Entry>,
+    expectedVersion?: number,
+  ) => Promise<unknown>
 }
 
 export type ToolPermission = 'none' | 'read' | 'write'
@@ -993,8 +998,22 @@ async function updateEntry(
   if (changes.length === 0) return toolError('没有产生任何有效修改')
 
   try {
-    await env.updateEntry(entry.id, patch as Partial<Entry>)
-  } catch {
+    await env.updateEntry(entry.id, patch as Partial<Entry>, entry.version)
+  } catch (error) {
+    if (isEntryWriteError(error) && error.code === 'conflict') {
+      const latest = error.latest
+      return toolError(
+        `修改未执行：便签「${entryTitle(entry)}」已被其他操作更新` +
+          `${latest ? `（当前版本 ${latest.version}）` : ''}。请重新读取最新内容后再修改。`,
+        failureFor('business_execution_failed'),
+      )
+    }
+    if (isEntryWriteError(error) && error.code === 'not_found') {
+      return toolError(
+        `修改未执行：便签「${entryTitle(entry)}」已被删除。`,
+        failureFor('target_not_found'),
+      )
+    }
     // 写入已提交但异常中断：不能断言失败，更不能自动重放相同修改
     scope.uncertainEntryIds.add(entry.id)
     return toolUnknown(

@@ -1,4 +1,5 @@
 import type { AlarmItem, Entry, EntryKind, NewEntryInput, TodoItem } from '../types/entry'
+import { EntryWriteError } from './errors'
 import { todoItemsFromTexts, type EntryRepository } from './repository'
 
 const STORAGE_KEY = 'bianqian.entries.v1'
@@ -7,13 +8,17 @@ function loadAll(): Entry[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
     const entries = raw ? (JSON.parse(raw) as Entry[]) : []
-    return entries.map((entry) => {
+    return entries.map((rawEntry) => {
+      let entry: Entry = {
+        ...rawEntry,
+        version: typeof rawEntry.version === 'number' ? rawEntry.version : 1,
+      }
       if (entry.kind === 'todo' && !Array.isArray(entry.items)) {
-        return { ...entry, items: [] as TodoItem[] }
+        entry = { ...entry, items: [] as TodoItem[] }
       }
       // 兼容旧数据：提醒无闹钟清单时收敛为一条 legacy 闹钟，保持原触发时间
       if (entry.kind === 'reminder' && !Array.isArray(entry.alarms)) {
-        return {
+        entry = {
           ...entry,
           alarms: [
             {
@@ -28,7 +33,7 @@ function loadAll(): Entry[] {
       }
       // 兼容旧数据：无标签时补空数组
       if (!Array.isArray(entry.tags)) {
-        return { ...entry, tags: [] as string[] }
+        entry = { ...entry, tags: [] as string[] }
       }
       return entry
     })
@@ -66,6 +71,7 @@ export class MemoryEntryRepository implements EntryRepository {
       content,
       createdAt: now,
       updatedAt: now,
+      version: 1,
       syncStatus: 'pending' as const,
       tags: input.tags ?? [],
     }
@@ -102,12 +108,22 @@ export class MemoryEntryRepository implements EntryRepository {
     return entry
   }
 
-  async update(id: string, patch: Partial<Entry>): Promise<void> {
+  async update(id: string, patch: Partial<Entry>, expectedVersion: number): Promise<Entry> {
     const entries = loadAll()
     const index = entries.findIndex((entry) => entry.id === id)
-    if (index === -1) return
+    if (index === -1) {
+      throw new EntryWriteError('not_found', '条目不存在或已被删除')
+    }
     const current = entries[index]
+    if (current.version !== expectedVersion) {
+      throw new EntryWriteError(
+        'conflict',
+        '条目已在其他窗口被修改，请先查看最新版本',
+        current,
+      )
+    }
     const updatedAt = Date.now()
+    const nextVersion = current.version + 1
     let next: Entry
 
     if (current.kind === 'note' || current.kind === 'draw') {
@@ -119,6 +135,7 @@ export class MemoryEntryRepository implements EntryRepository {
         color: patch.color ?? current.color,
         paper: patch.paper ?? current.paper,
         updatedAt,
+        version: nextVersion,
       }
     } else if (current.kind === 'todo') {
       const hasItems = 'items' in patch && Array.isArray(patch.items)
@@ -137,6 +154,7 @@ export class MemoryEntryRepository implements EntryRepository {
         color: patch.color ?? current.color,
         paper: patch.paper ?? current.paper,
         updatedAt,
+        version: nextVersion,
         items,
         done,
         completedAt: done ? current.completedAt ?? Date.now() : null,
@@ -156,6 +174,7 @@ export class MemoryEntryRepository implements EntryRepository {
         color: patch.color ?? current.color,
         paper: patch.paper ?? current.paper,
         updatedAt,
+        version: nextVersion,
         alarms,
         remindAt: hasAlarms
           ? alarms.length > 0
@@ -177,6 +196,7 @@ export class MemoryEntryRepository implements EntryRepository {
 
     entries[index] = next
     saveAll(entries)
+    return next
   }
 
   async remove(id: string): Promise<void> {
@@ -195,6 +215,7 @@ export class MemoryEntryRepository implements EntryRepository {
     const target = entries.find((entry) => entry.id === id)
     if (!target) return
     target.deletedAt = Date.now()
+    target.version += 1
     saveAll(entries)
   }
 
@@ -203,6 +224,7 @@ export class MemoryEntryRepository implements EntryRepository {
     const target = entries.find((entry) => entry.id === id)
     if (!target) return
     target.deletedAt = null
+    target.version += 1
     saveAll(entries)
   }
 
@@ -214,41 +236,55 @@ export class MemoryEntryRepository implements EntryRepository {
     saveAll(loadAll().filter((entry) => entry.deletedAt == null))
   }
 
-  async markNotified(id: string): Promise<void> {
-    const entries = loadAll()
-    const target = entries.find((entry) => entry.id === id)
-    if (target && target.kind === 'reminder') {
-      target.notified = true
-      saveAll(entries)
-    }
+  async markNotified(id: string, expectedVersion: number): Promise<Entry> {
+    return this.update(id, { kind: 'reminder', notified: true } as Partial<Entry>, expectedVersion)
   }
 
-  async markAlarmNotified(entryId: string, alarmId: string): Promise<void> {
-    const entries = loadAll()
-    const target = entries.find((entry) => entry.id === entryId)
-    if (!target || target.kind !== 'reminder') return
-    const alarms = target.alarms.map((alarm) =>
+  async markAlarmNotified(
+    entryId: string,
+    alarmId: string,
+    expectedVersion: number,
+  ): Promise<Entry> {
+    const current = loadAll().find((entry) => entry.id === entryId)
+    if (!current || current.kind !== 'reminder') {
+      throw new EntryWriteError('not_found', '提醒条目不存在或已被删除')
+    }
+    const alarms = current.alarms.map((alarm) =>
       alarm.id === alarmId && !alarm.notified ? { ...alarm, notified: true } : alarm,
     )
-    target.alarms = alarms
-    if (alarms.length > 0 && alarms.every((alarm) => alarm.notified)) target.notified = true
-    saveAll(entries)
+    const allNotified = alarms.length > 0 && alarms.every((alarm) => alarm.notified)
+    return this.update(
+      entryId,
+      {
+        kind: 'reminder',
+        alarms,
+        notified: allNotified ? true : current.notified,
+      } as Partial<Entry>,
+      expectedVersion,
+    )
   }
 
-  async snoozeAlarm(entryId: string, alarmId: string, remindAt: number): Promise<void> {
-    const entries = loadAll()
-    const target = entries.find((entry) => entry.id === entryId)
-    if (!target || target.kind !== 'reminder') return
-    target.alarms = target.alarms.map((alarm) =>
-      alarm.id === alarmId ? { ...alarm, remindAt, notified: false } : alarm,
+  async snoozeAlarm(
+    entryId: string,
+    alarmId: string,
+    remindAt: number,
+    expectedVersion: number,
+  ): Promise<Entry> {
+    const current = loadAll().find((entry) => entry.id === entryId)
+    if (!current || current.kind !== 'reminder') {
+      throw new EntryWriteError('not_found', '提醒条目不存在或已被删除')
+    }
+    const alarms = current.alarms.map((alarm) =>
+      alarm.id === alarmId
+        ? { ...alarm, remindAt, notified: false, lastDeliveryStatus: undefined }
+        : alarm,
     )
-    const pending = target.alarms.filter((alarm) => !alarm.notified)
-    target.remindAt = pending.length
-      ? Math.min(...pending.map((alarm) => alarm.remindAt))
-      : Math.min(...target.alarms.map((alarm) => alarm.remindAt))
-    target.notified =
-      target.alarms.length > 0 && target.alarms.every((alarm) => alarm.notified)
-    saveAll(entries)
+    const allNotified = alarms.length > 0 && alarms.every((alarm) => alarm.notified)
+    return this.update(
+      entryId,
+      { kind: 'reminder', alarms, notified: allNotified } as Partial<Entry>,
+      expectedVersion,
+    )
   }
 
   async listPendingSync(): Promise<Entry[]> {

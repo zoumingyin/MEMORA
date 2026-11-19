@@ -10,6 +10,7 @@ import { flushSync } from "react-dom";
 import { currentMonitor, getCurrentWindow } from "@tauri-apps/api/window";
 import { PhysicalPosition, PhysicalSize } from "@tauri-apps/api/dpi";
 import { emitTo, listen } from "@tauri-apps/api/event";
+import { Modal } from "antd";
 import {
   ArrowLeftOutlined,
   CloseOutlined,
@@ -20,6 +21,7 @@ import {
   NOTE_EDIT_W,
   NOTE_WINDOW_OPEN_EVENT,
   NOTE_WINDOW_PATCH_EVENT,
+  NOTE_WINDOW_PATCH_RESULT_EVENT,
   NOTE_WINDOW_PING_EVENT,
   NOTE_WINDOW_READY_EVENT,
   NOTE_WINDOW_REMOVE_EVENT,
@@ -27,6 +29,8 @@ import {
   NOTE_WINDOW_PREFIX,
   type NoteWindowSnapshot,
 } from "../window/noteWindow";
+import { EntryWriteError, type EntryWriteErrorCode } from "../repository/errors";
+import { flushActiveEditor } from "../editor/editorRegistry";
 import { useNow } from "../hooks/useNow";
 import { ENTRY_KIND_COLOR } from "../utils/entryLabels";
 import { paperTintHex } from "../utils/paper";
@@ -237,6 +241,17 @@ export function NoteWindow() {
   const editRootRef = useRef<HTMLDivElement | null>(null);
   // 最近一次同步的条目数据：编辑网关 getEntry 供 DetailForm flush 对比 patch
   const lastSyncedRef = useRef<Entry | null>(null);
+  // 在途 patch 请求：主窗口确认落盘后才算保存成功
+  const pendingPatchesRef = useRef(
+    new Map<
+      string,
+      {
+        resolve: (entry: Entry) => void;
+        reject: (error: Error) => void;
+        timer: number;
+      }
+    >()
+  );
 
   /**
    * 展开动画：窗口 setSize 是瞬时的，用内容可见区域从展示态卡片大小裁切长大。
@@ -298,9 +313,11 @@ export function NoteWindow() {
     }
   };
 
-  /** 返回展示态：镜像收起动画 → 缩窗 → 同帧切回卡片，与展开完全对称 */
+  /** 返回展示态：先落盘，再镜像收起动画 → 缩窗 → 同帧切回卡片，与展开完全对称 */
   const exitEdit = async (): Promise<void> => {
     if (switchingRef.current || mode === "view") return;
+    // 返回列表前落盘：保存失败不切视图，避免草稿在切换中被覆盖
+    if (!(await ensureSaved())) return;
     switchingRef.current = true;
     try {
       const el = editRootRef.current;
@@ -358,23 +375,52 @@ export function NoteWindow() {
     }
   };
 
+  /** 请求主窗口落盘：等待 patch-result 回执，超时或失败按写入错误处理 */
+  const requestPatch = (
+    id: string,
+    patch: Partial<Entry>,
+    expectedVersion: number
+  ): Promise<Entry> =>
+    new Promise<Entry>((resolve, reject) => {
+      const requestId = crypto.randomUUID();
+      const fail = (error: Error): void => {
+        const pending = pendingPatchesRef.current.get(requestId);
+        if (!pending) return;
+        window.clearTimeout(pending.timer);
+        pendingPatchesRef.current.delete(requestId);
+        reject(error);
+      };
+      const timer = window.setTimeout(() => {
+        pendingPatchesRef.current.delete(requestId);
+        reject(new EntryWriteError("io", "保存超时，请重试"));
+      }, 15000);
+      pendingPatchesRef.current.set(requestId, { resolve, reject, timer });
+      void emitTo("main", NOTE_WINDOW_PATCH_EVENT, {
+        id,
+        patch,
+        expectedVersion,
+        requestId,
+        windowLabel: getCurrentWindow().label,
+      }).catch(() => fail(new EntryWriteError("io", "无法连接主窗口，请重试")));
+    });
+
   // 编辑网关：DetailPane 的存盘通道改为事件回传主窗口（与主窗口 updateEntry 同语义）
   const gateway = {
     getEntry: (id: string): Entry | null =>
       lastSyncedRef.current?.id === id ? lastSyncedRef.current : null,
-    updateEntry: (id: string, patch: Partial<Entry>): void => {
-      void emitTo("main", NOTE_WINDOW_PATCH_EVENT, { id, patch }).catch(
-        () => undefined
-      );
-    },
-    toggleReminderDone: (id: string): void => {
+    updateEntry: (
+      id: string,
+      patch: Partial<Entry>,
+      expectedVersion: number
+    ): Promise<Entry> => requestPatch(id, patch, expectedVersion),
+    toggleReminderDone: async (id: string): Promise<void> => {
       const current = lastSyncedRef.current;
       if (!current || current.id !== id || current.kind !== "reminder") return;
       const nextDone = !current.done;
       // 与主窗口 toggleReminderDone 同语义：已处理 = 全部闹钟一并标记
-      void emitTo("main", NOTE_WINDOW_PATCH_EVENT, {
+      await requestPatch(
         id,
-        patch: {
+        {
           done: nextDone,
           notified: nextDone,
           alarms: current.alarms.map((alarm) => ({
@@ -382,9 +428,37 @@ export function NoteWindow() {
             notified: nextDone,
           })),
         },
-      }).catch(() => undefined);
+        current.version
+      );
     },
     knownTags,
+  };
+
+  /** 关闭前落盘：有未保存内容或保存失败时留在窗口内提示，不静默丢内容 */
+  const ensureSaved = async (): Promise<boolean> => {
+    try {
+      const saved = await flushActiveEditor();
+      if (!saved) {
+        Modal.error({
+          title: "便签尚未保存",
+          content: "保存失败，已保留编辑内容。请重试保存或稍后再关闭窗口。",
+        });
+        return false;
+      }
+      return true;
+    } catch (error) {
+      Modal.error({
+        title: "便签尚未保存",
+        content: error instanceof Error ? error.message : "保存失败，请重试",
+      });
+      return false;
+    }
+  };
+
+  /** 关闭小窗：先落盘，成功后才真正关闭 */
+  const closeSafely = async (): Promise<void> => {
+    if (!(await ensureSaved())) return;
+    await getCurrentWindow().close();
   };
 
   // 分类点缀色同步到 :root：antd 下拉/弹窗 portal 到 body，取不到卡片内联的 kind-* 类。
@@ -402,9 +476,10 @@ export function NoteWindow() {
     let detachOpen: (() => void) | null = null;
     let detachPing: (() => void) | null = null;
     let detachSync: (() => void) | null = null;
+    let detachResult: (() => void) | null = null;
 
     void (async () => {
-      const [unOpen, unPing, unSync] = await Promise.all([
+      const [unOpen, unPing, unSync, unResult] = await Promise.all([
         listen<NoteWindowSnapshot & { id: string }>(
           NOTE_WINDOW_OPEN_EVENT,
           (event) => {
@@ -429,27 +504,64 @@ export function NoteWindow() {
             setKnownTags(event.payload.knownTags);
           }
         ),
+        listen<{
+          requestId: string;
+          entry?: Entry;
+          code?: EntryWriteErrorCode;
+          message?: string;
+        }>(NOTE_WINDOW_PATCH_RESULT_EVENT, (event) => {
+          const payload = event.payload;
+          if (!payload?.requestId) return;
+          const pending = pendingPatchesRef.current.get(payload.requestId);
+          if (!pending) return;
+          window.clearTimeout(pending.timer);
+          pendingPatchesRef.current.delete(payload.requestId);
+          if (payload.entry) {
+            lastSyncedRef.current = payload.entry;
+            setEntry(payload.entry);
+          }
+          if (payload.code) {
+            pending.reject(
+              new EntryWriteError(
+                payload.code,
+                payload.message ?? "保存失败，请重试",
+                payload.entry ?? null
+              )
+            );
+          } else if (payload.entry) {
+            pending.resolve(payload.entry);
+          }
+        }),
       ]);
       if (disposed) {
         unOpen();
         unPing();
         unSync();
+        unResult();
         return;
       }
       detachOpen = unOpen;
       detachPing = unPing;
       detachSync = unSync;
+      detachResult = unResult;
       // 注册完监听即回报就绪（主窗口 open 流程会 ping 补齐竞态）
       await emitTo("main", NOTE_WINDOW_READY_EVENT, { id: entryId }).catch(
         () => undefined
       );
     })();
 
+    const pendingPatches = pendingPatchesRef.current;
     return () => {
       disposed = true;
       detachOpen?.();
       detachPing?.();
       detachSync?.();
+      detachResult?.();
+      for (const pending of pendingPatches.values()) {
+        window.clearTimeout(pending.timer);
+        pending.reject(new EntryWriteError("io", "窗口已关闭，保存中断"));
+      }
+      pendingPatches.clear();
     };
   }, [entryId]);
 
@@ -498,7 +610,7 @@ export function NoteWindow() {
               className="inline-flex h-[24px] w-[24px] items-center justify-center rounded-[6px] text-[11.5px] text-[var(--text-muted)] hover:bg-[var(--hover-fill)] hover:text-[var(--text)]"
               title="关闭小窗"
               aria-label="关闭小窗"
-              onClick={() => void getCurrentWindow().close()}
+              onClick={() => void closeSafely()}
             >
               <CloseOutlined />
             </button>
@@ -510,9 +622,13 @@ export function NoteWindow() {
               entry={entry}
               gateway={gateway}
               onRemove={(id) => {
-                void emitTo("main", NOTE_WINDOW_REMOVE_EVENT, { id }).catch(
-                  () => undefined
-                );
+                void (async () => {
+                  // 删除前先落盘，避免未保存草稿随条目一起丢失
+                  if (!(await ensureSaved())) return;
+                  await emitTo("main", NOTE_WINDOW_REMOVE_EVENT, {
+                    id,
+                  }).catch(() => undefined);
+                })();
               }}
             />
           </div>
@@ -580,7 +696,7 @@ export function NoteWindow() {
               aria-label="关闭小窗"
               onClick={(event) => {
                 event.stopPropagation();
-                void getCurrentWindow().close();
+                void closeSafely();
               }}
             >
               <CloseOutlined />

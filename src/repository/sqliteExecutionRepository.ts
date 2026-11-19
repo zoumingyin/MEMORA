@@ -1,4 +1,3 @@
-import Database from '@tauri-apps/plugin-sql'
 import type {
   AgentExecutionPage,
   AgentExecutionQuery,
@@ -14,12 +13,10 @@ import {
   normalizeExecutionQuery,
 } from '../services/executionHistory'
 import type { AgentExecutionRepository } from './agentExecutionRepository'
+import { getDatabase } from './db'
 
-let db: Database | null = null
-
-async function getDb(): Promise<Database> {
-  if (!db) db = await Database.load('sqlite:bianqian.db')
-  return db
+async function getDb() {
+  return getDatabase()
 }
 
 interface ExecutionRow {

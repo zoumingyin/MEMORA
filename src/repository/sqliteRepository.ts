@@ -1,14 +1,19 @@
-import Database from '@tauri-apps/plugin-sql'
+import type Database from '@tauri-apps/plugin-sql'
 import type { AlarmItem, Entry, EntryKind, EntryRow, NewEntryInput, TodoItem } from '../types/entry'
+import { EntryWriteError } from './errors'
+import { getDatabase } from './db'
 import { parseAlarms, rowToEntry, todoItemsFromTexts, type EntryRepository } from './repository'
 
-let db: Database | null = null
-
 async function getDb(): Promise<Database> {
-  if (!db) {
-    db = await Database.load('sqlite:bianqian.db')
-  }
-  return db
+  return getDatabase()
+}
+
+async function readEntry(database: Database, id: string): Promise<Entry | null> {
+  const rows = await database.select<EntryRow[]>(
+    'SELECT * FROM entries WHERE id = $1 LIMIT 1',
+    [id],
+  )
+  return rows.length > 0 ? rowToEntry(rows[0]) : null
 }
 
 /** 本地 SQLite 仓储实现，数据库文件位于 Tauri 应用数据目录 */
@@ -46,6 +51,7 @@ export class SqliteEntryRepository implements EntryRepository {
         content,
         createdAt: now,
         updatedAt: now,
+        version: 1,
         syncStatus: 'pending',
         tags,
       }
@@ -57,6 +63,7 @@ export class SqliteEntryRepository implements EntryRepository {
         content,
         createdAt: now,
         updatedAt: now,
+        version: 1,
         syncStatus: 'pending',
         done: false,
         completedAt: null,
@@ -78,6 +85,7 @@ export class SqliteEntryRepository implements EntryRepository {
         content,
         createdAt: now,
         updatedAt: now,
+        version: 1,
         syncStatus: 'pending',
         remindAt: defaultAlarm.remindAt,
         notified: false,
@@ -138,7 +146,7 @@ export class SqliteEntryRepository implements EntryRepository {
     return entry
   }
 
-  async update(id: string, patch: Partial<Entry>): Promise<void> {
+  async update(id: string, patch: Partial<Entry>, expectedVersion: number): Promise<Entry> {
     const database = await getDb()
     const sets: string[] = []
     const params: (string | number | null)[] = []
@@ -190,10 +198,30 @@ export class SqliteEntryRepository implements EntryRepository {
     pushField('updated_at', Date.now())
 
     params.push(id)
-    await database.execute(
-      `UPDATE entries SET ${sets.join(', ')} WHERE id = $${params.length}`,
+    const idIndex = params.length
+    params.push(expectedVersion)
+    const versionIndex = params.length
+    const result = await database.execute(
+      `UPDATE entries SET ${sets.join(', ')}, version = version + 1
+       WHERE id = $${idIndex} AND version = $${versionIndex}`,
       params,
     )
+    if (result.rowsAffected === 0) {
+      const latest = await readEntry(database, id)
+      if (!latest) {
+        throw new EntryWriteError('not_found', '条目不存在或已被删除')
+      }
+      throw new EntryWriteError(
+        'conflict',
+        '条目已在其他窗口被修改，请先查看最新版本',
+        latest,
+      )
+    }
+    const stored = await readEntry(database, id)
+    if (!stored) {
+      throw new EntryWriteError('not_found', '条目写入后无法回读')
+    }
+    return stored
   }
 
   async remove(id: string): Promise<void> {
@@ -211,16 +239,19 @@ export class SqliteEntryRepository implements EntryRepository {
 
   async moveToTrash(id: string): Promise<void> {
     const database = await getDb()
-    // 仅写 deleted_at，不改动 updated_at：恢复后保留原编辑时间
-    await database.execute('UPDATE entries SET deleted_at = $2 WHERE id = $1', [
-      id,
-      Date.now(),
-    ])
+    // 仅写 deleted_at，不改动 updated_at：恢复后保留原编辑时间；版本递增使旧编辑器写入失效
+    await database.execute(
+      'UPDATE entries SET deleted_at = $2, version = version + 1 WHERE id = $1',
+      [id, Date.now()],
+    )
   }
 
   async restore(id: string): Promise<void> {
     const database = await getDb()
-    await database.execute('UPDATE entries SET deleted_at = NULL WHERE id = $1', [id])
+    await database.execute(
+      'UPDATE entries SET deleted_at = NULL, version = version + 1 WHERE id = $1',
+      [id],
+    )
   }
 
   async purge(id: string): Promise<void> {
@@ -232,51 +263,68 @@ export class SqliteEntryRepository implements EntryRepository {
     await database.execute('DELETE FROM entries WHERE deleted_at IS NOT NULL')
   }
 
-  async markNotified(id: string): Promise<void> {
-    const database = await getDb()
-    await database.execute('UPDATE entries SET notified = 1, updated_at = $2 WHERE id = $1', [
-      id,
-      Date.now(),
-    ])
+  async markNotified(id: string, expectedVersion: number): Promise<Entry> {
+    return this.update(id, { kind: 'reminder', notified: true } as Partial<Entry>, expectedVersion)
   }
 
-  async markAlarmNotified(entryId: string, alarmId: string): Promise<void> {
+  async markAlarmNotified(
+    entryId: string,
+    alarmId: string,
+    expectedVersion: number,
+  ): Promise<Entry> {
     const database = await getDb()
     const rows = await database.select<Array<Pick<EntryRow, 'alarms' | 'notified'>>>(
       'SELECT alarms, notified FROM entries WHERE id = $1',
       [entryId],
     )
-    if (rows.length === 0) return
+    if (rows.length === 0) {
+      throw new EntryWriteError('not_found', '提醒条目不存在或已被删除')
+    }
     const alarms = parseAlarms(rows[0].alarms)
     const next = alarms.map((alarm) =>
       alarm.id === alarmId && !alarm.notified ? { ...alarm, notified: true } : alarm,
     )
     const allNotified = next.length > 0 && next.every((alarm) => alarm.notified)
-    await database.execute(
-      'UPDATE entries SET alarms = $2, notified = $3, updated_at = $4 WHERE id = $1',
-      [entryId, JSON.stringify(next), allNotified ? 1 : rows[0].notified, Date.now()],
+    return this.update(
+      entryId,
+      {
+        kind: 'reminder',
+        alarms: next,
+        notified: allNotified ? true : rows[0].notified === 1,
+      } as Partial<Entry>,
+      expectedVersion,
     )
   }
 
-  async snoozeAlarm(entryId: string, alarmId: string, remindAt: number): Promise<void> {
+  async snoozeAlarm(
+    entryId: string,
+    alarmId: string,
+    remindAt: number,
+    expectedVersion: number,
+  ): Promise<Entry> {
     const database = await getDb()
     const rows = await database.select<Array<Pick<EntryRow, 'alarms'>>>(
       'SELECT alarms FROM entries WHERE id = $1',
       [entryId],
     )
-    if (rows.length === 0) return
+    if (rows.length === 0) {
+      throw new EntryWriteError('not_found', '提醒条目不存在或已被删除')
+    }
     const alarms = parseAlarms(rows[0].alarms)
     const next = alarms.map((alarm) =>
-      alarm.id === alarmId ? { ...alarm, remindAt, notified: false } : alarm,
+      alarm.id === alarmId
+        ? { ...alarm, remindAt, notified: false, lastDeliveryStatus: undefined }
+        : alarm,
     )
-    const pending = next.filter((alarm) => !alarm.notified)
-    const nextDue = pending.length
-      ? Math.min(...pending.map((alarm) => alarm.remindAt))
-      : Math.min(...next.map((alarm) => alarm.remindAt))
     const allNotified = next.length > 0 && next.every((alarm) => alarm.notified)
-    await database.execute(
-      'UPDATE entries SET alarms = $2, remind_at = $3, notified = $4, updated_at = $5 WHERE id = $1',
-      [entryId, JSON.stringify(next), nextDue, allNotified ? 1 : 0, Date.now()],
+    return this.update(
+      entryId,
+      {
+        kind: 'reminder',
+        alarms: next,
+        notified: allNotified,
+      } as Partial<Entry>,
+      expectedVersion,
     )
   }
 

@@ -6,8 +6,10 @@ import {
 } from "react";
 import {
   App as AntdApp,
+  Alert,
   Button,
   Badge,
+  Checkbox,
   Modal,
   Drawer,
   Popconfirm,
@@ -20,7 +22,7 @@ import {
 } from "@ant-design/icons";
 import { Sparkles } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { emitTo, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useEntryStore } from "./store/useEntryStore";
 import { useWindowStore } from "./store/useWindowStore";
@@ -63,6 +65,7 @@ import {
 } from "./window/spotlightWindow";
 import {
   NOTE_WINDOW_PATCH_EVENT,
+  NOTE_WINDOW_PATCH_RESULT_EVENT,
   NOTE_WINDOW_REMOVE_EVENT,
   closeNoteWindow,
   getOpenNoteIds,
@@ -70,12 +73,20 @@ import {
   syncNoteWindow,
 } from "./window/noteWindow";
 import { isPseudoMaximized } from "./window/maximize";
+import {
+  loadCloseBehavior,
+  saveCloseBehavior,
+  type CloseBehavior,
+} from "./window/closeBehavior";
 import { toMinuteStart } from "./utils/format";
 import { ENTRY_KIND_COLOR, ENTRY_KIND_LABEL } from "./utils/entryLabels";
 import { startReminderScheduler } from "./reminder/scheduler";
 import { startSummaryScheduler } from "./services/dailySummary";
 import { isTauriRuntime } from "./repository";
-import type { Entry, EntryKind, NewEntryInput } from "./types/entry";
+import { resetDatabaseCache } from "./repository/db";
+import { EntryWriteError, isEntryWriteError } from "./repository/errors";
+import { flushActiveEditor } from "./editor/editorRegistry";
+import type { AlarmItem, Entry, EntryKind, NewEntryInput } from "./types/entry";
 import { TitleBar } from "./components/TitleBar";
 import { CategoryTabs } from "./components/CategoryTabs";
 import { SearchBar } from "./components/SearchBar";
@@ -171,6 +182,19 @@ export default function App() {
   const [createOpen, setCreateOpen] = useState(false);
   // 废纸篓视图：开启后左侧列表区域替换为 TrashPane（不持久化，重启回到列表）
   const [trashOpen, setTrashOpen] = useState(false);
+  // 数据库只读保护 / 加载失败：保留已有条目并显式提示，不伪装成空列表
+  const dbFault = useEntryStore((state) => state.dbFault);
+  const loadError = useEntryStore((state) => state.loadError);
+  const reminderIssues = useEntryStore((state) => state.reminderIssues);
+  // 点 X 的三选一（继续到托盘 / 退出并停止提醒 / 取消），记住后不再弹
+  const [closeRequestOpen, setCloseRequestOpen] = useState(false);
+  const [rememberClose, setRememberClose] = useState(true);
+  const [gateRetrying, setGateRetrying] = useState(false);
+  // 到期提醒汇总：启动后只弹一个汇总面板，避免多个置顶弹窗同时出现
+  const [overdueItems, setOverdueItems] = useState<
+    Array<{ entry: Entry; alarm: AlarmItem }>
+  >([]);
+  const overdueShownRef = useRef(false);
 
   // 主题由 useThemeStore 统一解析（浅色 / 深色 / 跟随系统），与背景透明度互不影响；
   // 颜色令牌全部走 CSS（data-theme），这里只按主题决定透明度保底值
@@ -190,6 +214,47 @@ export default function App() {
     : Math.max(opacity, 0.6);
   // AI 面板为覆盖层：保底更高的不透明衬底，避免背后列表文字透过玻璃干扰阅读
   const assistantAlpha = Math.max(chromeAlpha, 0.86);
+
+  // 点 X 的退出语义：先落盘，再按用户选择继续到托盘或退出；取消则什么都不做
+  const closeBusyRef = useRef(false);
+  const applyCloseBehavior = async (behavior: CloseBehavior): Promise<void> => {
+    if (closeBusyRef.current) return;
+    closeBusyRef.current = true;
+    try {
+      const saved = await flushActiveEditor();
+      if (!saved) {
+        message.error("当前便签尚未保存，已取消操作。请先处理保存失败。");
+        return;
+      }
+      if (behavior === "tray") {
+        await getCurrentWindow().hide();
+      } else {
+        await invoke("quit_app");
+      }
+    } catch (error) {
+      message.error(
+        error instanceof Error ? error.message : "保存失败，已取消操作"
+      );
+    } finally {
+      closeBusyRef.current = false;
+    }
+  };
+
+  const handleCloseRequested = async (): Promise<void> => {
+    const remembered = loadCloseBehavior();
+    if (remembered) {
+      await applyCloseBehavior(remembered);
+      return;
+    }
+    setRememberClose(true);
+    setCloseRequestOpen(true);
+  };
+
+  const handleCloseChoice = async (behavior: CloseBehavior): Promise<void> => {
+    if (rememberClose) saveCloseBehavior(behavior);
+    setCloseRequestOpen(false);
+    await applyCloseBehavior(behavior);
+  };
 
   // 分类主题色同步到 :root：下拉/弹窗等 portal 元素在 main 外，取不到 main 内联的 --kind-accent。
   // 计算逻辑与渲染层 kindClass 保持一致（显式选中 → 第一条兜底 → currentKind）
@@ -232,6 +297,23 @@ export default function App() {
     if (!initialized || !isTauriRuntime()) return;
     void restoreNoteWindows();
   }, [initialized]);
+
+  // 启动后到期提醒汇总：只弹一个面板列出全部已到期项，用户逐条查看 / 处理
+  useEffect(() => {
+    if (!initialized || overdueShownRef.current) return;
+    overdueShownRef.current = true;
+    const now = Date.now();
+    const items: Array<{ entry: Entry; alarm: AlarmItem }> = [];
+    for (const entry of entries) {
+      if (entry.kind !== "reminder" || entry.done) continue;
+      for (const alarm of entry.alarms) {
+        if (!alarm.notified && alarm.remindAt <= now) {
+          items.push({ entry, alarm });
+        }
+      }
+    }
+    if (items.length > 0) setOverdueItems(items);
+  }, [initialized, entries]);
 
   useEffect(() => {
     // 启动时加载本机条目 + 废纸篓计数（角标展示）
@@ -299,6 +381,7 @@ export default function App() {
     let detachNotePatch: () => void = () => undefined;
     let detachNoteRemove: () => void = () => undefined;
     let detachFocusShown: () => void = () => undefined;
+    let detachCloseRequest: () => void = () => undefined;
 
     // 收纳窄条态不渲染列表与弹窗：托盘 / 提醒唤起前先展开回普通窗口。
     // drawer 式展开：窄条先滑进边缘收起（同时保证撑窗瞬间上一帧全透明防闪），
@@ -505,13 +588,46 @@ export default function App() {
       spotlightJumpPromise.then((detach) => {
         detachSpotlightJump = detach;
       });
-      // 便签小窗内编辑回传：DetailPane 网关回传任意 patch，走统一 updateEntry 落盘
+      // 便签小窗内编辑回传：DetailPane 网关回传任意 patch，走统一 updateEntry 落盘；
+      // 主窗口落盘完成后按 requestId 回执，小窗只有收到成功结果才显示「已保存」
       const notePatchPromise = listen<{
         id: string;
         patch: Partial<Entry>;
+        expectedVersion?: number;
+        requestId?: string;
+        windowLabel?: string;
       }>(NOTE_WINDOW_PATCH_EVENT, (event) => {
-        const { id, patch } = event.payload;
-        void useEntryStore.getState().updateEntry(id, patch);
+        const { id, patch, expectedVersion, requestId, windowLabel } =
+          event.payload;
+        const target = windowLabel ?? `note-${id}`;
+        void (async () => {
+          try {
+            const stored = await useEntryStore
+              .getState()
+              .updateEntry(id, patch, expectedVersion);
+            if (requestId) {
+              await emitTo(target, NOTE_WINDOW_PATCH_RESULT_EVENT, {
+                requestId,
+                entry: stored,
+              }).catch(() => undefined);
+            }
+          } catch (error) {
+            const writeError = isEntryWriteError(error)
+              ? error
+              : new EntryWriteError(
+                  "io",
+                  error instanceof Error ? error.message : String(error)
+                );
+            if (requestId) {
+              await emitTo(target, NOTE_WINDOW_PATCH_RESULT_EVENT, {
+                requestId,
+                code: writeError.code,
+                message: writeError.message,
+                entry: writeError.latest ?? undefined,
+              }).catch(() => undefined);
+            }
+          }
+        })();
       });
       notePatchPromise.then((detach) => {
         detachNotePatch = detach;
@@ -520,11 +636,25 @@ export default function App() {
       const noteRemovePromise = listen<{ id: string }>(
         NOTE_WINDOW_REMOVE_EVENT,
         (event) => {
-          void useEntryStore.getState().moveToTrash(event.payload.id);
+          void useEntryStore
+            .getState()
+            .moveToTrash(event.payload.id)
+            .catch((error) => {
+              message.error(
+                error instanceof Error ? error.message : "移入废纸篓失败"
+              );
+            });
         }
       );
       noteRemovePromise.then((detach) => {
         detachNoteRemove = detach;
+      });
+      // 点 X / Alt+F4：Rust 只拦截并转发，由前端按用户选择继续到托盘或退出
+      const closeRequestPromise = listen("app:close-requested", () => {
+        void handleCloseRequested();
+      });
+      closeRequestPromise.then((detach) => {
+        detachCloseRequest = detach;
       });
       // 全局快捷键 Ctrl+Shift+Space：窗口可见且聚焦时隐藏；收纳窄条态改为展开
       const togglePromise = listen("global:toggle-window", () => {
@@ -676,6 +806,7 @@ export default function App() {
       detachSpotlightJump();
       detachNotePatch();
       detachNoteRemove();
+      detachCloseRequest();
       void hideSpotlightWindow();
     };
   }, []);
@@ -746,26 +877,61 @@ export default function App() {
     const input: NewEntryInput = { title: "", content: "" };
     if (kind === "reminder")
       input.remindAt = toMinuteStart(Date.now() + 3600_000);
-    const entry = await useEntryStore.getState().addEntry(input, kind);
-    setCreateOpen(false);
-    if (entry) {
-      setSelectedId(entry.id);
-      setDetailView(true);
+    try {
+      const entry = await useEntryStore.getState().addEntry(input, kind);
+      setCreateOpen(false);
+      if (entry) {
+        setSelectedId(entry.id);
+        setDetailView(true);
+      }
+    } catch (error) {
+      message.error(
+        error instanceof Error ? error.message : "新建便签失败，请重试"
+      );
+    }
+  };
+
+  /** 切换 / 离开当前条目之前落盘，失败时保留编辑内容并阻止切换 */
+  const guardUnsaved = async (): Promise<boolean> => {
+    try {
+      const saved = await flushActiveEditor();
+      if (!saved) {
+        message.error("当前便签尚未保存，已保留编辑内容，请先处理保存失败");
+        return false;
+      }
+      return true;
+    } catch (error) {
+      message.error(
+        error instanceof Error ? error.message : "当前便签保存失败"
+      );
+      return false;
     }
   };
 
   // 删除 = 移入废纸篓（软删除），可从废纸篓恢复
   const handleRemove = (id: string): void => {
-    setSelectedId(null);
-    setDetailView(false);
-    void moveToTrash(id);
+    void (async () => {
+      if (!(await guardUnsaved())) return;
+      try {
+        await moveToTrash(id);
+        setSelectedId(null);
+        setDetailView(false);
+      } catch (error) {
+        message.error(
+          error instanceof Error ? error.message : "移入废纸篓失败，请重试"
+        );
+      }
+    })();
   };
 
   // 打开废纸篓视图：拉取最新内容并退出详情
   const handleOpenTrash = (): void => {
-    setTrashOpen(true);
-    setDetailView(false);
-    void useEntryStore.getState().loadTrash();
+    void (async () => {
+      if (!(await guardUnsaved())) return;
+      setTrashOpen(true);
+      setDetailView(false);
+      void useEntryStore.getState().loadTrash();
+    })();
   };
 
   const handleCloseTrash = (): void => {
@@ -776,17 +942,28 @@ export default function App() {
     void useEntryStore
       .getState()
       .emptyTrash()
-      .then(() => message.success("废纸篓已清空"));
+      .then(() => message.success("废纸篓已清空"))
+      .catch((error) => {
+        message.error(
+          error instanceof Error ? error.message : "清空废纸篓失败，请重试"
+        );
+      });
   };
 
   // 窄窗口：点条目进入详情（宽窗口忽略 detailView，两栏同显）
   const handleSelect = (id: string): void => {
-    setSelectedId(id);
-    setDetailView(true);
+    void (async () => {
+      if (!(await guardUnsaved())) return;
+      setSelectedId(id);
+      setDetailView(true);
+    })();
   };
 
   const handleBackToList = (): void => {
-    setDetailView(false);
+    void (async () => {
+      if (!(await guardUnsaved())) return;
+      setDetailView(false);
+    })();
   };
 
   // 智能归整：撤销自由摆放，按当前排序（默认最近编辑）重新铺成整齐网格
@@ -794,6 +971,129 @@ export default function App() {
     clearWallPositions();
     message.success("已按最近编辑重新归整");
   };
+
+  const retryDbGate = async (): Promise<void> => {
+    setGateRetrying(true);
+    try {
+      resetDatabaseCache();
+      await invoke("db_gate_retry");
+      await useEntryStore.getState().retryLoad();
+    } catch (error) {
+      message.error(
+        error instanceof Error ? error.message : "重试连接数据库失败"
+      );
+    } finally {
+      setGateRetrying(false);
+    }
+  };
+
+  const handleOpenOverdue = (entry: Entry): void => {
+    setOverdueItems([]);
+    useEntryStore.getState().setFilter(entry.kind);
+    setSelectedId(entry.id);
+    setDetailView(true);
+  };
+
+  const handleConfirmOverdue = async (
+    item: { entry: Entry; alarm: AlarmItem }
+  ): Promise<void> => {
+    try {
+      await useEntryStore
+        .getState()
+        .confirmAlarm(item.entry.id, item.alarm.id);
+      setOverdueItems((items) =>
+        items.filter(
+          (current) =>
+            !(
+              current.entry.id === item.entry.id &&
+              current.alarm.id === item.alarm.id
+            )
+        )
+      );
+    } catch (error) {
+      message.error(
+        error instanceof Error ? error.message : "标记已处理失败，请重试"
+      );
+    }
+  };
+
+  const handleConfirmAllOverdue = async (): Promise<void> => {
+    const results = await Promise.allSettled(
+      overdueItems.map((item) =>
+        useEntryStore.getState().confirmAlarm(item.entry.id, item.alarm.id)
+      )
+    );
+    const failed = results.filter(
+      (result) => result.status === "rejected"
+    ).length;
+    setOverdueItems((items) =>
+      items.filter((_, index) => results[index]?.status === "rejected")
+    );
+    if (failed > 0) {
+      message.error(`${failed} 条提醒处理失败，已保留在汇总中，请重试`);
+    } else {
+      message.success("到期提醒已全部标记处理");
+    }
+  };
+
+  if (dbFault) {
+    return (
+      <main className="app-shell kind-note flex items-center justify-center p-6">
+        <div className="w-full max-w-[420px] rounded-[var(--memora-radius)] border border-solid border-[var(--border)] bg-[var(--card-bg)] p-5 text-[var(--text)] shadow-[var(--memora-shadow)]">
+          <h2 className="m-0 text-[15px] font-semibold">
+            数据库暂不可用，已进入只读保护
+          </h2>
+          <p className="mt-2 mb-1 text-[12px] leading-relaxed text-[var(--text-muted)]">
+            {dbFault.message ?? "数据库检查或迁移失败，为避免数据损坏已停止写入。"}
+          </p>
+          <p className="mt-0 mb-1 text-[11px] break-all text-[var(--text-muted)]">
+            数据库路径：{dbFault.dbPath}
+          </p>
+          {dbFault.preMigrationBackup && (
+            <p className="mt-0 mb-1 text-[11px] break-all text-[var(--text-muted)]">
+              迁移前备份：{dbFault.preMigrationBackup}
+            </p>
+          )}
+          <p className="mt-2 mb-3 text-[12px] leading-relaxed text-[var(--text-muted)]">
+            现有数据未被删除。可点击重试；若仍失败，请在设置 → 数据管理中恢复备份后重启应用。
+          </p>
+          <div className="flex items-center justify-end gap-2">
+            <Button
+              size="small"
+              loading={gateRetrying}
+              onClick={() => void retryDbGate()}
+            >
+              重试连接
+            </Button>
+          </div>
+        </div>
+      </main>
+    );
+  }
+
+  if (loadError && entries.length === 0) {
+    return (
+      <main className="app-shell kind-note flex items-center justify-center p-6">
+        <div className="w-full max-w-[420px] rounded-[var(--memora-radius)] border border-solid border-[var(--border)] bg-[var(--card-bg)] p-5 text-[var(--text)] shadow-[var(--memora-shadow)]">
+          <h2 className="m-0 text-[15px] font-semibold">本地便签读取失败</h2>
+          <p className="mt-2 mb-1 text-[12px] leading-relaxed text-[var(--text-muted)]">
+            {loadError.message}
+          </p>
+          <p className="mt-2 mb-3 text-[12px] leading-relaxed text-[var(--text-muted)]">
+            本地数据未被删除；可重试读取，或到 设置 → 数据管理 恢复备份后重启应用。
+          </p>
+          <div className="flex items-center justify-end gap-2">
+            <Button
+              size="small"
+              onClick={() => void useEntryStore.getState().retryLoad()}
+            >
+              重试
+            </Button>
+          </div>
+        </div>
+      </main>
+    );
+  }
 
   // 展开时 <main> 是重新挂载的，dock-in-* 动画随挂载自动播放一次，不需要计时器清理
   return (
@@ -819,6 +1119,47 @@ export default function App() {
         }
       >
         <TitleBar quickOpen={quickOpen} setQuickOpen={setQuickOpen} />
+        {loadError && (
+          <Alert
+            type="warning"
+            showIcon
+            closable
+            className="mx-2 mt-1 shrink-0"
+            message="本地数据可能不是最新"
+            description={loadError.message}
+            action={
+              <Button
+                size="small"
+                type="text"
+                onClick={() => void useEntryStore.getState().retryLoad()}
+              >
+                重试
+              </Button>
+            }
+          />
+        )}
+        {reminderIssues.length > 0 && (
+          <Alert
+            type="error"
+            showIcon
+            closable
+            className="mx-2 mt-1 shrink-0"
+            message={`${reminderIssues.length} 条提醒触达失败`}
+            description={reminderIssues
+              .slice(0, 2)
+              .map((issue) => issue.message)
+              .join("；")}
+            action={
+              <Button
+                size="small"
+                type="text"
+                onClick={() => useEntryStore.getState().clearReminderIssues()}
+              >
+                知道了
+              </Button>
+            }
+          />
+        )}
         <div
           key={modeAnimKey}
           className={`app-body${isNarrow ? " app-body-narrow" : ""}${
@@ -1045,6 +1386,98 @@ export default function App() {
         onClose={() => setCreateOpen(false)}
         onCreate={(kind) => void handleCreateWithKind(kind)}
       />
+      <Modal
+        open={overdueItems.length > 0}
+        title={`有 ${overdueItems.length} 条提醒已到期`}
+        closable
+        maskClosable={false}
+        onCancel={() => setOverdueItems([])}
+        footer={[
+          <Button key="later" onClick={() => setOverdueItems([])}>
+            稍后处理
+          </Button>,
+          <Button
+            key="all"
+            type="primary"
+            onClick={() => void handleConfirmAllOverdue()}
+          >
+            全部标记已处理
+          </Button>,
+        ]}
+      >
+        <div className="flex max-h-[360px] flex-col gap-2 overflow-y-auto">
+          {overdueItems.map(({ entry, alarm }) => (
+            <div
+              key={`${entry.id}:${alarm.id}`}
+              className="flex items-center justify-between gap-2 rounded-[var(--memora-radius-sm)] border border-solid border-[var(--border)] p-2"
+            >
+              <div className="min-w-0">
+                <div className="truncate text-[12.5px] font-medium">
+                  {entry.title || "提醒"}
+                </div>
+                <div className="text-[11px] text-[var(--text-muted)]">
+                  {new Date(alarm.remindAt).toLocaleString("zh-CN", {
+                    month: "2-digit",
+                    day: "2-digit",
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  })}
+                </div>
+              </div>
+              <div className="flex shrink-0 items-center gap-1">
+                <Button
+                  size="small"
+                  type="text"
+                  onClick={() => handleOpenOverdue(entry)}
+                >
+                  查看
+                </Button>
+                <Button
+                  size="small"
+                  onClick={() => void handleConfirmOverdue({ entry, alarm })}
+                >
+                  已处理
+                </Button>
+              </div>
+            </div>
+          ))}
+        </div>
+      </Modal>
+      <Modal
+        open={closeRequestOpen}
+        title="要退出 MEMORA 吗？"
+        closable
+        maskClosable={false}
+        onCancel={() => setCloseRequestOpen(false)}
+        footer={[
+          <Button key="cancel" onClick={() => setCloseRequestOpen(false)}>
+            取消
+          </Button>,
+          <Button
+            key="tray"
+            onClick={() => void handleCloseChoice("tray")}
+          >
+            最小化到托盘
+          </Button>,
+          <Button
+            key="exit"
+            type="primary"
+            onClick={() => void handleCloseChoice("exit")}
+          >
+            退出并停止提醒
+          </Button>,
+        ]}
+      >
+        <p className="mt-0 mb-3 text-[12px] leading-relaxed text-[var(--text-muted)]">
+          最小化到托盘会继续在后台运行，提醒仍会按时触发；退出将停止全部提醒。
+        </p>
+        <Checkbox
+          checked={rememberClose}
+          onChange={(event) => setRememberClose(event.target.checked)}
+        >
+          记住我的选择（可在设置中恢复询问）
+        </Checkbox>
+      </Modal>
     </>
   );
 }

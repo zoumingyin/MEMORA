@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
-import { Button, Checkbox, Input } from "antd";
+import { Button, Checkbox, Input, Modal } from "antd";
 import {
   ArrowLeftOutlined,
   BellOutlined,
@@ -22,7 +22,9 @@ import type {
 import { useNow } from "../hooks/useNow";
 import { formatRelative, formatShort } from "../utils/format";
 import { ENTRY_KIND_LABEL } from "../utils/entryLabels";
-import { alarmLoopIntervalMs } from "../reminder/scheduler";
+import { alarmLoopIntervalMs } from "../reminder/nextAlarm";
+import { isEntryWriteError } from "../repository/errors";
+import { registerActiveEditor } from "../editor/editorRegistry";
 import { paperTintHex, PAPER_COLORS, PAPER_STYLES } from "../utils/paper";
 import { AlarmEditorDialog } from "./AlarmEditorDialog";
 import { DoodleBoard } from "./DoodleBoard";
@@ -82,8 +84,13 @@ const SAVE_DEBOUNCE_MS = 400;
 export interface DetailEditGateway {
   /** 当前条目最新已同步数据（flush 时对比 patch 用，替代主窗口 store 查询） */
   getEntry: (id: string) => Entry | null;
-  updateEntry: (id: string, patch: Partial<Entry>) => void;
-  toggleReminderDone: (id: string) => void;
+  /** 写入并等待主窗口确认；失败抛出可识别的写入错误 */
+  updateEntry: (
+    id: string,
+    patch: Partial<Entry>,
+    expectedVersion: number
+  ) => Promise<Entry>;
+  toggleReminderDone: (id: string) => Promise<void>;
   /** 全部已知标签（标签 chips 候选池，替代从主窗口 entries 派生） */
   knownTags: string[];
 }
@@ -204,57 +211,180 @@ function DetailForm({ entry, onRemove, gateway }: DetailFormProps) {
     setCustomOpen(false);
   };
 
-  // flushRef 保存最新保存函数：每次渲染后由 effect 刷新，供防抖定时器与卸载兜底共用
-  const flushRef = useRef<() => void>(() => undefined);
-  useEffect(() => {
-    flushRef.current = () => {
-      // 网关模式读最近一次同步进来的条目数据，主窗口模式读 store
-      const current = gateway
+  // 保存状态机：未保存 / 保存中 / 已保存 / 保存失败；写入串行，失败保留草稿
+  const [saveState, setSaveState] = useState<
+    "saved" | "dirty" | "saving" | "error"
+  >("saved");
+  const [savedAt, setSavedAt] = useState<number | null>(entry.updatedAt);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [conflict, setConflict] = useState<Entry | null>(null);
+  const [conflictOpen, setConflictOpen] = useState(false);
+  const saveStateRef = useRef(saveState);
+  saveStateRef.current = saveState;
+  const draftRef = useRef({
+    title,
+    content,
+    tags,
+    items,
+    alarms,
+    color,
+    paper,
+  });
+  draftRef.current = { title, content, tags, items, alarms, color, paper };
+  const forceVersionRef = useRef<number | null>(null);
+  const saveLoopRef = useRef<Promise<boolean> | null>(null);
+  const queuedRef = useRef(false);
+
+  const getLatest = useCallback(
+    () =>
+      gateway
         ? gateway.getEntry(entry.id)
-        : useEntryStore.getState().entries.find((e) => e.id === entry.id);
-      if (!current) return;
+        : useEntryStore.getState().entries.find((e) => e.id === entry.id) ??
+          null,
+    [gateway, entry.id]
+  );
+
+  const buildPatch = useCallback(
+    (current: Entry): Partial<Entry> => {
+      const draft = draftRef.current;
       const patch: Record<string, unknown> = {};
-      // 未填标题时用分类名兜底：新建后直接离开也显示「待办 / 备忘 / 提醒 / 涂鸦」
-      const nextTitle = title.trim() || ENTRY_KIND_LABEL[entry.kind];
+      const nextTitle =
+        draft.title.trim() || ENTRY_KIND_LABEL[entry.kind];
       if (current.title !== nextTitle) patch.title = nextTitle;
-      // 待办与提醒的正文分别是子任务清单 / 闹钟清单，不再有备注文本框；备忘与涂鸦保留正文
       if (
         (current.kind === "note" || current.kind === "draw") &&
-        current.content !== content
+        current.content !== draft.content
       )
-        patch.content = content;
-      if (current.tags?.join("\u0000") !== tags.join("\u0000"))
-        patch.tags = tags;
-      if (current.color !== color) patch.color = color;
-      if (current.paper !== paper) patch.paper = paper;
+        patch.content = draft.content;
+      if (current.tags?.join("\u0000") !== draft.tags.join("\u0000"))
+        patch.tags = draft.tags;
+      if (current.color !== draft.color) patch.color = draft.color;
+      if (current.paper !== draft.paper) patch.paper = draft.paper;
       if (entry.kind === "todo" && current.kind === "todo") {
-        const prev = JSON.stringify(current.items ?? []);
-        if (prev !== JSON.stringify(items)) {
-          patch.items = items;
-          const allDone = items.length > 0 && items.every((item) => item.done);
+        if (JSON.stringify(current.items ?? []) !== JSON.stringify(draft.items)) {
+          patch.items = draft.items;
+          const allDone =
+            draft.items.length > 0 && draft.items.every((item) => item.done);
           if (current.done !== allDone) patch.done = allDone;
         }
       }
       if (entry.kind === "reminder" && current.kind === "reminder") {
-        const prev = JSON.stringify(current.alarms ?? []);
-        if (prev !== JSON.stringify(alarms)) {
-          patch.alarms = alarms;
+        if (JSON.stringify(current.alarms ?? []) !== JSON.stringify(draft.alarms)) {
+          patch.alarms = draft.alarms;
         }
       }
-      if (Object.keys(patch).length > 0) {
-        void updateEntry(entry.id, patch as Partial<Entry>);
-      }
-    };
-  });
+      return patch as Partial<Entry>;
+    },
+    [entry.kind]
+  );
 
-  // 输入停止 SAVE_DEBOUNCE_MS 后自动保存
+  const applyLatest = useCallback((latest: Entry): void => {
+    setTitle(latest.title);
+    setContent(latest.content);
+    setTags(latest.tags ?? []);
+    setColor(latest.color ?? "plain");
+    setPaper(latest.paper ?? "plain");
+    setItems(latest.kind === "todo" ? latest.items : []);
+    setAlarms(latest.kind === "reminder" ? latest.alarms : []);
+  }, []);
+
+  // 串行保存：同一时刻只有一次写入；期间的新改动排队，失败保留草稿并暴露错误
+  const flushRef = useRef<() => Promise<boolean>>(async () => true);
+  flushRef.current = async (): Promise<boolean> => {
+    queuedRef.current = true;
+    if (saveLoopRef.current) return saveLoopRef.current;
+    const loop = (async (): Promise<boolean> => {
+      let allOk = true;
+      while (queuedRef.current) {
+        queuedRef.current = false;
+        const current = getLatest();
+        if (!current) {
+          setSaveState("error");
+          setSaveError("条目已不存在，无法保存");
+          return false;
+        }
+        const patch = buildPatch(current);
+        if (Object.keys(patch).length === 0) {
+          setSaveState("saved");
+          setSaveError(null);
+          continue;
+        }
+        setSaveState("saving");
+        setSaveError(null);
+        const version = forceVersionRef.current ?? current.version;
+        forceVersionRef.current = null;
+        try {
+          const stored = await updateEntry(entry.id, patch, version);
+          setSavedAt(Date.now());
+          setSaveState("saved");
+          setConflict(null);
+          setConflictOpen(false);
+          // 保存期间又有输入：继续下一轮，绝不把旧快照当最终状态
+          const after = gateway ? gateway.getEntry(entry.id) : stored;
+          if (after && Object.keys(buildPatch(after)).length > 0) {
+            queuedRef.current = true;
+          }
+        } catch (error) {
+          allOk = false;
+          const latest = isEntryWriteError(error) ? error.latest : null;
+          if (latest) {
+            setConflict(latest);
+            setConflictOpen(true);
+            setSaveError("检测到其他窗口的更新，请选择处理方式");
+          } else {
+            setSaveError(
+              error instanceof Error ? error.message : String(error)
+            );
+          }
+          setSaveState("error");
+          break;
+        }
+      }
+      return allOk;
+    })();
+    saveLoopRef.current = loop.finally(() => {
+      saveLoopRef.current = null;
+    }) as Promise<boolean>;
+    return saveLoopRef.current;
+  };
+
+  // 登记给切换条目 / 关闭小窗的守卫：有未保存内容时先落盘
+  useEffect(
+    () =>
+      registerActiveEditor({
+        entryId: entry.id,
+        hasUnsaved: () => {
+          const current = getLatest();
+          if (!current) return false;
+          return (
+            saveStateRef.current === "error" ||
+            Object.keys(buildPatch(current)).length > 0
+          );
+        },
+        flush: () => flushRef.current(),
+        discard: () => {
+          setConflict(null);
+          setConflictOpen(false);
+          setSaveError(null);
+          setSaveState("saved");
+        },
+      }),
+    [entry.id, getLatest, buildPatch]
+  );
+
+  // 输入停止 SAVE_DEBOUNCE_MS 后自动保存；无差异时不显示未保存
   useEffect(() => {
-    const timer = window.setTimeout(() => flushRef.current(), SAVE_DEBOUNCE_MS);
+    const current = getLatest();
+    if (current && Object.keys(buildPatch(current)).length === 0) return;
+    setSaveState((prev) => (prev === "error" ? prev : "dirty"));
+    const timer = window.setTimeout(() => {
+      void flushRef.current();
+    }, SAVE_DEBOUNCE_MS);
     return () => window.clearTimeout(timer);
-  }, [title, content, tags, items, alarms, color, paper]);
+  }, [title, content, tags, items, alarms, color, paper, getLatest, buildPatch]);
 
   // 卸载（切换条目 / 关闭）时兜底保存未落盘的改动
-  useEffect(() => () => flushRef.current(), []);
+  useEffect(() => () => void flushRef.current(), []);
 
   // 待办完成度
   const doneCount = items.filter((item) => item.done).length;
@@ -684,6 +814,32 @@ function DetailForm({ entry, onRemove, gateway }: DetailFormProps) {
       </div>
 
       <div className="detail-actions">
+        <span
+          className={`save-indicator save-${saveState}`}
+          title={saveError ?? undefined}
+          role="status"
+          aria-live="polite"
+        >
+          {saveState === "saving" && "保存中…"}
+          {saveState === "dirty" && "未保存"}
+          {saveState === "error" && (
+            <button
+              type="button"
+              className="save-retry"
+              onClick={() => {
+                setSaveError(null);
+                setSaveState("dirty");
+                void flushRef.current();
+              }}
+            >
+              保存失败，重试
+            </button>
+          )}
+          {saveState === "saved" &&
+            (savedAt
+              ? `已保存 ${formatShort(savedAt)}`
+              : "已保存")}
+        </span>
         <span className="detail-meta bg-[var(--field)]! rounded-[8px] px-2 py-1">
           {(entry.kind === "note" || entry.kind === "draw") &&
             `更新于 ${formatShort(entry.updatedAt)}`}
@@ -735,6 +891,66 @@ function DetailForm({ entry, onRemove, gateway }: DetailFormProps) {
           />
         </div>
       </div>
+
+      <Modal
+        open={conflictOpen && !!conflict}
+        title="检测到其他窗口的更新"
+        onCancel={() => setConflictOpen(false)}
+        footer={null}
+        width={480}
+        destroyOnHidden
+      >
+        <p className="text-[12px] leading-relaxed text-[var(--text-muted)]">
+          这条便签已在其他窗口被修改，你的改动尚未保存。为避免静默覆盖，请选择处理方式。
+        </p>
+        {conflict && (
+          <div className="mt-2 rounded-[8px] border border-solid border-[var(--border)] bg-[var(--field)] p-2 text-[12px]">
+            <div className="font-medium text-[var(--text)]">
+              最新标题：{conflict.title || "（无标题）"}
+            </div>
+            {(conflict.kind === "note" || conflict.kind === "draw") && (
+              <div className="mt-1 max-h-24 overflow-y-auto whitespace-pre-wrap text-[var(--text-muted)]">
+                {conflict.content.slice(0, 600) || "（无正文）"}
+              </div>
+            )}
+          </div>
+        )}
+        <div className="mt-3 flex flex-wrap justify-end gap-2">
+          <Button
+            size="small"
+            onClick={() => {
+              if (!conflict) return;
+              applyLatest(conflict);
+              setConflict(null);
+              setConflictOpen(false);
+              setSaveError(null);
+              setSaveState("saved");
+            }}
+          >
+            使用最新版本（放弃我的）
+          </Button>
+          <Button
+            size="small"
+            onClick={() => setConflictOpen(false)}
+          >
+            稍后处理
+          </Button>
+          <Button
+            type="primary"
+            size="small"
+            onClick={() => {
+              if (!conflict) return;
+              forceVersionRef.current = conflict.version;
+              setConflict(null);
+              setConflictOpen(false);
+              setSaveState("dirty");
+              void flushRef.current();
+            }}
+          >
+            覆盖为我的内容
+          </Button>
+        </div>
+      </Modal>
     </div>
   );
 }

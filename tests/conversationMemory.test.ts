@@ -315,6 +315,7 @@ describe('对话记忆：实体与真实数据刷新', () => {
           updatedAt: 1,
           syncStatus: 'pending',
           tags: [],
+          version: 1,
         },
       ],
     })

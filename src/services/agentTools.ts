@@ -28,7 +28,8 @@ export function createAgentToolEnv(): AgentToolEnvironment {
     now: () => Date.now(),
     listEntries: () => useEntryStore.getState().entries,
     addEntry: (input, kind) => useEntryStore.getState().addEntry(input, kind),
-    updateEntry: (id, patch) => useEntryStore.getState().updateEntry(id, patch),
+    updateEntry: (id, patch, expectedVersion) =>
+      useEntryStore.getState().updateEntry(id, patch, expectedVersion),
   }
 }
 

@@ -12,6 +12,8 @@ export interface BaseEntry {
   content: string
   createdAt: number
   updatedAt: number
+  /** 乐观并发版本：每次成功写入 +1，写入须携带期望版本 */
+  version: number
   syncStatus: SyncStatus
   /** 标签（本地过滤用，JSON 存于 entries.tags 列） */
   tags: string[]
@@ -93,6 +95,16 @@ export interface AlarmItem {
   intervalUnit?: AlarmIntervalUnit
   /** 循环提醒的间隔毫秒数（mode='loop' 时生效；支持「X 时 Y 分」复合间隔，优先于 interval+intervalUnit） */
   intervalMs?: number
+  /** 最近一次触达尝试时间（毫秒）：失败重试冷却与诊断用 */
+  lastAttemptAt?: number
+  /** 最近一次触达结果：delivered=已呈现，failed=触达失败 */
+  lastDeliveryStatus?: 'delivered' | 'failed'
+  /** 触达失败原因（不含密钥与完整正文） */
+  lastDeliveryError?: string
+  /** 本次到期的稳定标识：用于区分同一闹钟的不同周期 */
+  occurrenceKey?: string
+  /** 已自动呈现次数（崩溃恢复观测用，不承诺 exactly-once） */
+  presentationCount?: number
 }
 
 /** 提醒：内含多个可独立设置的闹钟，每个闹钟有自己的时间、提醒模式与提醒方式 */
@@ -119,6 +131,8 @@ export interface EntryRow {
   notified: number
   created_at: number
   updated_at: number
+  /** 迁移 10 新增；旧数据库迁移前由仓储按 1 兜底 */
+  version: number | null
   sync_status: SyncStatus
   /** 待办子任务清单（JSON 数组，非待办为 '[]'） */
   items: string | null

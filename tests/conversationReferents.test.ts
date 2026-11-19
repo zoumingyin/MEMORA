@@ -73,6 +73,7 @@ function entryOf(reference: { id: string; kind: Entry['kind']; title: string }):
     updatedAt: 1,
     syncStatus: 'pending',
     tags: [],
+    version: 1,
   } as Entry
 }
 
