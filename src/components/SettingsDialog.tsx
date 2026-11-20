@@ -1088,14 +1088,17 @@ export function SettingsDialog({
       case "shortcut":
         return (
           <div className="flex flex-col">
+            <div className="mb-1 mt-1 text-[11px] font-600 text-[var(--text-muted)]">
+              全局快捷键 · 任何应用下生效
+            </div>
             <div className="settings-item grid">
               <div className="settings-item-main">
                 <span className="settings-item-label">显示 / 隐藏主窗口</span>
                 <span className="settings-item-hint">
-                  窗口隐藏时按下可恢复；收纳窄条态下按下会展开
+                  窗口隐藏时按下可恢复；可见且聚焦时隐藏；收纳窄条态下展开
                 </span>
               </div>
-              <span className="shrink-0 whitespace-nowrap rounded-md border border-[var(--border)]  font-mono text-[11px] text-[var(--text-muted)]">
+              <span className="shrink-0 whitespace-nowrap rounded-md border border-[var(--border)] px-2 py-1 font-mono text-[11px] text-[var(--text-muted)]">
                 Ctrl + Shift + Space
               </span>
             </div>
@@ -1103,11 +1106,112 @@ export function SettingsDialog({
               <div className="settings-item-main">
                 <span className="settings-item-label">快速记录</span>
                 <span className="settings-item-hint">
-                  唤起快速记录窗口并读取剪贴板
+                  唤起快速记录窗口并读取剪贴板预填
                 </span>
               </div>
               <span className="shrink-0 whitespace-nowrap rounded-md border border-[var(--border)] px-2 py-1 font-mono text-[11px] text-[var(--text-muted)]">
                 Ctrl + Shift + N
+              </span>
+            </div>
+            <div className="settings-item grid">
+              <div className="settings-item-main">
+                <span className="settings-item-label">全局快捷搜索</span>
+                <span className="settings-item-hint">
+                  唤起 Spotlight 搜索小窗，再按可切换显示 / 隐藏
+                </span>
+              </div>
+              <span className="shrink-0 whitespace-nowrap rounded-md border border-[var(--border)] px-2 py-1 font-mono text-[11px] text-[var(--text-muted)]">
+                Ctrl + Shift + F
+              </span>
+            </div>
+
+            <div className="mb-1 mt-4 text-[11px] font-600 text-[var(--text-muted)]">
+              应用内快捷键 · 焦点位于对应输入框或面板时生效
+            </div>
+            <div className="settings-item grid">
+              <div className="settings-item-main">
+                <span className="settings-item-label">列表搜索定位条目</span>
+                <span className="settings-item-hint">
+                  在标题栏搜索框中切换选中、打开详情
+                </span>
+              </div>
+              <span className="shrink-0 whitespace-nowrap rounded-md border border-[var(--border)] px-2 py-1 font-mono text-[11px] text-[var(--text-muted)]">
+                ↑ / ↓ · Enter
+              </span>
+            </div>
+            <div className="settings-item grid">
+              <div className="settings-item-main">
+                <span className="settings-item-label">快捷搜索窗操作</span>
+                <span className="settings-item-hint">
+                  切换结果、打开便签、关闭窗口
+                </span>
+              </div>
+              <span className="shrink-0 whitespace-nowrap rounded-md border border-[var(--border)] px-2 py-1 font-mono text-[11px] text-[var(--text-muted)]">
+                ↑ / ↓ · Enter · Esc
+              </span>
+            </div>
+            <div className="settings-item grid">
+              <div className="settings-item-main">
+                <span className="settings-item-label">快速记录提交</span>
+                <span className="settings-item-hint">
+                  在快速记录窗口中直接创建便签
+                </span>
+              </div>
+              <span className="shrink-0 whitespace-nowrap rounded-md border border-[var(--border)] px-2 py-1 font-mono text-[11px] text-[var(--text-muted)]">
+                Ctrl + Enter
+              </span>
+            </div>
+            <div className="settings-item grid">
+              <div className="settings-item-main">
+                <span className="settings-item-label">AI 助手对话</span>
+                <span className="settings-item-hint">
+                  发送消息 / 换行 / 关闭面板
+                </span>
+              </div>
+              <span className="shrink-0 whitespace-nowrap rounded-md border border-[var(--border)] px-2 py-1 font-mono text-[11px] text-[var(--text-muted)]">
+                Enter · Shift + Enter · Esc
+              </span>
+            </div>
+            <div className="settings-item grid">
+              <div className="settings-item-main">
+                <span className="settings-item-label">条目内联编辑</span>
+                <span className="settings-item-hint">
+                  标题框保存 / 放弃当前修改
+                </span>
+              </div>
+              <span className="shrink-0 whitespace-nowrap rounded-md border border-[var(--border)] px-2 py-1 font-mono text-[11px] text-[var(--text-muted)]">
+                Enter · Esc
+              </span>
+            </div>
+            <div className="settings-item grid">
+              <div className="settings-item-main">
+                <span className="settings-item-label">新建标签 / 重命名</span>
+                <span className="settings-item-hint">
+                  标签输入框中确认 / 取消
+                </span>
+              </div>
+              <span className="shrink-0 whitespace-nowrap rounded-md border border-[var(--border)] px-2 py-1 font-mono text-[11px] text-[var(--text-muted)]">
+                Enter · Esc
+              </span>
+            </div>
+            <div className="settings-item grid">
+              <div className="settings-item-main">
+                <span className="settings-item-label">提醒弹窗确认</span>
+                <span className="settings-item-hint">等同于点击「我知道了」</span>
+              </div>
+              <span className="shrink-0 whitespace-nowrap rounded-md border border-[var(--border)] px-2 py-1 font-mono text-[11px] text-[var(--text-muted)]">
+                Esc
+              </span>
+            </div>
+            <div className="settings-item grid">
+              <div className="settings-item-main">
+                <span className="settings-item-label">关闭浮层</span>
+                <span className="settings-item-hint">
+                  图片预览、右键菜单、表情面板、标题栏搜索
+                </span>
+              </div>
+              <span className="shrink-0 whitespace-nowrap rounded-md border border-[var(--border)] px-2 py-1 font-mono text-[11px] text-[var(--text-muted)]">
+                Esc
               </span>
             </div>
           </div>

@@ -70,6 +70,16 @@ function describeEntry(entry: Entry, contentLimit: number): string {
         )
       : '无待触发闹钟'
     lines.push(`  状态：${entry.done ? '已处理' : '待处理'}；下次提醒：${next}`)
+    if (entry.alarms.length > 1) {
+      const brief = entry.alarms
+        .slice(0, 6)
+        .map((alarm) => {
+          const label = alarm.name ? `${alarm.name}(${dayjs(alarm.remindAt).format('MM-DD HH:mm')})` : dayjs(alarm.remindAt).format('MM-DD HH:mm')
+          return label
+        })
+        .join('、')
+      lines.push(`  共 ${entry.alarms.length} 个闹钟：${brief}${entry.alarms.length > 6 ? '…' : ''}`)
+    }
   }
 
   if (entry.kind === 'draw') {

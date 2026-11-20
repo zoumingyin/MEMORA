@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MouseEvent as ReactMouseEvent,
+} from "react";
 import { Button, Checkbox, Input, Modal } from "antd";
 import {
   ArrowLeftOutlined,
@@ -239,8 +246,8 @@ function DetailForm({ entry, onRemove, gateway }: DetailFormProps) {
     () =>
       gateway
         ? gateway.getEntry(entry.id)
-        : useEntryStore.getState().entries.find((e) => e.id === entry.id) ??
-          null,
+        : (useEntryStore.getState().entries.find((e) => e.id === entry.id) ??
+          null),
     [gateway, entry.id]
   );
 
@@ -248,8 +255,7 @@ function DetailForm({ entry, onRemove, gateway }: DetailFormProps) {
     (current: Entry): Partial<Entry> => {
       const draft = draftRef.current;
       const patch: Record<string, unknown> = {};
-      const nextTitle =
-        draft.title.trim() || ENTRY_KIND_LABEL[entry.kind];
+      const nextTitle = draft.title.trim() || ENTRY_KIND_LABEL[entry.kind];
       if (current.title !== nextTitle) patch.title = nextTitle;
       if (
         (current.kind === "note" || current.kind === "draw") &&
@@ -261,7 +267,9 @@ function DetailForm({ entry, onRemove, gateway }: DetailFormProps) {
       if (current.color !== draft.color) patch.color = draft.color;
       if (current.paper !== draft.paper) patch.paper = draft.paper;
       if (entry.kind === "todo" && current.kind === "todo") {
-        if (JSON.stringify(current.items ?? []) !== JSON.stringify(draft.items)) {
+        if (
+          JSON.stringify(current.items ?? []) !== JSON.stringify(draft.items)
+        ) {
           patch.items = draft.items;
           const allDone =
             draft.items.length > 0 && draft.items.every((item) => item.done);
@@ -269,7 +277,9 @@ function DetailForm({ entry, onRemove, gateway }: DetailFormProps) {
         }
       }
       if (entry.kind === "reminder" && current.kind === "reminder") {
-        if (JSON.stringify(current.alarms ?? []) !== JSON.stringify(draft.alarms)) {
+        if (
+          JSON.stringify(current.alarms ?? []) !== JSON.stringify(draft.alarms)
+        ) {
           patch.alarms = draft.alarms;
         }
       }
@@ -381,7 +391,17 @@ function DetailForm({ entry, onRemove, gateway }: DetailFormProps) {
       void flushRef.current();
     }, SAVE_DEBOUNCE_MS);
     return () => window.clearTimeout(timer);
-  }, [title, content, tags, items, alarms, color, paper, getLatest, buildPatch]);
+  }, [
+    title,
+    content,
+    tags,
+    items,
+    alarms,
+    color,
+    paper,
+    getLatest,
+    buildPatch,
+  ]);
 
   // 卸载（切换条目 / 关闭）时兜底保存未落盘的改动
   useEffect(() => () => void flushRef.current(), []);
@@ -669,9 +689,7 @@ function DetailForm({ entry, onRemove, gateway }: DetailFormProps) {
         >
           <div className="alarm-list-head">
             <span>闹钟</span>
-            <span className="alarm-hint">
-              双击行编辑 · 双击空白或右键新建
-            </span>
+            <span className="alarm-hint">双击行编辑 · 双击空白或右键新建</span>
           </div>
           {alarms.map((alarm) => (
             <div
@@ -685,6 +703,11 @@ function DetailForm({ entry, onRemove, gateway }: DetailFormProps) {
               }
             >
               <span className="alarm-brief">
+                {alarm.name && (
+                  <span className="max-w-[120px] shrink-0 truncate font-600 text-[var(--text)]">
+                    {alarm.name}
+                  </span>
+                )}
                 <span className="alarm-brief-mode">
                   {ALARM_MODE_LABEL[alarm.mode]}
                   {alarm.mode === "loop"
@@ -813,9 +836,9 @@ function DetailForm({ entry, onRemove, gateway }: DetailFormProps) {
         </div>
       </div>
 
-      <div className="detail-actions">
+      <div className="detail-actions flex-nowrap">
         <span
-          className={`save-indicator save-${saveState}`}
+          className={`save-indicator save-${saveState} shrink-0 whitespace-nowrap`}
           title={saveError ?? undefined}
           role="status"
           aria-live="polite"
@@ -836,9 +859,7 @@ function DetailForm({ entry, onRemove, gateway }: DetailFormProps) {
             </button>
           )}
           {saveState === "saved" &&
-            (savedAt
-              ? `已保存 ${formatShort(savedAt)}`
-              : "已保存")}
+            (savedAt ? `已保存 ${formatShort(savedAt)}` : "已保存")}
         </span>
         <span className="detail-meta bg-[var(--field)]! rounded-[8px] px-2 py-1">
           {(entry.kind === "note" || entry.kind === "draw") &&
@@ -848,18 +869,22 @@ function DetailForm({ entry, onRemove, gateway }: DetailFormProps) {
               ? `完成于 ${entry.completedAt ? formatShort(entry.completedAt) : formatShort(entry.updatedAt)}`
               : `${doneCount}/${items.length} 项进行中`)}
           {entry.kind === "reminder" && (
-            <div className="grid">
-              <div className={`reminder-time ${overdue ? "overdue" : ""}`}>
-                <BellOutlined />
-                {alarms.length === 0
-                  ? "暂无闹钟"
-                  : pendingAlarms.length === 0
-                    ? "全部已提醒"
-                    : overdue
-                      ? "已到期"
-                      : formatRelative(nextAlarmAt)}
+            <div className="grid min-w-0 gap-0.5">
+              <div
+                className={`reminder-time min-w-0 whitespace-nowrap ${overdue ? "overdue" : ""}`}
+              >
+                <BellOutlined className="shrink-0" />
+                <span className="truncate">
+                  {alarms.length === 0
+                    ? "暂无闹钟"
+                    : pendingAlarms.length === 0
+                      ? "全部已提醒"
+                      : overdue
+                        ? "已到期"
+                        : formatRelative(nextAlarmAt)}
+                </span>
               </div>
-              <div>
+              <div className="truncate whitespace-nowrap">
                 {pendingAlarms.length === 0
                   ? `${alarms.length} 个闹钟`
                   : `共 ${alarms.length} 个闹钟，${pendingAlarms.length} 个待提醒`}
@@ -868,7 +893,7 @@ function DetailForm({ entry, onRemove, gateway }: DetailFormProps) {
           )}
         </span>
 
-        <div className="detail-action-btns">
+        <div className="detail-action-btns ml-auto shrink-0 whitespace-nowrap">
           {entry.kind === "reminder" && (
             <Button
               type={pendingAlarms.length === 0 ? "primary" : "default"}
@@ -929,10 +954,7 @@ function DetailForm({ entry, onRemove, gateway }: DetailFormProps) {
           >
             使用最新版本（放弃我的）
           </Button>
-          <Button
-            size="small"
-            onClick={() => setConflictOpen(false)}
-          >
+          <Button size="small" onClick={() => setConflictOpen(false)}>
             稍后处理
           </Button>
           <Button

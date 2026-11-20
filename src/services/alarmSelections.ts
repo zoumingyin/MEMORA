@@ -65,6 +65,7 @@ export function pendingAlarmCandidates(alarms: AlarmItem[]): AlarmItem[] {
 export function toSelectionCandidate(alarm: AlarmItem): AlarmSelectionCandidate {
   return {
     alarmId: alarm.id,
+    ...(alarm.name ? { name: alarm.name } : {}),
     mode: alarm.mode,
     remindAt: alarm.remindAt,
     method: alarm.method,

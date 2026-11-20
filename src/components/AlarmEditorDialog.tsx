@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import dayjs from 'dayjs'
-import { Button, DatePicker, InputNumber, Modal, Select } from 'antd'
+import { Button, DatePicker, Input, InputNumber, Modal, Select } from 'antd'
 import type { AlarmItem, AlarmMethod, AlarmMode } from '../types/entry'
 import { alarmLoopIntervalMs } from '../reminder/nextAlarm'
 import { toMinuteStart } from '../utils/format'
@@ -38,6 +38,7 @@ interface AlarmEditorDialogProps {
  * 选择「循环提醒」时追加显示「X 时 Y 分」复合间隔输入。
  */
 export function AlarmEditorDialog({ alarm, onSave, onClose }: AlarmEditorDialogProps) {
+  const [name, setName] = useState<string>(alarm.name ?? '')
   const [mode, setMode] = useState<AlarmMode>(alarm.mode)
   const [method, setMethod] = useState<AlarmMethod>(alarm.method)
   const [remindAt, setRemindAt] = useState(alarm.remindAt)
@@ -67,6 +68,7 @@ export function AlarmEditorDialog({ alarm, onSave, onClose }: AlarmEditorDialogP
         )
         onSave({
           id: alarm.id,
+          ...(name.trim() ? { name: name.trim() } : { name: undefined }),
           // 秒数归零：闹钟整时整分触发，不受设定时携带的秒数偏差影响
           remindAt: toMinuteStart(remindAt),
           mode,
@@ -80,6 +82,16 @@ export function AlarmEditorDialog({ alarm, onSave, onClose }: AlarmEditorDialogP
       onCancel={onClose}
     >
       <div className="alarm-editor-fields">
+        <div className="alarm-editor-field">
+          <label>闹钟名称</label>
+          <Input
+            size="small"
+            value={name}
+            maxLength={40}
+            placeholder="可选，用于区分多个闹钟"
+            onChange={(event) => setName(event.target.value)}
+          />
+        </div>
         <div className="alarm-editor-field">
           <label>提醒模式</label>
           <Select

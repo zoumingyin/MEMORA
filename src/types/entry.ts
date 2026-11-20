@@ -82,9 +82,23 @@ export type AlarmMethod = 'dialog' | 'notification' | 'sound'
 /** 循环提醒的间隔单位（mode='loop' 时生效，默认 day） */
 export type AlarmIntervalUnit = 'second' | 'minute' | 'hour' | 'day'
 
+/** 创建提醒时传入的单个闹钟输入（AI / 手动新增共用） */
+export interface AlarmInput {
+  /** 闹钟名称（可选，≤40 字；缺省时界面按模式与时间展示） */
+  name?: string
+  remindAt: number
+  mode?: AlarmMode
+  method?: AlarmMethod
+  interval?: number
+  intervalUnit?: AlarmIntervalUnit
+  intervalMs?: number
+}
+
 /** 提醒条目内的单个闹钟 */
 export interface AlarmItem {
   id: string
+  /** 闹钟名称（可选）；同一提醒内可重名，仅作展示与区分 */
+  name?: string
   remindAt: number
   mode: AlarmMode
   method: AlarmMethod
@@ -153,6 +167,10 @@ export interface NewEntryInput {
   title: string
   content: string
   remindAt?: number
+  /** 单闹钟提醒的闹钟名称（可选；由 AI 工具层用标题填充，便于与多闹钟合并后统一展示） */
+  alarmName?: string
+  /** 提醒：一次创建多个闹钟（共享本条便签的标题与正文）；传入时优先于 remindAt */
+  alarms?: AlarmInput[]
   /** 待办子任务文本（可选，创建时生成带 id 的清单项） */
   items?: string[]
   /** 标签（可选，默认空数组） */

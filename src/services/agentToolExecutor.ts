@@ -19,6 +19,7 @@ import {
   type TargetTrustSource,
 } from './agentTargets'
 import {
+  ALARM_MODE_LABEL,
   applyReminderTime,
   describeAlarm,
 } from './reminderAlarms'
@@ -142,6 +143,12 @@ export interface AgentToolScope {
   writeAttempts: WriteAttempt[]
   /** 写入结果未确认的目标：后续依赖它的写入必须先核对，不能自动执行 */
   uncertainEntryIds: Set<string>
+  /**
+   * 执行层兜底：同一请求内模型若把「一条内容的多个闹钟」拆成多次单闹钟提醒创建，
+   * 后续闹钟合并到本轮第一条单闹钟提醒便签，避免生成内容重复的多条便签。
+   * 仅记录单闹钟（remindAt 路径）创建的提醒；alarms 多闹钟调用不参与。
+   */
+  reminderMergeTargetId?: string
   /** 重试保护：这些写工具在本次重试中禁止自动执行 */
   retryBlockedWriteTools?: ReadonlySet<AgentToolName>
   /** 权限/来源拦截的观测回调；生产环境用于安全日志 */
@@ -623,15 +630,98 @@ function trustCreatedTarget(scope: AgentToolScope, entry: Entry): void {
   })
 }
 
+/**
+ * 执行层兜底：把同一请求内拆成多次的单闹钟提醒合并到第一条提醒便签。
+ * - 只在「单闹钟 remindAt 路径」触发；显式 alarms 多闹钟调用不参与；
+ * - 新闹钟的 name 取本次调用的 title（模型通常把「取快递 / 开会 / 吃饭」当标题传入），
+ *   没有 title 时不命名；
+ * - 追加后回读确认闹钟已落库，任何异常按「结果未确认」处理，不虚构成功；
+ * - 返回 null 表示不该合并（目标已不存在 / 不是提醒），调用方回退为正常新建。
+ */
+async function appendReminderAlarm(
+  targetId: string,
+  args: CreateEntryArgs,
+  env: AgentToolEnvironment,
+  scope: AgentToolScope,
+): Promise<ToolOutcome | null> {
+  const current = env.listEntries().find((item) => item.id === targetId)
+  if (!current || current.kind !== 'reminder' || current.deletedAt) return null
+
+  const newAlarm: AlarmItem = {
+    id: crypto.randomUUID(),
+    ...(args.title.trim() ? { name: args.title.trim().slice(0, 40) } : {}),
+    remindAt: args.remindAt as number,
+    mode: 'once',
+    method: 'dialog',
+    notified: false,
+  }
+  const nextAlarms = [...current.alarms, newAlarm]
+  try {
+    await env.updateEntry(
+      current.id,
+      { kind: 'reminder', alarms: nextAlarms } as Partial<Entry>,
+      current.version,
+    )
+  } catch {
+    scope.uncertainEntryIds.add(current.id)
+    return toolUnknown(
+      `合并闹钟到提醒「${current.title}」时执行异常，无法确认是否已写入。请先检查该便签，不要直接重试。`,
+      'execution_unknown',
+    )
+  }
+  const stored = env.listEntries().find((item) => item.id === current.id)
+  if (!stored || stored.kind !== 'reminder' || !stored.alarms.some((alarm) => alarm.id === newAlarm.id)) {
+    scope.uncertainEntryIds.add(current.id)
+    return toolUnknown(
+      `合并闹钟后回读未确认结果，请先检查提醒「${current.title}」的实际闹钟，不要重复创建。`,
+      'readback_failed',
+    )
+  }
+  trustCreatedTarget(scope, stored)
+  const names = stored.alarms
+    .slice()
+    .sort((a, b) => a.remindAt - b.remindAt)
+    .map((alarm) => {
+      const name = alarm.name ? `${alarm.name}：` : ''
+      return `${name}${dayjs(alarm.remindAt).format('MM-DD HH:mm')}`
+    })
+    .join('；')
+  return toolOk(
+    `已把「${newAlarm.name ?? '新闹钟'}」作为闹钟合并到同一条提醒「${stored.title}」（id: ${stored.id}），未新建便签；当前共 ${stored.alarms.length} 个闹钟：${names}。已直接写入并生效。`,
+    {
+      op: 'update',
+      kind: 'reminder',
+      entryId: stored.id,
+      title: stored.title,
+      references: toEntryReferences([stored]),
+    },
+  )
+}
+
 async function createEntry(
   args: CreateEntryArgs,
   env: AgentToolEnvironment,
   scope: AgentToolScope,
 ): Promise<ToolOutcome> {
+  // 模型把一条内容拆成多次单闹钟创建时，后续调用合并到本轮第一条提醒便签
+  if (
+    args.kind === 'reminder' &&
+    args.remindAt !== undefined &&
+    args.alarms === undefined &&
+    scope.reminderMergeTargetId
+  ) {
+    const merged = await appendReminderAlarm(scope.reminderMergeTargetId, args, env, scope)
+    if (merged) return merged
+  }
   const input: NewEntryInput = {
     title: args.title,
     content: args.content,
     ...(args.remindAt !== undefined ? { remindAt: args.remindAt } : {}),
+    // 单闹钟提醒：把标题作为该闹钟的名称，与后续被合并进来的闹钟保持一致的展示语义
+    ...(args.kind === 'reminder' && args.remindAt !== undefined && args.alarms === undefined && args.title.trim()
+      ? { alarmName: args.title.trim().slice(0, 40) }
+      : {}),
+    ...(args.alarms !== undefined ? { alarms: args.alarms } : {}),
     ...(args.items && args.items.length > 0 ? { items: args.items } : {}),
   }
   let entry: Entry | null
@@ -661,13 +751,53 @@ async function createEntry(
       'readback_failed',
     )
   }
+  // 多闹钟回读：确认全部闹钟都已落库（数量一致、时间与模式匹配），不能只报部分成功
+  if (args.alarms !== undefined && stored.kind === 'reminder') {
+    const expected = args.alarms
+    const actual = stored.alarms
+    const allPresent =
+      actual.length === expected.length &&
+      expected.every((want) =>
+        actual.some(
+          (got) =>
+            got.remindAt === want.remindAt &&
+            got.mode === (want.mode ?? 'once') &&
+            (want.name ? got.name === want.name : true),
+        ),
+      )
+    if (!allPresent) {
+      scope.uncertainEntryIds.add(entry.id)
+      return toolUnknown(
+        `创建提醒后回读发现闹钟数量或内容与预期不一致（预期 ${expected.length} 个，实际 ${actual.length} 个）。` +
+          '请勿重复创建，先检查便签列表中的实际闹钟。',
+        'readback_failed',
+      )
+    }
+  }
   trustCreatedTarget(scope, stored)
-  const extra =
-    args.kind === 'reminder' && args.remindAt !== undefined
-      ? `，提醒时间 ${dayjs(args.remindAt).format('YYYY-MM-DD HH:mm')}`
-      : args.kind === 'todo' && args.items?.length
-        ? `，含 ${args.items.length} 个子任务`
-        : ''
+  // 记录本轮第一条单闹钟提醒，供后续被拆分的闹钟合并（多闹钟 alarms 调用不设，避免语义混淆）
+  if (args.kind === 'reminder' && args.remindAt !== undefined && args.alarms === undefined) {
+    scope.reminderMergeTargetId = stored.id
+  }
+  const extra = (() => {
+    if (args.kind === 'reminder' && args.alarms !== undefined && stored.kind === 'reminder') {
+      const parts = stored.alarms
+        .slice()
+        .sort((a, b) => a.remindAt - b.remindAt)
+        .map((alarm) => {
+          const name = alarm.name ? `${alarm.name}：` : ''
+          return `${name}${dayjs(alarm.remindAt).format('MM-DD HH:mm')}（${ALARM_MODE_LABEL[alarm.mode] ?? alarm.mode}）`
+        })
+      return `，同一条便签下 ${stored.alarms.length} 个闹钟：${parts.join('；')}`
+    }
+    if (args.kind === 'reminder' && args.remindAt !== undefined) {
+      return `，提醒时间 ${dayjs(args.remindAt).format('YYYY-MM-DD HH:mm')}`
+    }
+    if (args.kind === 'todo' && args.items?.length) {
+      return `，含 ${args.items.length} 个子任务`
+    }
+    return ''
+  })()
   return toolOk(
     `已创建${KIND_LABEL[args.kind]}「${stored.title}」（id: ${stored.id}${extra}），已直接写入并生效，无需用户确认。`,
     {

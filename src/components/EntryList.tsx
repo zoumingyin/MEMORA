@@ -276,12 +276,12 @@ function buildClipboardPayload(entry: Entry): ClipboardPayload {
     appendContent(entry.content);
   } else if (entry.kind === "reminder") {
     if (entry.alarms.length > 0) {
-      const lines = entry.alarms.map(
-        (alarm) =>
-          `${formatCopyTime(alarm.remindAt)} · ${ALARM_MODE_LABEL[alarm.mode]}${
-            alarm.notified ? " · 已提醒" : ""
-          }`
-      );
+      const lines = entry.alarms.map((alarm) => {
+        const name = alarm.name ? `${alarm.name} · ` : "";
+        return `${name}${formatCopyTime(alarm.remindAt)} · ${ALARM_MODE_LABEL[alarm.mode]}${
+          alarm.notified ? " · 已提醒" : ""
+        }`;
+      });
       htmlParts.push(
         `<ul>${lines.map((line) => `<li>${line}</li>`).join("")}</ul>`
       );
@@ -338,7 +338,8 @@ function listSummary(entry: Entry): string {
     const pending =
       entry.alarms.find((alarm) => !alarm.notified) ?? entry.alarms[0];
     if (pending) {
-      return `${formatShort(pending.remindAt)} · ${ALARM_MODE_LABEL[pending.mode]}`;
+      const name = pending.name ? `${pending.name} · ` : "";
+      return `${name}${formatShort(pending.remindAt)} · ${ALARM_MODE_LABEL[pending.mode]}`;
     }
   }
   return toPlainText(entry.content || "");
@@ -686,6 +687,11 @@ export function EntryList({ onSelect, mode }: EntryListProps) {
                 className={`flex items-center gap-1.5 text-[11.5px] text-[var(--text-muted)] ${alarm.notified ? "opacity-55" : ""}`}
               >
                 <ClockCircleOutlined className="shrink-0 text-[10px]" />
+                {alarm.name && (
+                  <span className="max-w-[45%] shrink-0 truncate font-600 text-[var(--text)]">
+                    {alarm.name}
+                  </span>
+                )}
                 <span className="min-w-0 truncate">
                   {formatShort(alarm.remindAt)}
                 </span>

@@ -796,6 +796,9 @@ function AlarmSelectionCard({
             >
               <span className="inline-flex items-center gap-1 font-medium">
                 <Bell size={11} className="text-[var(--memora-warning-text)]" />
+                {candidate.name && (
+                  <span className="max-w-[100px] truncate">{candidate.name} · </span>
+                )}
                 {ALARM_MODE_LABEL[candidate.mode] ?? candidate.mode}
               </span>
               <span>{dayjs(candidate.remindAt).format('MM-DD HH:mm')}</span>

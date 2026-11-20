@@ -228,6 +228,8 @@ export interface ToolEffect {
 /** 候选闹钟：只暴露用户做选择所需的字段 */
 export interface AlarmSelectionCandidate {
   alarmId: string
+  /** 闹钟名称（可选，用于多闹钟场景下区分候选） */
+  name?: string
   mode: AlarmMode
   remindAt: number
   /** 提醒方式（弹窗 / 通知 / 声音） */

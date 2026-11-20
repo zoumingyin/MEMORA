@@ -2,7 +2,13 @@ import type Database from '@tauri-apps/plugin-sql'
 import type { AlarmItem, Entry, EntryKind, EntryRow, NewEntryInput, TodoItem } from '../types/entry'
 import { EntryWriteError } from './errors'
 import { getDatabase } from './db'
-import { parseAlarms, rowToEntry, todoItemsFromTexts, type EntryRepository } from './repository'
+import {
+  buildAlarmsFromInput,
+  parseAlarms,
+  rowToEntry,
+  todoItemsFromTexts,
+  type EntryRepository,
+} from './repository'
 
 async function getDb(): Promise<Database> {
   return getDatabase()
@@ -71,13 +77,11 @@ export class SqliteEntryRepository implements EntryRepository {
         tags,
       }
     } else {
-      const defaultAlarm: AlarmItem = {
-        id: crypto.randomUUID(),
-        remindAt: input.remindAt ?? now,
-        mode: 'once',
-        method: 'dialog',
-        notified: false,
-      }
+      const alarms = buildAlarmsFromInput(input, now)
+      const pending = alarms.filter((alarm) => !alarm.notified)
+      const remindAt = pending.length
+        ? Math.min(...pending.map((alarm) => alarm.remindAt))
+        : Math.min(...alarms.map((alarm) => alarm.remindAt))
       entry = {
         id,
         kind: 'reminder',
@@ -87,10 +91,10 @@ export class SqliteEntryRepository implements EntryRepository {
         updatedAt: now,
         version: 1,
         syncStatus: 'pending',
-        remindAt: defaultAlarm.remindAt,
+        remindAt,
         notified: false,
         done: false,
-        alarms: [defaultAlarm],
+        alarms,
         tags,
       }
     }

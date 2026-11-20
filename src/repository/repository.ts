@@ -1,4 +1,5 @@
 import type {
+  AlarmInput,
   AlarmItem,
   Entry,
   EntryKind,
@@ -84,25 +85,68 @@ export function todoItemsFromTexts(texts: string[] | undefined): TodoItem[] {
     .map((text) => ({ id: crypto.randomUUID(), text, done: false }))
 }
 
-/** 闹钟清单：列内 JSON 数组，解析失败或缺失时回退为空清单 */
+/** 闹钟清单：列内 JSON 数组，解析失败或缺失时回退为空清单；name 为可选字段，有值时保留 */
 export function parseAlarms(raw: string | null | undefined): AlarmItem[] {
   if (!raw) return []
   try {
     const parsed = JSON.parse(raw) as unknown
     if (Array.isArray(parsed)) {
-      return parsed.filter(
-        (item): item is AlarmItem =>
-          typeof item === 'object' &&
-          item !== null &&
-          typeof (item as AlarmItem).id === 'string' &&
-          typeof (item as AlarmItem).remindAt === 'number' &&
-          typeof (item as AlarmItem).notified === 'boolean',
-      )
+      return parsed
+        .filter(
+          (item): item is AlarmItem =>
+            typeof item === 'object' &&
+            item !== null &&
+            typeof (item as AlarmItem).id === 'string' &&
+            typeof (item as AlarmItem).remindAt === 'number' &&
+            typeof (item as AlarmItem).notified === 'boolean',
+        )
+        .map((item) => {
+          if (!('name' in item)) return item
+          const name = (item as AlarmItem).name
+          if (typeof name === 'string' && name.trim()) {
+            return { ...item, name: name.trim() }
+          }
+          // 名称为非字符串或空白：剔除该字段，保留闹钟其余数据
+          const cleaned = { ...item } as AlarmItem
+          delete cleaned.name
+          return cleaned
+        })
     }
   } catch {
     // 忽略损坏数据，回退为空清单
   }
   return []
+}
+
+/**
+ * 从新建输入构建提醒闹钟清单：
+ * - 传入 alarms（多个闹钟共享同一条便签）时逐个生成本地 id，各闹钟的时间 / 模式 / 方式 / 间隔独立；
+ * - 未传入时回退为单个默认闹钟（兼容原有单闹钟创建流程与旧调用方）。
+ */
+export function buildAlarmsFromInput(input: NewEntryInput, now: number): AlarmItem[] {
+  if (Array.isArray(input.alarms) && input.alarms.length > 0) {
+    return input.alarms.map((alarm: AlarmInput): AlarmItem => ({
+      id: crypto.randomUUID(),
+      ...(alarm.name?.trim() ? { name: alarm.name.trim() } : {}),
+      remindAt: alarm.remindAt,
+      mode: alarm.mode ?? 'once',
+      method: alarm.method ?? 'dialog',
+      notified: false,
+      ...(alarm.interval !== undefined ? { interval: alarm.interval } : {}),
+      ...(alarm.intervalUnit !== undefined ? { intervalUnit: alarm.intervalUnit } : {}),
+      ...(alarm.intervalMs !== undefined ? { intervalMs: alarm.intervalMs } : {}),
+    }))
+  }
+  return [
+    {
+      id: crypto.randomUUID(),
+      ...(input.alarmName?.trim() ? { name: input.alarmName.trim() } : {}),
+      remindAt: input.remindAt ?? now,
+      mode: 'once',
+      method: 'dialog',
+      notified: false,
+    },
+  ]
 }
 
 /** 标签：列内 JSON 字符串数组，解析失败或缺失时回退为空数组 */

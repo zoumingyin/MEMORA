@@ -1,5 +1,6 @@
 import dayjs from 'dayjs'
 import { toMinuteStart } from '../utils/format'
+import type { AlarmInput, AlarmIntervalUnit, AlarmMethod, AlarmMode } from '../types/entry'
 
 /**
  * Agent 工具参数校验：模型返回的参数一律先过这里，再进入执行器。
@@ -15,6 +16,20 @@ export const MAX_ITEM_CHARS = 200
 export const MAX_ITEMS = 20
 export const MAX_TAG_CHARS = 24
 export const MAX_TAGS = 12
+export const MAX_ALARMS = 12
+export const MAX_ALARM_NAME_CHARS = 40
+
+const ALARM_MODES: readonly AlarmMode[] = [
+  'once',
+  'loop',
+  'daily',
+  'weekly',
+  'monthly',
+  'yearly',
+  'lunar',
+]
+const ALARM_METHODS: readonly AlarmMethod[] = ['dialog', 'notification', 'sound']
+const ALARM_INTERVAL_UNITS: readonly AlarmIntervalUnit[] = ['second', 'minute', 'hour', 'day']
 
 export const AGENT_TOOL_NAMES = [
   'search_notes',
@@ -43,8 +58,10 @@ export interface CreateEntryArgs {
   kind: WriteKind
   title: string
   content: string
-  /** 已归整到分钟且校验为未来时间 */
+  /** 已归整到分钟且校验为未来时间（单闹钟流程） */
   remindAt?: number
+  /** 多闹钟流程：一次创建多个闹钟共享本条便签 */
+  alarms?: AlarmInput[]
   items?: string[]
 }
 
@@ -203,8 +220,99 @@ function validateKind(value: unknown): ValidationResult<WriteKind> {
   return fail('kind 必须是 note / todo / reminder')
 }
 
+/** 单个闹钟的名称：可选，非空时去空白并限制长度 */
+function validateAlarmName(value: unknown): ValidationResult<string | undefined> {
+  if (value === undefined || value === null) return ok(undefined)
+  if (typeof value !== 'string') return fail('闹钟 name 必须是字符串')
+  const name = value.trim()
+  if (!name) return ok(undefined)
+  if (name.length > MAX_ALARM_NAME_CHARS) {
+    return fail(`闹钟名称超过 ${MAX_ALARM_NAME_CHARS} 字（当前 ${name.length} 字），请精简`)
+  }
+  return ok(name)
+}
+
+/**
+ * 多闹钟输入：数组长度 1..MAX_ALARMS，逐项校验时间（未来且归整到分钟）、
+ * 名称、模式、方式与循环间隔；不做静默丢弃，任一项非法即整体失败。
+ */
+export function validateAlarms(value: unknown, now: number): ValidationResult<AlarmInput[]> {
+  if (!Array.isArray(value)) return fail('alarms 必须是数组')
+  if (value.length === 0) return fail('alarms 不能为空数组')
+  if (value.length > MAX_ALARMS) {
+    return fail(`alarms 最多 ${MAX_ALARMS} 个（当前 ${value.length} 个），请精简`)
+  }
+  const alarms: AlarmInput[] = []
+  for (const [index, raw] of value.entries()) {
+    const label = `第 ${index + 1} 个闹钟`
+    if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+      return fail(`${label} 必须是对象`)
+    }
+    const item = raw as Record<string, unknown>
+    const unknown = rejectUnknownKeys(item, [
+      'name',
+      'remindAt',
+      'mode',
+      'method',
+      'interval',
+      'intervalUnit',
+      'intervalMs',
+    ])
+    if (unknown) return fail(`${label}：${unknown}`)
+
+    const name = validateAlarmName(item.name)
+    if (!name.ok) return fail(`${label}：${name.error}`)
+
+    const remindAt = validateRemindAt(item.remindAt, now)
+    if (!remindAt.ok) return fail(`${label}：${remindAt.error}`)
+
+    let mode: AlarmMode = 'once'
+    if ('mode' in item) {
+      if (typeof item.mode !== 'string' || !ALARM_MODES.includes(item.mode as AlarmMode)) {
+        return fail(`${label}：mode 必须是 ${ALARM_MODES.join(' / ')} 之一`)
+      }
+      mode = item.mode as AlarmMode
+    }
+
+    let method: AlarmMethod = 'dialog'
+    if ('method' in item) {
+      if (typeof item.method !== 'string' || !ALARM_METHODS.includes(item.method as AlarmMethod)) {
+        return fail(`${label}：method 必须是 ${ALARM_METHODS.join(' / ')} 之一`)
+      }
+      method = item.method as AlarmMethod
+    }
+
+    const alarm: AlarmInput = { remindAt: remindAt.value, mode, method }
+    if (name.value) alarm.name = name.value
+
+    if ('interval' in item) {
+      if (typeof item.interval !== 'number' || !Number.isFinite(item.interval) || item.interval < 1) {
+        return fail(`${label}：interval 必须是不小于 1 的数字`)
+      }
+      alarm.interval = Math.floor(item.interval)
+    }
+    if ('intervalUnit' in item) {
+      if (
+        typeof item.intervalUnit !== 'string' ||
+        !ALARM_INTERVAL_UNITS.includes(item.intervalUnit as AlarmIntervalUnit)
+      ) {
+        return fail(`${label}：intervalUnit 必须是 ${ALARM_INTERVAL_UNITS.join(' / ')} 之一`)
+      }
+      alarm.intervalUnit = item.intervalUnit as AlarmIntervalUnit
+    }
+    if ('intervalMs' in item) {
+      if (typeof item.intervalMs !== 'number' || !Number.isFinite(item.intervalMs) || item.intervalMs < 1000) {
+        return fail(`${label}：intervalMs 必须是不小于 1000 的毫秒数`)
+      }
+      alarm.intervalMs = item.intervalMs
+    }
+    alarms.push(alarm)
+  }
+  return ok(alarms)
+}
+
 function validateCreate(args: Record<string, unknown>, now: number): ValidationResult<CreateEntryArgs> {
-  const unknown = rejectUnknownKeys(args, ['kind', 'title', 'content', 'remindAt', 'items'])
+  const unknown = rejectUnknownKeys(args, ['kind', 'title', 'content', 'remindAt', 'alarms', 'items'])
   if (unknown) return fail(unknown)
 
   const kind = validateKind(args.kind)
@@ -223,13 +331,27 @@ function validateCreate(args: Record<string, unknown>, now: number): ValidationR
   if (!content.ok) return fail(content.error)
 
   let remindAt: number | undefined
+  let alarms: AlarmInput[] | undefined
   if (kind.value === 'reminder') {
-    if (!('remindAt' in args)) return fail('提醒类型必须提供 remindAt（YYYY-MM-DDTHH:mm）')
-    const parsed = validateRemindAt(args.remindAt, now)
-    if (!parsed.ok) return fail(parsed.error)
-    remindAt = parsed.value
-  } else if ('remindAt' in args) {
-    return fail('remindAt 仅适用于提醒类型便签')
+    const hasRemindAt = 'remindAt' in args
+    const hasAlarms = 'alarms' in args
+    if (!hasRemindAt && !hasAlarms) {
+      return fail('提醒类型必须提供 remindAt（单闹钟）或 alarms（多闹钟，共享同一条便签）')
+    }
+    if (hasRemindAt && hasAlarms) {
+      return fail('remindAt 与 alarms 不能同时使用：单闹钟用 remindAt，多闹钟用 alarms')
+    }
+    if (hasAlarms) {
+      const parsed = validateAlarms(args.alarms, now)
+      if (!parsed.ok) return fail(parsed.error)
+      alarms = parsed.value
+    } else {
+      const parsed = validateRemindAt(args.remindAt, now)
+      if (!parsed.ok) return fail(parsed.error)
+      remindAt = parsed.value
+    }
+  } else if ('remindAt' in args || 'alarms' in args) {
+    return fail('remindAt / alarms 仅适用于提醒类型便签')
   }
 
   let items: string[] | undefined
@@ -245,6 +367,7 @@ function validateCreate(args: Record<string, unknown>, now: number): ValidationR
     title: title.value,
     content: content.value,
     ...(remindAt !== undefined ? { remindAt } : {}),
+    ...(alarms !== undefined ? { alarms } : {}),
     ...(items !== undefined ? { items } : {}),
   })
 }

@@ -27,7 +27,8 @@ export const ALARM_METHOD_LABEL: Record<AlarmMethod, string> = {
 }
 
 export function describeAlarm(alarm: AlarmItem): string {
-  return `${ALARM_MODE_LABEL[alarm.mode] ?? alarm.mode} · ${dayjs(alarm.remindAt).format('YYYY-MM-DD HH:mm')}`
+  const name = alarm.name ? `${alarm.name}：` : ''
+  return `${name}${ALARM_MODE_LABEL[alarm.mode] ?? alarm.mode} · ${dayjs(alarm.remindAt).format('YYYY-MM-DD HH:mm')}`
 }
 
 export type ApplyReminderTimeResult =

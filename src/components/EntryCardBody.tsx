@@ -84,11 +84,25 @@ export function EntryCardBody({ entry, now }: EntryCardBodyProps): ReactNode {
             ? "已到期"
             : formatRelative(reminder.at)}
       </span>
-      <span className="wall-reminder-sub">
-        {nextAlarm
-          ? `${formatShort(nextAlarm.remindAt)} · ${ALARM_MODE_LABEL[nextAlarm.mode]}`
-          : "暂无闹钟"}
-        {entry.alarms.length > 0 && `　共 ${entry.alarms.length} 个`}
+      <span className="wall-reminder-sub flex min-w-0 items-center gap-1">
+        {nextAlarm ? (
+          <>
+            {nextAlarm.name && (
+              <span className="max-w-[45%] shrink-0 truncate font-600">
+                {nextAlarm.name}
+              </span>
+            )}
+            <span className="min-w-0 truncate">
+              {formatShort(nextAlarm.remindAt)} ·{" "}
+              {ALARM_MODE_LABEL[nextAlarm.mode]}
+            </span>
+          </>
+        ) : (
+          "暂无闹钟"
+        )}
+        {entry.alarms.length > 0 && (
+          <span className="shrink-0">　共 {entry.alarms.length} 个</span>
+        )}
       </span>
     </div>
   );
