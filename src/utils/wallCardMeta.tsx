@@ -45,6 +45,16 @@ export function todoAllDone(entry: Entry): boolean {
   );
 }
 
+/**
+ * 子任务展示排序：未完成的在前、已完成的排到最后，各自保持原有相对顺序。
+ * 只影响展示顺序，不改动 items 数据本身的存储顺序。
+ */
+export function sortTodoItemsDoneLast<T extends { done: boolean }>(
+  items: T[],
+): T[] {
+  return [...items.filter((item) => !item.done), ...items.filter((item) => item.done)];
+}
+
 /** 提醒状态：最近待提醒闹钟时间；全部已提醒视为处理完 */
 export function reminderStatus(entry: Entry): {
   at: number;

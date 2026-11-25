@@ -9,6 +9,7 @@ import {
   PushpinOutlined,
 } from "@ant-design/icons";
 import type { Entry, TodoItem } from "../types/entry";
+import { sortTodoItemsDoneLast } from "../utils/wallCardMeta";
 import { useNoteWindowOpen } from "../window/noteWindow";
 
 interface EntryToolsProps {
@@ -116,11 +117,12 @@ interface TodoPreviewProps {
   items: TodoItem[];
   /** 最多展示的子任务数，超出显示 +N */
   limit: number;
-} /** 待办子任务预览：贴纸墙与网格卡片共用同一套勾选样式 */
+} /** 待办子任务预览：贴纸墙与网格卡片共用同一套勾选样式；已完成子任务排到最后 */
 export function TodoPreview({ items, limit }: TodoPreviewProps) {
+  const sorted = sortTodoItemsDoneLast(items);
   return (
     <div className="todo-preview">
-      {items.slice(0, limit).map((item) => (
+      {sorted.slice(0, limit).map((item) => (
         <span
           key={item.id}
           className={`todo-preview-item${item.done ? " is-done" : ""}`}
@@ -129,8 +131,8 @@ export function TodoPreview({ items, limit }: TodoPreviewProps) {
           <span className="todo-preview-text">{item.text}</span>
         </span>
       ))}
-      {items.length > limit && (
-        <span className="todo-preview-more">+{items.length - limit} 项</span>
+      {sorted.length > limit && (
+        <span className="todo-preview-more">+{sorted.length - limit} 项</span>
       )}
     </div>
   );

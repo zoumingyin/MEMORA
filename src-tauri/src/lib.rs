@@ -1136,6 +1136,8 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
         .expect("读取托盘图标失败");
     let _tray = TrayIconBuilder::with_id("main-tray")
         .icon(tray_icon)
+        // 鼠标悬停提示：不设置时 Windows 托盘图标没有任何 tooltip
+        .tooltip("MEMORA 便签")
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {

@@ -33,6 +33,7 @@ import { alarmLoopIntervalMs } from "../reminder/nextAlarm";
 import { isEntryWriteError } from "../repository/errors";
 import { registerActiveEditor } from "../editor/editorRegistry";
 import { paperTintHex, PAPER_COLORS, PAPER_STYLES } from "../utils/paper";
+import { sortTodoItemsDoneLast } from "../utils/wallCardMeta";
 import { AlarmEditorDialog } from "./AlarmEditorDialog";
 import { DoodleBoard } from "./DoodleBoard";
 import { MarkdownEditor } from "./MarkdownEditor";
@@ -631,7 +632,8 @@ function DetailForm({ entry, onRemove, gateway }: DetailFormProps) {
             </span>
           </div>
           <ul className="todo-item-list">
-            {items.map((item) => (
+            {/* 展示排序：未完成在前、已完成沉底；items 数据顺序不变，勾选后该项自动移到末尾 */}
+            {sortTodoItemsDoneLast(items).map((item) => (
               <li
                 key={item.id}
                 className={`todo-item ${item.done ? "done" : ""}`}
