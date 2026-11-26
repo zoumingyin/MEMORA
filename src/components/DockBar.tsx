@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import { useEntryStore } from '../store/useEntryStore'
 import { useWindowStore } from '../store/useWindowStore'
 import { ENTRY_KIND_COLOR } from '../utils/entryLabels'
@@ -67,7 +67,26 @@ export function DockBar() {
 
   const edge: DockEdge = dockedEdge ?? 'right'
   const vertical = edge !== 'top'
-  const chips = entries.slice(0, MAX_CHIPS)
+  // 与列表「全部」视图一致按最近更新排序：store 数组顺序停留在加载时刻
+  // （更新是原位替换、仅新建插到最前），不排序会显示旧条目而不是最新动态。
+  // 已完成的提醒 / 待办不出现在收纳条：done，或提醒的全部闹钟都已触发
+  const chips = useMemo(
+    () =>
+      [...entries]
+        .filter((entry) => {
+          if (entry.kind === 'reminder') {
+            return !(
+              entry.done ||
+              (entry.alarms.length > 0 && entry.alarms.every((a) => a.notified))
+            )
+          }
+          if (entry.kind === 'todo') return !entry.done
+          return true
+        })
+        .sort((a, b) => b.updatedAt - a.updatedAt)
+        .slice(0, MAX_CHIPS),
+    [entries],
+  )
 
   // 窄条高度（上边缘为宽度）按内容自适应：收纳缩窗用的是按条目数的估算初值，
   // 挂载后读真实 DOM 校正；胶囊列变化（条目增删）时 ResizeObserver 再次触发。
