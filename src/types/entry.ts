@@ -119,6 +119,13 @@ export interface AlarmItem {
   occurrenceKey?: string
   /** 已自动呈现次数（崩溃恢复观测用，不承诺 exactly-once） */
   presentationCount?: number
+  /**
+   * 重复锚定日（monthly / yearly 模式用）：用户设定的「几号」。
+   * 短月 / 平年 clamp 到月末时以此为基准，下个月恢复原日，不永久滑落
+   * （如 1 月 31 日 → 2 月 28 日 → 3 月 31 日，而非 3 月 28 日）。
+   * 旧数据无此字段，按当前 remindAt 的日兜底。
+   */
+  anchorDay?: number
 }
 
 /** 提醒：内含多个可独立设置的闹钟，每个闹钟有自己的时间、提醒模式与提醒方式 */

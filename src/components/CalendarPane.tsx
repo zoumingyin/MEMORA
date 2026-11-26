@@ -3,6 +3,7 @@ import dayGridPlugin from "@fullcalendar/daygrid";
 import type {
   EventClickArg,
   EventContentArg,
+  EventDropArg,
   EventInput,
 } from "@fullcalendar/core";
 import interactionPlugin, {
@@ -12,12 +13,12 @@ import FullCalendar from "@fullcalendar/react";
 import zhCnLocale from "@fullcalendar/core/locales/zh-cn";
 import { App as AntdApp } from "antd";
 import dayjs, { type Dayjs } from "dayjs";
-import { Lunar } from "lunar-javascript";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useEntryStore } from "../store/useEntryStore";
 import type { Entry, EntryKind, NewEntryInput } from "../types/entry";
 import { ENTRY_KIND_COLOR, ENTRY_KIND_LABEL } from "../utils/entryLabels";
 import { toMinuteStart } from "../utils/format";
+import { lunarText } from "../utils/lunar";
 import { CreateKindDialog } from "./CreateKindDialog";
 
 /** 日历视图模式：月网格（FullCalendar）/ 周议程 / 日议程 */
@@ -64,11 +65,15 @@ interface CalendarEvent {
   ts: number;
 }
 
-/** 条目的「发生日期」：提醒按闹钟时间（无闹钟兜底 remindAt），备忘/待办/涂鸦按最近更新时间 */
+/** 条目的「发生日期」：提醒按闹钟时间（无闹钟兜底 remindAt），
+ * 已完成的待办按完成时间归档，其余（含未完成待办）按最近更新时间 */
 function entryTimes(entry: Entry): number[] {
   if (entry.kind === "reminder") {
     if (entry.alarms.length > 0) return entry.alarms.map((a) => a.remindAt);
     return [entry.remindAt];
+  }
+  if (entry.kind === "todo" && entry.done && entry.completedAt) {
+    return [entry.completedAt];
   }
   return [entry.updatedAt];
 }
@@ -77,21 +82,6 @@ function entryTimes(entry: Entry): number[] {
 function isEntryDone(entry: Entry): boolean {
   if (entry.kind === "todo" || entry.kind === "reminder") return entry.done;
   return false;
-}
-
-/** 月格下的农历小字：节气 > 节日（农历 / 公历） > 初一显月名 > 农历日 */
-function lunarText(date: Dayjs): string {
-  const lunar = Lunar.fromDate(date.toDate());
-  const jieqi = lunar.getJieQi();
-  if (jieqi) return jieqi;
-  const lunarFest = lunar.getFestivals();
-  if (lunarFest.length > 0) return lunarFest[0];
-  const solarFest = lunar.getSolar().getFestivals();
-  if (solarFest.length > 0) return solarFest[0];
-  if (lunar.getDay() === 1) {
-    return `${lunar.getMonth() < 0 ? "闰" : ""}${lunar.getMonthInChinese()}月`;
-  }
-  return lunar.getDayInChinese();
 }
 
 /** 单条日程事件（时间 + 分类色条 + 标题），点击进详情 */
@@ -234,6 +224,8 @@ export function CalendarPane({ onSelect }: { onSelect: (id: string) => void }) {
   const entries = useEntryStore((state) => state.entries);
   // 分类筛选（全部 / 备忘 / 提醒 / 待办 / 涂鸦）在日历视图同样生效
   const filter = useEntryStore((state) => state.filter);
+  // 标题栏搜索关键字在日历视图同样过滤（标题 / 正文包含即可，大小写不敏感）
+  const search = useEntryStore((state) => state.search);
   const [viewMode, setViewMode] = useState<CalendarViewMode>(loadViewMode);
   const [selectedDate, setSelectedDate] = useState<Dayjs>(() => dayjs());
   /** 新建弹窗锚定日期：非 null 时弹出类型选择，创建的条目落在该日期 */
@@ -242,11 +234,19 @@ export function CalendarPane({ onSelect }: { onSelect: (id: string) => void }) {
   const todayKey = dayjs().format("YYYY-MM-DD");
   const selectedKey = selectedDate.format("YYYY-MM-DD");
 
-  const visibleEntries = useMemo(
-    () =>
-      filter === "all" ? entries : entries.filter((entry) => entry.kind === filter),
-    [entries, filter],
-  );
+  const visibleEntries = useMemo(() => {
+    const byKind =
+      filter === "all"
+        ? entries
+        : entries.filter((entry) => entry.kind === filter);
+    const query = search.trim().toLowerCase();
+    if (!query) return byKind;
+    return byKind.filter(
+      (entry) =>
+        entry.title.toLowerCase().includes(query) ||
+        entry.content.toLowerCase().includes(query),
+    );
+  }, [entries, filter, search]);
 
   // 日期 → 事件映射（同一条目同一天只留最早一条），列表按时间升序
   const byDate = useMemo(() => {
@@ -280,6 +280,9 @@ export function CalendarPane({ onSelect }: { onSelect: (id: string) => void }) {
           groupId: entry.id,
           title: entry.title.trim() || ENTRY_KIND_LABEL[entry.kind],
           start: dayjs(ts).toDate(),
+          // 仅提醒可拖拽改期：其余条目的日期是派生值（更新/完成时间），没有可改的日程语义
+          editable: entry.kind === "reminder",
+          durationEditable: false,
           extendedProps: {
             entryId: entry.id,
             kind: entry.kind,
@@ -341,6 +344,60 @@ export function CalendarPane({ onSelect }: { onSelect: (id: string) => void }) {
     if (viewMode !== "month") return;
     calendarRef.current?.getApi().gotoDate(selectedDate.toDate());
   }, [selectedDate, viewMode]);
+
+  /** 拖拽改期：按整日平移更新对应闹钟时间（保留原时刻），失败回弹 */
+  const handleEventDrop = (arg: EventDropArg): void => {
+    const props = arg.event.extendedProps as FcEventProps;
+    const newStart = arg.event.start;
+    if (props.kind !== "reminder" || !newStart) {
+      arg.revert();
+      return;
+    }
+    const oldTs = props.ts;
+    // 月视图拖拽是「日」粒度：取目标日 − 原日的整天差，保留原时刻
+    // （FC 拖入日网格可能把事件转 allDay，不能直接用 start 差值）
+    const daysDiff = dayjs(newStart)
+      .startOf("day")
+      .diff(dayjs(oldTs).startOf("day"), "day");
+    if (daysDiff === 0) {
+      arg.revert();
+      return;
+    }
+    const newTs = toMinuteStart(oldTs + daysDiff * 86_400_000);
+    void (async () => {
+      try {
+        const state = useEntryStore.getState();
+        const entry = state.entries.find((item) => item.id === props.entryId);
+        if (!entry || entry.kind !== "reminder") {
+          arg.revert();
+          return;
+        }
+        let replaced = false;
+        const alarms = entry.alarms.map((alarm) => {
+          if (replaced || alarm.remindAt !== oldTs) return alarm;
+          replaced = true;
+          return {
+            ...alarm,
+            remindAt: newTs,
+            notified: false,
+            lastDeliveryStatus: undefined,
+            lastDeliveryError: undefined,
+          };
+        });
+        if (!replaced) {
+          arg.revert();
+          return;
+        }
+        await state.updateEntry(entry.id, { kind: "reminder", alarms });
+        message.success(`已改期至 ${dayjs(newTs).format("M月D日 HH:mm")}`);
+      } catch (error) {
+        arg.revert();
+        message.error(
+          error instanceof Error ? error.message : "改期失败，请重试",
+        );
+      }
+    })();
+  };
 
   // 前后导航按视图步进：月视图 ±1 月、周视图 ±1 周、日视图 ±1 天
   const stepUnit =
@@ -437,6 +494,8 @@ export function CalendarPane({ onSelect }: { onSelect: (id: string) => void }) {
               fixedWeekCount
               dayMaxEvents={2}
               moreLinkText="条"
+              editable
+              eventDrop={handleEventDrop}
               events={fcEvents}
               dayHeaderContent={(arg) => (
                 <span className="fc-head-dow">

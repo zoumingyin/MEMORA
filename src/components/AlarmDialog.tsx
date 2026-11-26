@@ -114,6 +114,8 @@ function playBeep(): void {
       (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
     if (!Ctor) return
     const ctx = new Ctor()
+    // 新窗口可能无用户手势导致 AudioContext suspended：先 resume 再播放
+    void ctx.resume().catch(() => undefined)
     const play = (freq: number, start: number, duration: number): void => {
       const osc = ctx.createOscillator()
       const gain = ctx.createGain()

@@ -4700,6 +4700,51 @@ button.note-list-row {
   padding: 0 2px;
   border-radius: 5px;
 }
+
+/* 带农历小字的日期格：数字 + 农历两行布局，格高放宽 */
+.alarm-picker-dropdown .ant-picker-cell-inner.alarm-cell-lunar {
+  display: flex;
+  height: auto;
+  min-height: 34px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 1px 2px 2px;
+  line-height: 1.15;
+}
+
+.alarm-picker-dropdown .ant-picker-cell-inner.alarm-cell-lunar .alarm-cell-day {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 15px;
+}
+
+.alarm-picker-dropdown
+  .ant-picker-cell-inner.alarm-cell-lunar
+  .alarm-cell-lunar-sub {
+  max-width: 26px;
+  overflow: hidden;
+  font-size: 9px;
+  line-height: 11px;
+  color: var(--text-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 选中态：农历小字跟随反色 */
+.alarm-picker-dropdown
+  .ant-picker-cell-selected
+  .alarm-cell-lunar
+  .alarm-cell-lunar-sub {
+  color: rgba(255, 255, 255, 0.85);
+}
+
+/* 格高放宽后 hover 高亮层撑满整格 */
+.alarm-picker-dropdown .ant-picker-cell::before {
+  height: auto;
+  top: 1px;
+  bottom: 1px;
+}
 .alarm-picker-dropdown .ant-picker-footer {
   padding: 3px 8px;
 }
@@ -4743,6 +4788,14 @@ button.note-list-row {
 .alarm-interval-unit {
   color: var(--text-muted);
   font-size: 12px;
+}
+
+/* 模式动态说明：随模式与提醒时间联动的一句话重复规则 */
+.alarm-mode-hint {
+  margin: 2px 0 0;
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--text-muted);
 }
 
 /* 循环间隔单位下拉（秒 / 分 / 时 / 天） */

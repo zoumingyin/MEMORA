@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Input } from "antd";
+import { Badge, Input } from "antd";
+import dayjs from "dayjs";
 import { CalendarDays, Pin, Search, Settings, Sparkles, Timer, X, Zap } from "lucide-react";
 import { useWindowStore } from "../store/useWindowStore";
 import { useEntryStore } from "../store/useEntryStore";
@@ -48,6 +49,21 @@ export function TitleBar({ quickOpen, setQuickOpen, pomodoro }: TitleBarProps) {
   }, [entries, pomodoro.linkedEntryId]);
   const pendingTodoCount =
     linkedTodo?.items.filter((item) => !item.done).length ?? 0;
+  /** 今天范围内尚未触发的提醒闹钟数（含今天到期未触发的），日历按钮徽标用 */
+  const todayAlarmCount = useMemo(() => {
+    const start = dayjs().startOf("day").valueOf();
+    const end = dayjs().endOf("day").valueOf();
+    let count = 0;
+    for (const entry of entries) {
+      if (entry.kind !== "reminder" || entry.done) continue;
+      for (const alarm of entry.alarms) {
+        if (!alarm.notified && alarm.remindAt >= start && alarm.remindAt <= end) {
+          count += 1;
+        }
+      }
+    }
+    return count;
+  }, [entries]);
   /** 专注结束后弹出勾选面板（仅绑定待办且还有未完成子任务时） */
   const [focusReviewOpen, setFocusReviewOpen] = useState(false);
   const completedRoundsRef = useRef(pomodoro.state.rounds);
@@ -62,6 +78,8 @@ export function TitleBar({ quickOpen, setQuickOpen, pomodoro }: TitleBarProps) {
   }, [pomodoro.state.rounds, pendingTodoCount]);
   /** 搜索框展开状态：点击搜索图标展开，点击空白区域收起 */
   const [searchOpen, setSearchOpen] = useState(false);
+  /** 搜索过滤生效中（有关键字）：收起输入框后图标保持高亮提示，点击图标可回到搜索框 */
+  const searchActive = searchOpen || search.trim().length > 0;
 
   // 点击搜索框/图标以外的区域时收起搜索框
   useEffect(() => {
@@ -135,31 +153,47 @@ export function TitleBar({ quickOpen, setQuickOpen, pomodoro }: TitleBarProps) {
             value={search}
             onChange={(event) => setSearch(event.target.value)}
             onKeyDown={(event) => {
-              if (event.key !== "Escape") return;
-              event.preventDefault();
-              if (search) setSearch("");
-              else setSearchOpen(false);
+              // Enter：收起输入框，关键字继续生效（列表 / 日历同步过滤）
+              if (event.key === "Enter") {
+                event.preventDefault();
+                setSearchOpen(false);
+                return;
+              }
+              // Esc：一键取消搜索——清空关键字并收起输入框，图标同时取消高亮
+              if (event.key === "Escape") {
+                event.preventDefault();
+                setSearch("");
+                setSearchOpen(false);
+              }
             }}
           />
         </div>
         <button
           type="button"
-          className={`titlebar-btn search-toggle ${searchOpen ? "active" : ""}`}
-          title="搜索"
+          className={`titlebar-btn search-toggle ${searchActive ? "active" : ""}`}
+          title={searchActive ? "搜索（过滤生效中，点击继续编辑）" : "搜索"}
+          aria-pressed={searchActive}
           onClick={() => setSearchOpen((open) => !open)}
         >
           <Search size={15} />
         </button>
 
-        <button
-          type="button"
-          className={`titlebar-btn ${view === "calendar" ? "active" : ""}`}
-          title={view === "calendar" ? "退出日历视图" : "日历视图（月 / 周 / 日）"}
-          aria-pressed={view === "calendar"}
-          onClick={() => setView(view === "calendar" ? "list" : "calendar")}
+        <Badge
+          count={todayAlarmCount}
+          size="small"
+          offset={[-2, 3]}
+          title={`今天还有 ${todayAlarmCount} 条提醒`}
         >
-          <CalendarDays size={15} />
-        </button>
+          <button
+            type="button"
+            className={`titlebar-btn ${view === "calendar" ? "active" : ""}`}
+            title={view === "calendar" ? "退出日历视图" : "日历视图（月 / 周 / 日）"}
+            aria-pressed={view === "calendar"}
+            onClick={() => setView(view === "calendar" ? "list" : "calendar")}
+          >
+            <CalendarDays size={15} />
+          </button>
+        </Badge>
 
         <button
           type="button"
