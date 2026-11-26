@@ -15,7 +15,6 @@ export function CategoryTabs() {
   const filter = useEntryStore((state) => state.filter);
   const setFilter = useEntryStore((state) => state.setFilter);
   const setCurrentKind = useEntryStore((state) => state.setCurrentKind);
-  const setView = useEntryStore((state) => state.setView);
   const entries = useEntryStore((state) => state.entries);
 
   const countFor = (value: FilterValue): number =>
@@ -33,7 +32,7 @@ export function CategoryTabs() {
             type="button"
             className={`filter-chip ${active ? "active" : ""}`}
             onClick={() => {
-              setView("list");
+              // 只切换筛选、不改视图：列表 / 日历两种视图下筛选都要生效
               setFilter(f.value);
               if (f.value !== "all") setCurrentKind(f.value);
               const filtered = entries.filter(

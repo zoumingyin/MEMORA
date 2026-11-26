@@ -397,15 +397,15 @@ textarea {
   color: var(--text);
 }
 
-/* 日历视图在宽窗口下左栏放宽：180px 下月历格子仅 ~25px 太挤，
-   260px 时格子 ~37px 可读；中宽窗口适度收窄 */
+/* 日历视图在宽窗口下左栏放宽：300px 时月历格子 ~41px、周/日议程条目可读，
+   中宽窗口适度收窄 */
 .note-list-pane.calendar-mode {
-  width: 260px;
+  width: 300px;
 }
 
 @media (max-width: 900px) and (min-width: 621px) {
   .note-list-pane.calendar-mode {
-    width: 220px;
+    width: 240px;
   }
 }
 @media (min-width: 620px) {
@@ -965,118 +965,186 @@ textarea {
   word-break: break-all;
 }
 
-/* 日历视图 */
-.calendar-pane {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  padding: 4px 4px 8px;
-}
+/* 列表卡片样式已迁移至 UnoCSS（note-card shortcut + 容器内联工具类），
+   仅保留卡片纸张外观（颜色淡染 + 纹理）与按钮内部子元素样式、已完成态修饰。 */
 
-.calendar-pane .ant-picker-calendar {
-  background: transparent;
-}
-
-.calendar-pane .ant-picker-panel {
-  background: transparent;
-}
-
-.calendar-pane .ant-picker-calendar-date {
-  height: 44px;
-}
-
-.calendar-cell {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 2px;
-}
-
-.calendar-dots {
-  display: flex;
-  gap: 3px;
-  height: 4px;
-}
-
-.calendar-dot {
-  width: 4px;
-  height: 4px;
-  border-radius: 999px;
-  display: inline-block;
-}
-
-.calendar-day-head {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  font-size: 12px;
-  font-weight: 700;
-  color: var(--text);
-  padding: 8px 6px 4px;
-  border-top: 1px solid var(--border);
-}
-
-.calendar-day-count {
-  font-style: normal;
+/* ===== FullCalendar 月网格（sidebar 迷你月历）：贴合主题令牌，压缩默认留白 ===== */
+.fc-calendar-mini {
+  --fc-border-color: var(--border);
+  --fc-page-bg-color: transparent;
+  --fc-today-bg-color: transparent;
+  --fc-neutral-bg-color: transparent;
+  --fc-highlight-color: transparent;
+  --fc-event-bg-color: transparent;
+  --fc-event-border-color: transparent;
   font-size: 11px;
+}
+
+.fc-calendar-mini .fc-scrollgrid {
+  border: none;
+}
+
+.fc-calendar-mini .fc-theme-standard td,
+.fc-calendar-mini .fc-theme-standard th {
+  border-color: var(--border);
+}
+
+.fc-calendar-mini th {
+  border: none !important;
+  padding: 0;
+}
+
+.fc-head-dow {
+  display: block;
+  width: 100%;
+  padding: 3px 0;
+  font-size: 10px;
   font-weight: 600;
   color: var(--text-muted);
+  text-align: center;
 }
 
-.calendar-day-list {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
+/* 日期格：农历小字布局 */
+.fc-lunar-cell {
   display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 0 4px;
-}
-
-.calendar-day-item {
-  display: flex;
-  align-items: center;
-  gap: 7px;
   width: 100%;
-  text-align: left;
-  border: 1px solid var(--border);
-  background: rgba(var(--field-rgb), 0.4);
-  border-radius: var(--memora-radius-sm);
-  padding: 6px 8px;
-  cursor: pointer;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  padding: 2px 1px 3px;
+}
+
+.fc-calendar-mini .fc-daygrid-day-frame {
+  min-height: 46px;
+}
+
+.fc-calendar-mini .fc-daygrid-day-top {
+  display: flex;
+  width: 100%;
+  justify-content: center;
+}
+
+.fc-calendar-mini .fc-daygrid-day-number {
+  padding: 0;
+  width: 100%;
   color: var(--text);
 }
 
-.calendar-day-item:hover {
+.fc-lunar-num {
+  display: flex;
+  width: 19px;
+  height: 19px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.fc-lunar-num.today {
+  background: var(--note);
+  color: #fff;
+}
+
+.fc-lunar-sub {
+  max-width: 100%;
+  padding: 0 2px;
+  overflow: hidden;
+  font-size: 9px;
+  line-height: 1.15;
+  color: var(--text-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fc-lunar-sub.today {
+  color: var(--note);
+  font-weight: 700;
+}
+
+.fc-calendar-mini .fc-day-other .fc-daygrid-day-number {
+  color: var(--text-muted);
+  opacity: 0.55;
+}
+
+.fc-calendar-mini .fc-day-other .fc-lunar-sub {
+  opacity: 0.55;
+}
+
+/* 选中日整格淡底 */
+.fc-calendar-mini .fc-daygrid-day.sel-day {
   background: var(--hover-fill);
 }
 
-.calendar-day-kind {
-  width: 6px;
-  height: 22px;
-  border-radius: 3px;
-  flex: none;
+.fc-calendar-mini .fc-daygrid-day {
+  cursor: pointer;
 }
 
-.calendar-day-title {
-  flex: 1;
+.fc-calendar-mini .fc-daygrid-day:hover {
+  background: var(--hover-fill);
+}
+
+/* 事件条：分类色左条 + 截断标题 */
+.fc-calendar-mini .fc-daygrid-event {
+  border-radius: var(--memora-radius-sm);
+}
+
+.fc-calendar-mini .fc-daygrid-dot-event .fc-daygrid-event-dot {
+  display: none;
+}
+
+.fc-chip {
+  display: flex;
+  width: 100%;
   min-width: 0;
-  font-size: 12px;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 3px;
+  overflow: hidden;
+  font-size: 10px;
   font-weight: 600;
+  color: var(--text);
+}
+
+.fc-chip i {
+  flex: none;
+  width: 5px;
+  height: 11px;
+  border-radius: 2px;
+}
+
+.fc-chip span {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.calendar-day-meta {
-  flex: none;
+.fc-chip.done span {
+  color: var(--text-muted);
+  text-decoration: line-through;
+  opacity: 0.7;
+}
+
+/* 「+N 更多」与弹层 */
+.fc-calendar-mini .fc-daygrid-more-link {
   font-size: 10px;
+  font-weight: 600;
   color: var(--text-muted);
 }
 
-/* 列表卡片样式已迁移至 UnoCSS（note-card shortcut + 容器内联工具类），
-   仅保留卡片纸张外观（颜色淡染 + 纹理）与按钮内部子元素样式、已完成态修饰。 */
+.fc-calendar-mini .fc-popover {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  box-shadow: var(--memora-shadow);
+}
+
+.fc-calendar-mini .fc-popover .fc-popover-header {
+  background: var(--hover-fill);
+  color: var(--text-muted);
+  font-size: 10px;
+}
 
 /* 网格卡片（div 根节点）：整卡可点击进入详情，右上工具条与贴纸墙卡片一致 */
 .note-card {

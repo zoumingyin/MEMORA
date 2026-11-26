@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Input } from "antd";
-import { Pin, Search, Settings, Sparkles, Timer, X, Zap } from "lucide-react";
+import { CalendarDays, Pin, Search, Settings, Sparkles, Timer, X, Zap } from "lucide-react";
 import { useWindowStore } from "../store/useWindowStore";
 import { useEntryStore } from "../store/useEntryStore";
 import { useAssistantStore } from "../store/useAssistantStore";
@@ -36,6 +36,8 @@ export function TitleBar({ quickOpen, setQuickOpen, pomodoro }: TitleBarProps) {
   const pomodoroLabel = pomodoro.getRemainingLabel();
   const search = useEntryStore((state) => state.search);
   const setSearch = useEntryStore((state) => state.setSearch);
+  const view = useEntryStore((state) => state.view);
+  const setView = useEntryStore((state) => state.setView);
   const entries = useEntryStore((state) => state.entries);
   /** 番茄钟绑定的待办（移入废纸篓 / 已换分类时自然失效） */
   const linkedTodo = useMemo(() => {
@@ -147,6 +149,16 @@ export function TitleBar({ quickOpen, setQuickOpen, pomodoro }: TitleBarProps) {
           onClick={() => setSearchOpen((open) => !open)}
         >
           <Search size={15} />
+        </button>
+
+        <button
+          type="button"
+          className={`titlebar-btn ${view === "calendar" ? "active" : ""}`}
+          title={view === "calendar" ? "退出日历视图" : "日历视图（月 / 周 / 日）"}
+          aria-pressed={view === "calendar"}
+          onClick={() => setView(view === "calendar" ? "list" : "calendar")}
+        >
+          <CalendarDays size={15} />
         </button>
 
         <button
