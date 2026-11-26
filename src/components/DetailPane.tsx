@@ -34,6 +34,10 @@ import { isEntryWriteError } from "../repository/errors";
 import { registerActiveEditor } from "../editor/editorRegistry";
 import { paperTintHex, PAPER_COLORS, PAPER_STYLES } from "../utils/paper";
 import { sortTodoItemsDoneLast } from "../utils/wallCardMeta";
+import {
+  extractWikiLinkTitles,
+  jumpToEntry,
+} from "../utils/noteLinks";
 import { AlarmEditorDialog } from "./AlarmEditorDialog";
 import { DoodleBoard } from "./DoodleBoard";
 import { MarkdownEditor } from "./MarkdownEditor";
@@ -44,6 +48,9 @@ const TITLE_PLACEHOLDER: Record<Entry["kind"], string> = {
   todo: "要做什么？",
   draw: "涂鸦标题（可选）",
 };
+
+/** 网关模式下的稳定空清单：字面量 [] 每次渲染都是新引用，会击穿下游 useMemo */
+const NO_ENTRIES: Entry[] = [];
 
 /** 闹钟模式短标签（列表行摘要） */
 const ALARM_MODE_LABEL: Record<AlarmMode, string> = {
@@ -101,6 +108,8 @@ export interface DetailEditGateway {
   toggleReminderDone: (id: string) => Promise<void>;
   /** 全部已知标签（标签 chips 候选池，替代从主窗口 entries 派生） */
   knownTags: string[];
+  /** 全部备忘便签清单（[[引用]] 胶囊解析 / 插入候选 / 点击跳转用） */
+  noteRefs?: Array<{ id: string; title: string }>;
 }
 
 interface DetailPaneProps {
@@ -162,8 +171,35 @@ function DetailForm({ entry, onRemove, gateway }: DetailFormProps) {
   const toggleReminderDone = gateway
     ? gateway.toggleReminderDone
     : storeToggleReminderDone;
-  const entries = gateway ? [] : storeEntries;
+  const entries = gateway ? NO_ENTRIES : storeEntries;
   const now = useNow();
+
+  // 双向链接：反链 = 其他备忘正文里 [[本便签标题]] 的条目；可引用清单 = 其他备忘（编辑器插入用）。
+  // 网关模式（独立小窗）没有全量正文，反链不显示；可引用清单用网关下发的 noteRefs。
+  const noteBacklinks = useMemo(() => {
+    if (entry.kind !== "note" || gateway) return [];
+    const wanted = entry.title.trim();
+    if (!wanted) return [];
+    return entries.filter(
+      (item) =>
+        item.kind === "note" &&
+        item.id !== entry.id &&
+        extractWikiLinkTitles(item.content ?? "").some(
+          (refTitle) => refTitle === wanted
+        )
+    );
+  }, [entries, entry, gateway]);
+  const noteLinkTargets = useMemo(() => {
+    if (entry.kind !== "note") return [];
+    if (gateway) {
+      return (gateway.noteRefs ?? [])
+        .filter((item) => item.id !== entry.id)
+        .map((item) => ({ id: item.id, title: item.title || "无标题" }));
+    }
+    return entries
+      .filter((item) => item.kind === "note" && item.id !== entry.id)
+      .map((item) => ({ id: item.id, title: item.title || "无标题" }));
+  }, [entries, entry, gateway]);
 
   // 本地编辑态：随 entry.id 重挂载重新初始化，不与 store 双向同步，避免打断输入
   const [title, setTitle] = useState(entry.title);
@@ -784,9 +820,31 @@ function DetailForm({ entry, onRemove, gateway }: DetailFormProps) {
       {entry.kind === "note" && (
         <MarkdownEditor
           value={content}
-          placeholder="支持 Markdown：**加粗**、# 标题、- 列表、> 引用、```代码```"
+          placeholder="支持 Markdown：**加粗**、# 标题、- 列表、> 引用、```代码```；输入 @ 引用其他便签"
           onChange={setContent}
+          linkTargets={noteLinkTargets}
         />
+      )}
+      {/* 双向链接：反链面板——点胶囊跳到引用本便签的那条便签 */}
+      {entry.kind === "note" && noteBacklinks.length > 0 && (
+        <div className="flex flex-col gap-1 px-1 pb-1.5">
+          <span className="text-[11px] text-[var(--text-muted)]">
+            被 {noteBacklinks.length} 条便签引用
+          </span>
+          <div className="flex flex-wrap gap-1">
+            {noteBacklinks.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                title="跳转到这条便签"
+                onClick={() => jumpToEntry(item.id)}
+                className="max-w-[220px] truncate rounded-full border border-solid border-[var(--border)] bg-[var(--hover-fill)] px-2 py-[1px] text-[11px] leading-[18px] text-[var(--text)] transition hover:border-[var(--note)] hover:text-[var(--note)]"
+              >
+                {`@${item.title || "无标题"}`}
+              </button>
+            ))}
+          </div>
+        </div>
       )}
       {entry.kind === "draw" && (
         <DoodleBoard value={content} onChange={setContent} />

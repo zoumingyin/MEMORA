@@ -20,6 +20,7 @@ import {
   NOTE_EDIT_H,
   NOTE_EDIT_W,
   NOTE_WINDOW_OPEN_EVENT,
+  NOTE_WINDOW_OPEN_REF_EVENT,
   NOTE_WINDOW_PATCH_EVENT,
   NOTE_WINDOW_PATCH_RESULT_EVENT,
   NOTE_WINDOW_PING_EVENT,
@@ -186,7 +187,7 @@ async function collapseForView(geom: WindowGeometry): Promise<void> {
 function ResizeHandle() {
   return (
     <div
-      className="absolute right-[2px] bottom-[2px] z-10 h-[18px] w-[18px] cursor-[nwse-resize] rounded-[4px]"
+      className="absolute right-[6px] bottom-[6px] z-10 h-[18px] w-[18px] cursor-[nwse-resize] rounded-[4px]"
       style={{
         background:
           "repeating-linear-gradient(-45deg, transparent 0 2px, var(--border) 2px 3px)",
@@ -222,6 +223,10 @@ export function NoteWindow() {
   const [entryId] = useState(entryIdFromLabel);
   const [entry, setEntry] = useState<Entry | null>(null);
   const [knownTags, setKnownTags] = useState<string[]>([]);
+  /** 全部备忘便签清单：解析正文 [[引用]] 胶囊（主窗口随打开/同步下发） */
+  const [noteRefs, setNoteRefs] = useState<Array<{ id: string; title: string }>>(
+    []
+  );
   const [pinned, setPinned] = useState(false);
   const [mode, setMode] = useState<"view" | "edit">("view");
   const now = useNow();
@@ -432,6 +437,7 @@ export function NoteWindow() {
       );
     },
     knownTags,
+    noteRefs,
   };
 
   /** 关闭前落盘：有未保存内容或保存失败时留在窗口内提示，不静默丢内容 */
@@ -488,6 +494,7 @@ export function NoteWindow() {
             lastSyncedRef.current = incoming.entry;
             setEntry(incoming.entry);
             setKnownTags(incoming.knownTags);
+            setNoteRefs(incoming.noteRefs);
             setPinned(incoming.pinned);
           }
         ),
@@ -495,13 +502,19 @@ export function NoteWindow() {
           if (event.payload?.id !== entryId) return;
           void emitTo("main", NOTE_WINDOW_READY_EVENT, { id: entryId });
         }),
-        listen<{ id: string; entry: Entry; knownTags: string[] }>(
+        listen<{
+          id: string;
+          entry: Entry;
+          knownTags: string[];
+          noteRefs: Array<{ id: string; title: string }>;
+        }>(
           NOTE_WINDOW_SYNC_EVENT,
           (event) => {
             if (event.payload?.id !== entryId) return;
             lastSyncedRef.current = event.payload.entry;
             setEntry(event.payload.entry);
             setKnownTags(event.payload.knownTags);
+            setNoteRefs(event.payload.noteRefs);
           }
         ),
         listen<{
@@ -714,9 +727,29 @@ export function NoteWindow() {
           }}
           onClick={(event) => {
             if (isOnScrollbar(event)) event.stopPropagation();
+            // 点中正文便签引用胶囊：转发主窗口解析跳转（小窗没有全量条目清单，无法本地解析）
+            const refEl = (
+              event.target as HTMLElement
+            ).closest?.(".note-ref-link") as HTMLElement | null;
+            if (refEl) {
+              event.stopPropagation();
+              const id = refEl.getAttribute("data-id") ?? undefined;
+              const title = refEl.getAttribute("data-title") ?? undefined;
+              if (id || title) {
+                void emitTo("main", NOTE_WINDOW_OPEN_REF_EVENT, { id, title });
+              }
+            }
           }}
         >
-          <EntryCardBody entry={entry} now={now} />
+          <EntryCardBody
+            entry={entry}
+            now={now}
+            resolveNoteRef={(title) => {
+              const wanted = title.trim();
+              const hit = noteRefs.find((item) => item.title.trim() === wanted);
+              return hit ? { id: hit.id } : null;
+            }}
+          />
         </div>
 
         {/* 页脚：标签 + 与便签列表同源的元信息（备忘/涂鸦更新时间、待办进度、

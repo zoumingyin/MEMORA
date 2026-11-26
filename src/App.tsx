@@ -64,6 +64,7 @@ import {
   toggleSpotlightWindow,
 } from "./window/spotlightWindow";
 import {
+  NOTE_WINDOW_OPEN_REF_EVENT,
   NOTE_WINDOW_PATCH_EVENT,
   NOTE_WINDOW_PATCH_RESULT_EVENT,
   NOTE_WINDOW_REMOVE_EVENT,
@@ -72,6 +73,7 @@ import {
   restoreNoteWindows,
   syncNoteWindow,
 } from "./window/noteWindow";
+import { jumpToEntry, resolveNoteRefByTitle } from "./utils/noteLinks";
 import { isPseudoMaximized } from "./window/maximize";
 import {
   loadCloseBehavior,
@@ -88,6 +90,7 @@ import { EntryWriteError, isEntryWriteError } from "./repository/errors";
 import { flushActiveEditor } from "./editor/editorRegistry";
 import type { AlarmItem, Entry, EntryKind, NewEntryInput } from "./types/entry";
 import { TitleBar } from "./components/TitleBar";
+import { usePomodoro } from "./hooks/usePomodoro";
 import { CategoryTabs } from "./components/CategoryTabs";
 import { SearchBar } from "./components/SearchBar";
 import { EntryList } from "./components/EntryList";
@@ -162,6 +165,9 @@ export default function App() {
   const clearWallPositions = useUiStore((state) => state.clearWallPositions);
   // 响应式视口：窄窗口（<620px）切换单栏（列表 ↔ 详情）
   const { isNarrow } = useViewport();
+  // 番茄钟状态在 App 顶层常驻持有：收纳窄条态会卸载 TitleBar（提前 return DockBar），
+  // 若状态放标题栏，收纳再展开计时会复位；放这里则收纳期间计时继续走
+  const pomodoro = usePomodoro();
   // 电脑 / 手机模式切换（窗口跨 620px 断点）的内容过渡：
   // 变更 key 让内容层重挂载并播放一次淡入动画（view-mode-enter），
   // 首次挂载（animKey=0）不加动画类，不影响启动 / 收纳展开的既有动效
@@ -380,6 +386,7 @@ export default function App() {
     let detachSpotlightJump: () => void = () => undefined;
     let detachNotePatch: () => void = () => undefined;
     let detachNoteRemove: () => void = () => undefined;
+    let detachNoteOpenRef: () => void = () => undefined;
     let detachFocusShown: () => void = () => undefined;
     let detachCloseRequest: () => void = () => undefined;
 
@@ -587,6 +594,32 @@ export default function App() {
       );
       spotlightJumpPromise.then((detach) => {
         detachSpotlightJump = detach;
+      });
+      // 便签小窗点击正文 [[引用]]：小窗没有全量条目清单，转发到这里按 id/标题解析，
+      // 跳转主窗口对应便签并进详情；主窗口可能被隐藏/最小化，先唤起再聚焦
+      const noteOpenRefPromise = listen<{ id?: string; title?: string }>(
+        NOTE_WINDOW_OPEN_REF_EVENT,
+        (event) => {
+          const { id, title } = event.payload ?? {};
+          let targetId = id ?? "";
+          if (!targetId && title) {
+            targetId =
+              resolveNoteRefByTitle(
+                useEntryStore.getState().entries,
+                title
+              )?.id ?? "";
+          }
+          if (!targetId) return;
+          jumpToEntry(targetId);
+          expandIfDocked();
+          const win = getCurrentWindow();
+          void win.unminimize().catch(() => undefined);
+          void win.show();
+          void win.setFocus();
+        }
+      );
+      noteOpenRefPromise.then((detach) => {
+        detachNoteOpenRef = detach;
       });
       // 便签小窗内编辑回传：DetailPane 网关回传任意 patch，走统一 updateEntry 落盘；
       // 主窗口落盘完成后按 requestId 回执，小窗只有收到成功结果才显示「已保存」
@@ -806,6 +839,7 @@ export default function App() {
       detachSpotlightJump();
       detachNotePatch();
       detachNoteRemove();
+      detachNoteOpenRef();
       detachCloseRequest();
       void hideSpotlightWindow();
     };
@@ -1118,7 +1152,7 @@ export default function App() {
           } as CSSProperties
         }
       >
-        <TitleBar quickOpen={quickOpen} setQuickOpen={setQuickOpen} />
+        <TitleBar quickOpen={quickOpen} setQuickOpen={setQuickOpen} pomodoro={pomodoro} />
         {loadError && (
           <Alert
             type="warning"
@@ -1390,7 +1424,7 @@ export default function App() {
         open={overdueItems.length > 0}
         title={`有 ${overdueItems.length} 条提醒已到期`}
         closable
-        maskClosable={false}
+        mask={{ closable: false }}
         onCancel={() => setOverdueItems([])}
         footer={[
           <Button key="later" onClick={() => setOverdueItems([])}>
@@ -1447,7 +1481,7 @@ export default function App() {
         open={closeRequestOpen}
         title="要退出 MEMORA 吗？"
         closable
-        maskClosable={false}
+        mask={{ closable: false }}
         onCancel={() => setCloseRequestOpen(false)}
         footer={[
           <Button key="cancel" onClick={() => setCloseRequestOpen(false)}>

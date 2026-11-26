@@ -37,11 +37,16 @@ export const NOTE_WINDOW_PATCH_RESULT_EVENT = "note-window:patch-result";
 /** 小窗 → 主窗口：小窗内删除便签（移入废纸篓），主窗口执行后联动关闭小窗 */
 export const NOTE_WINDOW_REMOVE_EVENT = "note-window:remove";
 
+/** 便签小窗点击正文 [[引用]]：把引用（id 或标题）转发主窗口解析跳转（小窗没有全量条目清单） */
+export const NOTE_WINDOW_OPEN_REF_EVENT = "note-window:open-ref";
+
 /** 主窗口 → 小窗的打开快照（主题由全局 ThemeProvider 解析，不再随快照下发） */
 export interface NoteWindowSnapshot {
   entry: Entry;
   /** 全部已知标签（DetailPane 编辑网关的标签候选池） */
   knownTags: string[];
+  /** 全部备忘便签清单（小窗解析 [[引用]] 胶囊用） */
+  noteRefs: Array<{ id: string; title: string }>;
   /** 主窗口侧是否置顶（小窗按同款哈希生成胶带/图钉装饰） */
   pinned: boolean;
 }
@@ -53,6 +58,14 @@ export function collectKnownTags(): string[] {
     for (const tag of item.tags ?? []) set.add(tag);
   }
   return [...set].sort((a, b) => a.localeCompare(b, "zh-Hans-CN"));
+}
+
+/** 收集全部备忘便签清单（小窗解析 [[引用]] 与点击跳转用） */
+export function collectNoteRefs(): Array<{ id: string; title: string }> {
+  return useEntryStore
+    .getState()
+    .entries.filter((item) => item.kind === "note")
+    .map((item) => ({ id: item.id, title: item.title }));
 }
 /** 小窗尺寸（CSS px）＝贴纸墙卡片 264×228 + 内边距（顶部 14 / 其余 8），可调大小 */
 export const NOTE_WIN_W = 280;
@@ -269,6 +282,7 @@ export async function openNoteWindow(id: string): Promise<boolean> {
       id,
       entry,
       knownTags: collectKnownTags(),
+      noteRefs: collectNoteRefs(),
       pinned: useUiStore.getState().pinnedIds.includes(id),
     });
     // 级联定位：主窗口所在工作区左上区域依次错开
@@ -300,6 +314,7 @@ export async function syncNoteWindow(entry: Entry): Promise<void> {
       id: entry.id,
       entry,
       knownTags: collectKnownTags(),
+      noteRefs: collectNoteRefs(),
     });
   } catch {
     // 窗口可能正在关闭，忽略

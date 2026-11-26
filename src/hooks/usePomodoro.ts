@@ -53,7 +53,8 @@ function saveSettings(settings: PomodoroSettings): void {
 }
 
 /**
- * 番茄钟计时逻辑：由标题栏常驻持有，弹窗关闭后计时器继续走。
+ * 番茄钟计时逻辑：由 App 顶层常驻持有（收纳窄条态 App 不卸载，计时继续走），
+ * 状态经 props 传给标题栏与弹窗；弹窗关闭后计时器继续走。
  * 工作轮结束自动切休息、休息轮结束自动切回工作并鸣响；设置持久化 localStorage。
  */
 export function usePomodoro() {
@@ -192,3 +193,6 @@ export function usePomodoro() {
     getRemainingLabel,
   };
 }
+
+/** usePomodoro 的返回类型：App 顶层调用后经 props 下发，消费方（TitleBar 等）用此标注 */
+export type PomodoroApi = ReturnType<typeof usePomodoro>;

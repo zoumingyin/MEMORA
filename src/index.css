@@ -4920,3 +4920,60 @@ body.img-viewer-window .ant-image-preview {
   color: var(--kind-accent);
 }
 
+/* 便签正文 [[双向链接]] 胶囊：renderNoteMarkdown 注入的 <a class="note-ref-link">（同款语义复用），
+   在便签纸张上下文中稍作适配；is-unresolved = 标题没匹配到便签（改名/删除后残留），点击不跳 */
+.note-md .note-ref-link {
+  display: inline-block;
+  padding: 0 6px;
+  margin: 0 1px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--hover-fill);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 18px;
+  text-decoration: none;
+  cursor: pointer;
+  transition:
+    border-color 0.15s,
+    color 0.15s;
+}
+/* 展示态胶囊同样带 @ 前缀，与编辑态 @标题 样式一致 */
+.note-md .note-ref-link::before {
+  content: "@";
+  margin-right: 2px;
+  opacity: 0.75;
+}
+.note-md .note-ref-link:hover {
+  border-color: var(--note);
+  color: var(--note);
+}
+.note-md .note-ref-link.is-unresolved {
+  border-style: dashed;
+  color: var(--text-muted);
+  cursor: default;
+}
+
+/* 编辑态（TipTap）里的便签引用原子节点（NoteMentionRef）：显示为 @标题 胶囊。
+   atom 节点整块选中/删除，编辑器内不存在隐藏括号字符，光标行为与普通文本一致 */
+.md-prose .note-mention-ref {
+  display: inline-block;
+  padding: 0 6px;
+  margin: 0 1px;
+  border-radius: 999px;
+  border: 1px solid var(--note);
+  background: var(--hover-fill);
+  color: var(--note);
+  font-size: 12px;
+  line-height: 18px;
+  user-select: none;
+  cursor: default;
+}
+/* 原子节点被选中（点击/方向键进入）时的轮廓反馈 */
+.md-prose .ProseMirror-selectednode.note-mention-ref,
+.md-prose .ProseMirror-selectednode .note-mention-ref {
+  outline: 2px solid var(--note);
+  outline-offset: 1px;
+  border-radius: 999px;
+}
+

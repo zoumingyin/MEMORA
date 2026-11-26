@@ -12,15 +12,17 @@ import { BrandMark } from "./BrandLogo";
 import { QuickCapture } from "./QuickCapture";
 import { PomodoroDialog } from "./PomodoroDialog";
 import { FocusReviewDialog } from "./FocusReviewDialog";
-import { usePomodoro } from "../hooks/usePomodoro";
+import type { PomodoroApi } from "../hooks/usePomodoro";
 
 interface TitleBarProps {
   /** 快速记录弹窗（全局快捷键 / 标题栏闪电按钮共用） */
   quickOpen: boolean;
   setQuickOpen: (open: boolean) => void;
+  /** 番茄钟状态由 App 顶层持有后下发：收纳窄条态 TitleBar 会被卸载，状态放这里会复位 */
+  pomodoro: PomodoroApi;
 }
 
-export function TitleBar({ quickOpen, setQuickOpen }: TitleBarProps) {
+export function TitleBar({ quickOpen, setQuickOpen, pomodoro }: TitleBarProps) {
   const { alwaysOnTop } = useWindowStore();
   const { setAlwaysOnTop } = useWindowStore();
   const [pomodoroOpen, setPomodoroOpen] = useState(false);
@@ -31,7 +33,6 @@ export function TitleBar({ quickOpen, setQuickOpen }: TitleBarProps) {
   const closeSettings = useUiStore((state) => state.closeSettings);
   const assistantOpen = useAssistantStore((state) => state.open);
   const toggleAssistant = useAssistantStore((state) => state.togglePanel);
-  const pomodoro = usePomodoro();
   const pomodoroLabel = pomodoro.getRemainingLabel();
   const search = useEntryStore((state) => state.search);
   const setSearch = useEntryStore((state) => state.setSearch);

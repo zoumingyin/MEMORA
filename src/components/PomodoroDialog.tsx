@@ -5,7 +5,7 @@ import {
   PlayCircleOutlined,
   RedoOutlined,
 } from "@ant-design/icons";
-import { useEffect, useMemo } from "react";
+import { useMemo } from "react";
 import {
   BREAK_PRESETS,
   fmt,
@@ -31,7 +31,7 @@ interface PomodoroDialogProps {
   todayStats: FocusStats;
 }
 
-/** 番茄钟弹窗：专注/休息倒计时 + 轮次计数，计时器本身由标题栏常驻（关闭弹窗仍在走） */
+/** 番茄钟弹窗：专注/休息倒计时 + 轮次计数，计时器由 App 顶层常驻持有（关闭弹窗 / 收纳窗口都继续走） */
 export function PomodoroDialog({
   open,
   onClose,
@@ -77,13 +77,6 @@ export function PomodoroDialog({
     todayStats.date === localDateKey()
       ? todayStats
       : { date: todayStats.date, rounds: 0, minutes: 0 };
-
-  // 弹窗打开时切到当前模式对应预设
-  useEffect(() => {
-    if (!open) return;
-    controls.setMode(mode);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
 
   return (
     <Modal

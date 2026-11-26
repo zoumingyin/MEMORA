@@ -1,6 +1,6 @@
 import { BellOutlined } from "@ant-design/icons";
 import type { ReactNode } from "react";
-import { markdownToHtml } from "../utils/markdown";
+import { renderNoteMarkdown } from "../utils/noteLinks";
 import { formatRelative, formatShort } from "../utils/format";
 import { TodoPreview } from "./EntryCardParts";
 import {
@@ -13,6 +13,8 @@ import type { Entry } from "../types/entry";
 interface EntryCardBodyProps {
   entry: Entry;
   now: number;
+  /** 便签 [[引用]] 解析器：标题 → 目标 id；缺省（无全量清单的窗口）渲染为不可点的未解析胶囊 */
+  resolveNoteRef?: (title: string) => { id: string } | null;
 }
 
 /**
@@ -20,9 +22,17 @@ interface EntryCardBodyProps {
  * 从 EntryList 的 renderWallCard 抽出共享：贴纸墙与便签独立小窗展示态共用，
  * 保证两处展示像素级一致。
  */
-export function EntryCardBody({ entry, now }: EntryCardBodyProps): ReactNode {
+export function EntryCardBody({
+  entry,
+  now,
+  resolveNoteRef,
+}: EntryCardBodyProps): ReactNode {
   if (entry.kind === "note") {
-    const noteHtml = markdownToHtml(entry.content || "");
+    // 无解析器（小窗未收到清单）时按未解析胶囊渲染，点击仍可转发主窗口跳转
+    const noteHtml = renderNoteMarkdown(
+      entry.content || "",
+      resolveNoteRef ?? (() => null)
+    );
     return noteHtml ? (
       <div
         className="note-md wall-note-md"

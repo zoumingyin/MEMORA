@@ -12,6 +12,7 @@ import Draggable, {
 } from "react-draggable";
 import {
   cloneElement,
+  useCallback,
   useEffect,
   useRef,
   useState,
@@ -27,6 +28,7 @@ import { useNow } from "../hooks/useNow";
 import { formatRelative, formatShort } from "../utils/format";
 import { paperTintHex } from "../utils/paper";
 import { markdownToHtml } from "../utils/markdown";
+import { handleNoteRefClick, renderNoteMarkdown, resolveNoteRefByTitle } from "../utils/noteLinks";
 import { exportEntryImage } from "../utils/exportEntryImage";
 import { EntryTags, EntryTools, TodoPreview } from "./EntryCardParts";
 import { EntryCardBody } from "./EntryCardBody";
@@ -195,12 +197,14 @@ function firstImageSrc(md: string): string | null {
   return htmlImg ? htmlImg[1] : null;
 }
 
-/** 正文转纯文本摘要：剔除图片标记与 HTML 标签，避免 base64 数据串作为乱码显示在列表 */
+/** 正文转纯文本摘要：剔除图片标记与 HTML 标签，避免 base64 数据串作为乱码显示在列表；
+ *  [[双向链接]] 转成 @标题 纯文本样式（与详情/墙卡的胶囊视觉一致） */
 function toPlainText(md: string): string {
   return md
     .replace(/!\[[^\]]*\]\([^)]*\)/g, " ")
     .replace(/<img[^>]*>/gi, " ")
     .replace(/<[^>]+>/g, " ")
+    .replace(/\[\[([^[\]\n]+)\]\]/g, "@$1")
     .replace(/[#>*_~`-]+/g, " ")
     .replace(/\s+/g, " ")
     .trim();
@@ -577,6 +581,12 @@ export function EntryList({ onSelect, mode }: EntryListProps) {
     onSelect(entry.id);
   };
 
+  /** 便签 [[引用]] 标题解析器：在全部条目里按标题找备忘便签（贴纸墙卡片正文渲染用） */
+  const resolveNoteRef = useCallback(
+    (title: string) => resolveNoteRefByTitle(entries, title),
+    [entries]
+  );
+
   const copyEntry = (entry: Entry): void => {
     void writeClipboard(buildClipboardPayload(entry))
       .then(() => message.success("已复制"))
@@ -632,7 +642,10 @@ export function EntryList({ onSelect, mode }: EntryListProps) {
         ? entry.content || null
         : firstImageSrc(entry.content || "");
     const excerpt = isDraw ? "" : toPlainText(entry.content || "");
-    const noteHtml = isNote ? markdownToHtml(entry.content || "") : "";
+    // 网格卡片备忘正文：与贴纸墙一致的 @标题 引用胶囊（不做点击拦截，点卡片进详情）
+    const noteHtml = isNote
+      ? renderNoteMarkdown(entry.content || "", resolveNoteRef)
+      : "";
     // 纸张外观：底色淡染（--card-tint）+ 纹理（data-paper），纹理规则见 index.css 的 note-row[data-paper]
     const tintHex = paperTintHex(entry.color);
     const paperActive = (entry.paper ?? "plain") !== "plain";
@@ -748,7 +761,14 @@ export function EntryList({ onSelect, mode }: EntryListProps) {
             ...(tintHex ? { "--card-tint": tintHex } : null),
           } as CSSProperties
         }
-        onClick={() => openEntry(entry)}
+        onClick={(event) => {
+          // 点中正文里的便签引用胶囊 → 跳转到被引用便签，不打开当前卡片详情
+          if (handleNoteRefClick(event)) {
+            event.stopPropagation();
+            return;
+          }
+          openEntry(entry);
+        }}
       >
         <div className="wall-note-head">
           <span className="wall-note-kind" aria-hidden="true">
@@ -759,7 +779,7 @@ export function EntryList({ onSelect, mode }: EntryListProps) {
         </div>
 
         <div className="wall-note-body">
-          <EntryCardBody entry={entry} now={now} />
+          <EntryCardBody entry={entry} now={now} resolveNoteRef={resolveNoteRef} />
         </div>
 
         <div className="wall-note-foot">

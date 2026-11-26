@@ -1,7 +1,15 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  forwardRef,
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { createPortal } from "react-dom";
-import { useEditor, EditorContent } from "@tiptap/react";
-import { Extension } from "@tiptap/core";
+import { ReactRenderer, useEditor, EditorContent } from "@tiptap/react";
+import { Suggestion } from "@tiptap/suggestion";
+import { Extension, Node } from "@tiptap/core";
 import { Plugin } from "@tiptap/pm/state";
 import StarterKit from "@tiptap/starter-kit";
 import {
@@ -19,7 +27,7 @@ import Image from "@tiptap/extension-image";
 import TurndownService from "turndown";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { listen, emitTo, type UnlistenFn } from "@tauri-apps/api/event";
 import { cursorPosition, getCurrentWindow } from "@tauri-apps/api/window";
 import { isTauriRuntime } from "../repository";
 import { markdownToHtml } from "../utils/markdown";
@@ -39,6 +47,7 @@ import {
   BoldOutlined,
   CodeOutlined,
   ItalicOutlined,
+  LinkOutlined,
   OrderedListOutlined,
   PictureOutlined,
   RedoOutlined,
@@ -50,7 +59,7 @@ import {
   SmileOutlined,
   EditOutlined,
 } from "@ant-design/icons";
-import { ColorPicker, Modal } from "antd";
+import { ColorPicker, Modal, Select } from "antd";
 import EmojiPicker, { type EmojiAnchor } from "./EmojiPicker";
 import { DoodleBoard } from "./DoodleBoard";
 import { FONT_COLORS, STANDARD_COLORS, DEFAULT_PICKER_COLOR } from "../utils/editorColors";
@@ -59,11 +68,15 @@ import {
   type CtxMenuAction,
 } from "./ContextMenuPanel";
 import { countMarkdownWords } from "../utils/markdown";
+import { jumpToEntry, unwrapEscapedWikiLinks } from "../utils/noteLinks";
+import { NOTE_WINDOW_OPEN_REF_EVENT } from "../window/noteWindow";
 
 interface MarkdownEditorProps {
   value: string;
   onChange: (value: string) => void;
   placeholder?: string;
+  /** 可引用的便签清单（排除当前条目）：工具条「插入便签引用」弹窗的数据源 */
+  linkTargets?: Array<{ id: string; title: string }>;
 }
 
 /** 字号扩展：基于 TextStyle 的内联样式（TipTap v3 兼容实现） */
@@ -143,6 +156,239 @@ const TextDrag = Extension.create({
   },
 });
 
+/* ---------------- @ 触发便签引用候选（@tiptap/suggestion） ---------------- */
+
+interface MentionItem {
+  id: string;
+  title: string;
+}
+
+const MENTION_POPUP_MAX_H = 190;
+
+/** @ 候选列表：↑↓/Enter/Esc 由 render 的 onKeyDown 转发到这里 */
+const MentionList = forwardRef<
+  { onKeyDown: (event: KeyboardEvent) => boolean },
+  { items: MentionItem[]; command: (item: MentionItem) => void }
+>((props, ref) => {
+  const [index, setIndex] = useState(0);
+  useEffect(() => {
+    setIndex(0);
+  }, [props.items]);
+  useImperativeHandle(ref, () => ({
+    onKeyDown: (event) => {
+      const count = props.items.length;
+      if (event.key === "ArrowDown" && count > 0) {
+        setIndex((prev) => (prev + 1) % count);
+        return true;
+      }
+      if (event.key === "ArrowUp" && count > 0) {
+        setIndex((prev) => (prev - 1 + count) % count);
+        return true;
+      }
+      if (event.key === "Enter") {
+        if (props.items[index]) props.command(props.items[index]);
+        return true;
+      }
+      return false;
+    },
+  }));
+  if (props.items.length === 0) {
+    return (
+      <div className="px-2 py-1.5 text-[12px] leading-[20px] text-[var(--text-muted)]">
+        无匹配便签，Esc 关闭
+      </div>
+    );
+  }
+  return (
+    <div>
+      {props.items.map((item, i) => (
+        <button
+          key={item.id}
+          type="button"
+          className={`block w-full truncate rounded-[6px] px-2 py-1 text-left text-[12px] leading-[20px] text-[var(--text)] transition hover:bg-[var(--hover-fill)] ${
+            i === index ? "bg-[var(--hover-fill)]" : ""
+          }`}
+          onMouseEnter={() => setIndex(i)}
+          onMouseDown={(event) => {
+            // 阻止编辑器失焦，由 command 完成替换
+            event.preventDefault();
+            props.command(item);
+          }}
+        >
+          {item.title || "无标题"}
+        </button>
+      ))}
+    </div>
+  );
+});
+MentionList.displayName = "MentionList";
+
+/**
+ * Markdown → 编辑器 HTML 入口：
+ * 1. 还原 turndown 落盘时被转义的 \[\[ \]\]（历史数据兜底）；
+ * 2. 把完整的 [[标题]] 序列替换为原子引用节点的 HTML（span[data-type=note-memora-ref]），
+ *    经 NoteMentionRef.parseHTML 解析为整块原子节点。
+ * 编辑器内不存在隐藏括号字符，光标行为与普通文本完全一致。
+ */
+function toEditorHtml(md: string): string {
+  return markdownToHtml(unwrapEscapedWikiLinks(md)).replace(
+    /\[\[([^[\]\n]+)\]\]/g,
+    (_match, title: string) =>
+      `<span data-type="note-memora-ref" data-title="${title.replace(
+        /"/g,
+        "&quot;"
+      )}">@${title}</span>`
+  );
+}
+
+/**
+ * 便签引用原子节点（编辑态显示 @标题 胶囊）：
+ * atom:true → 整块选中/删除，光标永远在节点前或节点后，不存在"卡进胶囊里"的问题；
+ * 存储仍是 [[标题]]：onUpdate 输出的 HTML 经 turndown 规则（noteMemoraRef）转回 [[标题]]。
+ * - 单击胶囊：标题能解析到已有便签 → 跳转（小窗编辑态转发主窗口）；解析不到 → 不拦截。
+ */
+const NoteMentionRef = Node.create<{
+  bridge: { current: { targets: MentionItem[] } } | null;
+}>({
+  name: "noteMentionRef",
+  group: "inline",
+  inline: true,
+  atom: true,
+  selectable: true,
+  addOptions() {
+    return { bridge: null };
+  },
+  addAttributes() {
+    return {
+      title: {
+        default: "",
+        parseHTML: (element) => element.getAttribute("data-title") ?? "",
+      },
+    };
+  },
+  parseHTML() {
+    return [{ tag: 'span[data-type="note-memora-ref"]' }];
+  },
+  renderHTML({ node }) {
+    return [
+      "span",
+      {
+        "data-type": "note-memora-ref",
+        "data-title": node.attrs.title as string,
+        class: "note-mention-ref",
+      },
+      `@${node.attrs.title as string}`,
+    ];
+  },
+  renderText({ node }) {
+    return `@${node.attrs.title as string}`;
+  },
+});
+
+/**
+ * @ 触发的便签引用候选（官方 @tiptap/suggestion）：
+ * 输入 @ 弹出候选 → 继续输入过滤 → ↑↓ 选择、Enter 插入、Esc 由插件自带 exit 关闭；
+ * 选中后在光标处把「@查询」替换为 [[标题]]，展示态渲染为可点击的双向链接胶囊。
+ */
+const NoteMention = Extension.create<{
+  bridge: { current: { targets: MentionItem[] } } | null;
+}>({
+  name: "noteMention",
+  addOptions() {
+    return { bridge: null };
+  },
+  addProseMirrorPlugins() {
+    const bridge = this.options.bridge;
+    if (!bridge) return [];
+    return [
+      Suggestion<MentionItem>({
+        editor: this.editor,
+        char: "@",
+        // 光标前存在未闭合的 [[ 时不触发（防止把候选插进已有语法中间造成 [[a[[b]] 嵌套损坏）
+        allow: ({ state, range }) => {
+          const before = state.doc.textBetween(
+            Math.max(0, range.from - 300),
+            range.from,
+            "\n",
+            "\n"
+          );
+          return before.lastIndexOf("[[") <= before.lastIndexOf("]]");
+        },
+        items: ({ query }) => {
+          const q = query.trim().toLowerCase();
+          return bridge.current.targets
+            .filter((item) => !q || item.title.toLowerCase().includes(q))
+            .slice(0, 8);
+        },
+        command: ({ editor, range, props }) => {
+          editor
+            .chain()
+            .focus()
+            .deleteRange(range)
+            .insertContent([
+              { type: "noteMentionRef", attrs: { title: props.title } },
+              { type: "text", text: " " },
+            ])
+            .run();
+        },
+        render: () => {
+          let renderer: ReactRenderer<{
+            onKeyDown: (event: KeyboardEvent) => boolean;
+          }> | null = null;
+          let popup: HTMLDivElement | null = null;
+          const position = (rect: DOMRect | null | undefined): void => {
+            if (!popup || !rect) return;
+            const below =
+              rect.bottom + MENTION_POPUP_MAX_H + 8 < window.innerHeight;
+            popup.style.left = `${Math.min(
+              rect.left,
+              Math.max(8, window.innerWidth - 238)
+            )}px`;
+            popup.style.top = `${
+              below ? rect.bottom + 4 : Math.max(4, rect.top - MENTION_POPUP_MAX_H - 4)
+            }px`;
+          };
+          return {
+            onStart: (props) => {
+              renderer = new ReactRenderer(MentionList, {
+                props: { items: props.items, command: props.command },
+                editor: props.editor,
+              });
+              popup = document.createElement("div");
+              popup.style.position = "fixed";
+              popup.style.zIndex = "999";
+              popup.style.width = "230px";
+              popup.style.overflow = "hidden";
+              popup.style.borderRadius = "10px";
+              popup.style.border = "1px solid var(--border)";
+              popup.style.background = "var(--card-bg)";
+              popup.style.padding = "4px";
+              popup.style.boxShadow = "0 4px 16px rgba(0,0,0,.18)";
+              popup.appendChild(renderer.element);
+              document.body.appendChild(popup);
+              position(props.clientRect?.());
+            },
+            onUpdate: (props) => {
+              renderer?.updateProps({
+                items: props.items,
+                command: props.command,
+              });
+              position(props.clientRect?.());
+            },
+            onKeyDown: (props) => renderer?.ref?.onKeyDown(props.event) ?? false,
+            onExit: () => {
+              renderer?.destroy();
+              renderer = null;
+              popup?.remove();
+              popup = null;
+            },
+          };
+        },
+      }),
+    ];
+  },
+});
+
 /** 粘贴图片：剪贴板中的 image 文件 → 读取为 base64 dataURL → 插入编辑器 */
 const PasteImage = Extension.create({
   name: "pasteImage",
@@ -184,11 +430,13 @@ function tableToMarkdown(
   const rows = Array.from(table.rows).map((row) => Array.from(row.cells));
   if (!rows.length) return "";
   const cellText = (cell: HTMLTableCellElement): string =>
-    turndown
-      .turndown(cell.innerHTML)
-      .replace(/\s*\n\s*/g, "<br>")
-      .replace(/\|/g, "\\|")
-      .trim();
+    unescapeWikiBrackets(
+      turndown
+        .turndown(cell.innerHTML)
+        .replace(/\s*\n\s*/g, "<br>")
+        .replace(/\|/g, "\\|")
+        .trim()
+    );
   const line = (cells: HTMLTableCellElement[]): string =>
     `| ${cells.map(cellText).join(" | ")} |`;
   const [header, ...body] = rows;
@@ -207,7 +455,7 @@ const PasteMarkdown = Extension.create({
           handlePaste(_view, event) {
             const text = event.clipboardData?.getData("text/plain") ?? "";
             if (!text || !looksLikeMarkdown(text)) return false;
-            const html = markdownToHtml(text);
+            const html = toEditorHtml(text);
             if (!html) return false;
             editor.chain().focus().insertContent(html).run();
             return true;
@@ -218,12 +466,26 @@ const PasteMarkdown = Extension.create({
   },
 });
 
+/** turndown 默认会转义 `[`/`]`，把双向链接写成 \[\[标题\]\] 落盘；这里把双括号序列还原 */
+function unescapeWikiBrackets(md: string): string {
+  return md.replace(/\\\[\\\[/g, "[[").replace(/\\\]\\\]/g, "]]");
+}
+
 /** HTML → markdown：turndown；带内联样式 span 与下划线转为内嵌 HTML 保留 */
 function createTurndown(): TurndownService {
   const turndown = new TurndownService({
     headingStyle: "atx",
     bulletListMarker: "-",
     codeBlockStyle: "fenced",
+  });
+  // 编辑器内原子引用节点 → 存储态 [[标题]]（turndown 默认会把方括号转义，
+  // 外层 htmlToMarkdown 的 unescapeWikiBrackets 再统一还原）
+  turndown.addRule("noteMemoraRef", {
+    filter: (node) =>
+      node.nodeName === "SPAN" &&
+      node.getAttribute("data-type") === "note-memora-ref",
+    replacement: (_content, node) =>
+      `[[${node.getAttribute("data-title") ?? ""}]]`,
   });
   turndown.addRule("styledInline", {
     filter: (node) =>
@@ -283,8 +545,19 @@ export function MarkdownEditor({
   value,
   onChange,
   placeholder,
+  linkTargets = [],
 }: MarkdownEditorProps) {
   const [colorOpen, setColorOpen] = useState(false);
+  /** 「插入便签引用」弹窗：开关与选中的便签 id */
+  const [noteLinkOpen, setNoteLinkOpen] = useState(false);
+  const [noteLinkDraft, setNoteLinkDraft] = useState<string | undefined>(
+    undefined
+  );
+  /** @ 触发的引用候选：targets 用 ref 承载（Suggestion 的 items 回调每次实时读取） */
+  const mentionBridge = useRef<{ targets: MentionItem[] }>({
+    targets: linkTargets,
+  });
+  mentionBridge.current.targets = linkTargets;
   /** 工具栏 antd 拾色器当前颜色（打开时读取选区颜色，拖动时跟随）；初值用不透明色，避免 cleared 颜色触发警告 */
   const [colorValue, setColorValue] = useState<string>(DEFAULT_PICKER_COLOR);
   /** 手写涂鸦弹窗开关与画布产出的 PNG dataURL */
@@ -303,7 +576,7 @@ export function MarkdownEditor({
   const isInternalUpdate = useRef(false);
   const turndown = useMemo(() => createTurndown(), []);
   const htmlToMarkdown = (html: string): string =>
-    turndown.turndown(html || "");
+    unescapeWikiBrackets(turndown.turndown(html || ""));
 
   /** 打开图片预览：创建独立图片查看器窗口（Tauri 环境），浏览器预览退化为新标签页 */
   const openImagePreview = async (
@@ -350,9 +623,29 @@ export function MarkdownEditor({
     }
   };
 
-  /** 正文点击：图片开独立预览；超链接走系统浏览器打开（阻止默认行为，避免 WebView2 整窗导航/opener 权限报错） */
+  /** 正文点击：便签引用胶囊跳转；图片开独立预览；超链接走系统浏览器打开（阻止默认行为，避免 WebView2 整窗导航/opener 权限报错） */
   const handleBodyClick = (event: React.MouseEvent): void => {
     const target = event.target as HTMLElement;
+    // 便签引用原子胶囊：标题可解析 → 跳转（小窗编辑态转发主窗口）；不可解析不拦截
+    const refEl = target.closest('[data-type="note-memora-ref"]');
+    if (refEl) {
+      const title = (refEl.getAttribute("data-title") ?? "").trim();
+      const hit = mentionBridge.current.targets.find(
+        (item) => item.title.trim() === title
+      );
+      if (hit) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (getCurrentWindow().label.startsWith("note-")) {
+          void emitTo("main", NOTE_WINDOW_OPEN_REF_EVENT, {
+            id: hit.id,
+          }).catch(() => undefined);
+        } else {
+          jumpToEntry(hit.id);
+        }
+      }
+      return;
+    }
     const linkEl = target.closest("a");
     if (linkEl) {
       const href = linkEl.getAttribute("href") ?? "";
@@ -668,8 +961,10 @@ export function MarkdownEditor({
       TextDrag,
       PasteImage,
       PasteMarkdown,
+      NoteMention.configure({ bridge: mentionBridge }),
+      NoteMentionRef.configure({ bridge: mentionBridge }),
     ],
-    content: markdownToHtml(value),
+    content: toEditorHtml(value),
     onUpdate: ({ editor: current }) => {
       const html = current.getHTML();
       lastHtmlRef.current = html;
@@ -710,7 +1005,7 @@ export function MarkdownEditor({
       isInternalUpdate.current = false;
       return;
     }
-    const nextHtml = markdownToHtml(value);
+    const nextHtml = toEditorHtml(value);
     if (nextHtml !== editor.getHTML()) {
       editor.commands.setContent(nextHtml, { emitUpdate: false });
     }
@@ -780,7 +1075,7 @@ export function MarkdownEditor({
     if (!text) return;
     // Markdown 文本 → 先解析为 HTML 再插入，落成真实节点（直接 insertContent 会被当纯文本，星号井号原样显示）
     if (looksLikeMarkdown(text)) {
-      editor?.chain().focus().insertContent(markdownToHtml(text)).run();
+      editor?.chain().focus().insertContent(toEditorHtml(text)).run();
       return;
     }
     editor?.chain().focus().insertContent(text).run();
@@ -968,6 +1263,21 @@ export function MarkdownEditor({
       label: <PictureOutlined />,
       onClick: triggerFileInput,
     },
+    // 无可引用清单（如小窗编辑态）时不显示，避免死入口
+    ...(linkTargets.length > 0
+      ? [
+          {
+            key: "noteLink",
+            title: "插入便签引用（[[标题]]，点击可互相跳转）",
+            label: <LinkOutlined />,
+            active: noteLinkOpen,
+            onClick: () => {
+              setNoteLinkDraft(undefined);
+              setNoteLinkOpen(true);
+            },
+          },
+        ]
+      : []),
     {
       key: "doodle",
       title: "插入手写涂鸦",
@@ -1133,6 +1443,7 @@ export function MarkdownEditor({
         onPick={insertEmoji}
       />
 
+
       {/* 手写涂鸦：复用详情的画板，画好后以 PNG 图片插入正文 */}
       <Modal
         open={doodleOpen}
@@ -1152,6 +1463,46 @@ export function MarkdownEditor({
         <div className="mt-1 text-[11px] leading-snug text-[var(--text-muted)]">
           画好后点「插入」，涂鸦会以图片形式加入正文。
         </div>
+      </Modal>
+
+      {/* 插入便签引用：选便签 → 光标处插入 [[标题]]；展示态渲染为可点击胶囊（双向链接） */}
+      <Modal
+        open={noteLinkOpen}
+        onCancel={() => setNoteLinkOpen(false)}
+        title="插入便签引用"
+        centered
+        width={320}
+        okText="插入"
+        cancelText="取消"
+        okButtonProps={{ disabled: !noteLinkDraft }}
+        onOk={() => {
+          const target = linkTargets.find((item) => item.id === noteLinkDraft);
+          if (!target) return;
+          editor
+            ?.chain()
+            .focus()
+            .insertContent([
+              { type: "noteMentionRef", attrs: { title: target.title } },
+              { type: "text", text: " " },
+            ])
+            .run();
+          setNoteLinkOpen(false);
+        }}
+        destroyOnHidden
+      >
+        <Select
+          className="w-full"
+          placeholder="选择要引用的便签"
+          value={noteLinkDraft}
+          onChange={(value) => setNoteLinkDraft(value)}
+          options={linkTargets.map((item) => ({
+            value: item.id,
+            label: item.title,
+          }))}
+          showSearch
+          optionFilterProp="label"
+          notFoundContent="暂无其他便签"
+        />
       </Modal>
     </div>
   );
