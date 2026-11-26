@@ -227,6 +227,10 @@ export function NoteWindow() {
   const [noteRefs, setNoteRefs] = useState<Array<{ id: string; title: string }>>(
     []
   );
+  /** 可插入的已有涂鸦候选：小窗「插入涂鸦 → 选已有」（主窗口随打开/同步下发） */
+  const [doodleRefs, setDoodleRefs] = useState<
+    Array<{ id: string; title: string; content: string }>
+  >([]);
   const [pinned, setPinned] = useState(false);
   const [mode, setMode] = useState<"view" | "edit">("view");
   const now = useNow();
@@ -438,6 +442,7 @@ export function NoteWindow() {
     },
     knownTags,
     noteRefs,
+    doodleRefs,
   };
 
   /** 关闭前落盘：有未保存内容或保存失败时留在窗口内提示，不静默丢内容 */
@@ -495,6 +500,7 @@ export function NoteWindow() {
             setEntry(incoming.entry);
             setKnownTags(incoming.knownTags);
             setNoteRefs(incoming.noteRefs);
+            setDoodleRefs(incoming.doodleRefs ?? []);
             setPinned(incoming.pinned);
           }
         ),
@@ -507,6 +513,7 @@ export function NoteWindow() {
           entry: Entry;
           knownTags: string[];
           noteRefs: Array<{ id: string; title: string }>;
+          doodleRefs?: Array<{ id: string; title: string; content: string }>;
         }>(
           NOTE_WINDOW_SYNC_EVENT,
           (event) => {
@@ -515,6 +522,7 @@ export function NoteWindow() {
             setEntry(event.payload.entry);
             setKnownTags(event.payload.knownTags);
             setNoteRefs(event.payload.noteRefs);
+            setDoodleRefs(event.payload.doodleRefs ?? []);
           }
         ),
         listen<{

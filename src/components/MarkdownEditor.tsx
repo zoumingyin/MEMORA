@@ -59,7 +59,7 @@ import {
   SmileOutlined,
   EditOutlined,
 } from "@ant-design/icons";
-import { ColorPicker, Modal, Select } from "antd";
+import { ColorPicker, Modal, Segmented, Select } from "antd";
 import EmojiPicker, { type EmojiAnchor } from "./EmojiPicker";
 import { DoodleBoard } from "./DoodleBoard";
 import { FONT_COLORS, STANDARD_COLORS, DEFAULT_PICKER_COLOR } from "../utils/editorColors";
@@ -77,6 +77,8 @@ interface MarkdownEditorProps {
   placeholder?: string;
   /** 可引用的便签清单（排除当前条目）：工具条「插入便签引用」弹窗的数据源 */
   linkTargets?: Array<{ id: string; title: string }>;
+  /** 可插入的已有涂鸦清单：工具条「插入涂鸦 → 选已有」页签的数据源；空则隐藏该页签 */
+  doodleTargets?: Array<{ id: string; title: string; content: string }>;
 }
 
 /** 字号扩展：基于 TextStyle 的内联样式（TipTap v3 兼容实现） */
@@ -546,6 +548,7 @@ export function MarkdownEditor({
   onChange,
   placeholder,
   linkTargets = [],
+  doodleTargets = [],
 }: MarkdownEditorProps) {
   const [colorOpen, setColorOpen] = useState(false);
   /** 「插入便签引用」弹窗：开关与选中的便签 id */
@@ -563,6 +566,12 @@ export function MarkdownEditor({
   /** 手写涂鸦弹窗开关与画布产出的 PNG dataURL */
   const [doodleOpen, setDoodleOpen] = useState(false);
   const [doodleData, setDoodleData] = useState("");
+  /** 涂鸦弹窗页签：画新涂鸦 / 选已有涂鸦（后者仅在有候选时显示） */
+  const [doodleTab, setDoodleTab] = useState<"draw" | "pick">("draw");
+  /** 「选已有涂鸦」页签当前选中的涂鸦条目 id */
+  const [doodlePickId, setDoodlePickId] = useState<string | undefined>(
+    undefined
+  );
   /** 表情选择面板锚点（工具栏按钮 / 右键菜单项触发），null 表示面板关闭 */
   const [emojiAnchor, setEmojiAnchor] = useState<EmojiAnchor | null>(null);
   // 右键上下文菜单（浏览器环境页面内回退；Tauri 环境为独立窗口）
@@ -1119,11 +1128,20 @@ export function MarkdownEditor({
   const triggerFileInput = (): void => {
     fileInputRef.current?.click();
   };
-  /** 把涂鸦画布导出的 PNG 插入光标处（与插入图片共用 Image 扩展） */
-  const insertDoodle = (): void => {
-    if (!doodleData) return;
-    editor?.chain().focus().setImage({ src: doodleData }).run();
+  /** 把 PNG（新画导出或已有涂鸦原图）插入光标处（与插入图片共用 Image 扩展） */
+  const insertDoodleImage = (src: string): void => {
+    editor?.chain().focus().setImage({ src }).run();
     setDoodleOpen(false);
+  };
+  const insertDoodle = (): void => {
+    if (doodleTab === "pick") {
+      const picked = doodleTargets.find((item) => item.id === doodlePickId);
+      if (!picked?.content) return;
+      insertDoodleImage(picked.content);
+      return;
+    }
+    if (!doodleData) return;
+    insertDoodleImage(doodleData);
   };
   const tools: Array<{
     key: string;
@@ -1280,10 +1298,12 @@ export function MarkdownEditor({
       : []),
     {
       key: "doodle",
-      title: "插入手写涂鸦",
+      title: "插入涂鸦（新画或选已有）",
       label: <EditOutlined />,
       onClick: () => {
+        setDoodleTab("draw");
         setDoodleData("");
+        setDoodlePickId(undefined);
         setDoodleOpen(true);
       },
     },
@@ -1444,25 +1464,77 @@ export function MarkdownEditor({
       />
 
 
-      {/* 手写涂鸦：复用详情的画板，画好后以 PNG 图片插入正文 */}
+      {/* 插入涂鸦：页签切换「画新涂鸦」（详情画板）/「选已有涂鸦」（涂鸦条目缩略图网格），
+          插入时都以 PNG 图片加入正文 */}
       <Modal
         open={doodleOpen}
         onCancel={() => setDoodleOpen(false)}
-        title="手写涂鸦"
+        title="插入涂鸦"
         centered
         width="min(560px, calc(100vw - 24px))"
         okText="插入"
         cancelText="取消"
-        okButtonProps={{ disabled: !doodleData }}
+        okButtonProps={{
+          disabled: doodleTab === "pick" ? !doodlePickId : !doodleData,
+        }}
         onOk={insertDoodle}
         destroyOnHidden
       >
-        <div className="flex flex-col" style={{ height: "min(400px, 55vh)" }}>
-          <DoodleBoard value="" onChange={setDoodleData} />
-        </div>
-        <div className="mt-1 text-[11px] leading-snug text-[var(--text-muted)]">
-          画好后点「插入」，涂鸦会以图片形式加入正文。
-        </div>
+        {doodleTargets.length > 0 && (
+          <Segmented
+            block
+            className="mb-2"
+            value={doodleTab}
+            options={[
+              { label: "画新涂鸦", value: "draw" },
+              { label: `选已有涂鸦（${doodleTargets.length}）`, value: "pick" },
+            ]}
+            onChange={(v) => setDoodleTab(v as "draw" | "pick")}
+          />
+        )}
+        {doodleTab === "draw" ? (
+          <>
+            <div className="flex flex-col" style={{ height: "min(400px, 55vh)" }}>
+              <DoodleBoard value="" onChange={setDoodleData} />
+            </div>
+            <div className="mt-1 text-[11px] leading-snug text-[var(--text-muted)]">
+              画好后点「插入」，涂鸦会以图片形式加入正文。
+            </div>
+          </>
+        ) : doodleTargets.length > 0 ? (
+          <div
+            className="grid grid-cols-3 gap-2 overflow-y-auto"
+            style={{ maxHeight: "min(400px, 55vh)" }}
+          >
+            {doodleTargets.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => setDoodlePickId(item.id)}
+                className={`flex flex-col gap-1 rounded-lg border border-solid p-1.5 transition ${
+                  doodlePickId === item.id
+                    ? "border-[var(--note)] bg-[var(--hover-fill)]"
+                    : "border-[var(--border)] hover:border-[var(--note)]"
+                }`}
+              >
+                <img
+                  src={item.content}
+                  alt={item.title || "手写涂鸦"}
+                  draggable={false}
+                  className="h-[110px] w-full rounded bg-[var(--hover-fill)] object-contain"
+                />
+                <span className="truncate text-center text-[11px] leading-[16px] text-[var(--text)]">
+                  {item.title || "无标题"}
+                </span>
+              </button>
+            ))}
+          </div>
+        ) : (
+          <div className="flex h-[160px] flex-col items-center justify-center gap-1 text-[12px] text-[var(--text-muted)]">
+            <span>还没有可用的涂鸦条目</span>
+            <span>切换到「画新涂鸦」现场画一个吧</span>
+          </div>
+        )}
       </Modal>
 
       {/* 插入便签引用：选便签 → 光标处插入 [[标题]]；展示态渲染为可点击胶囊（双向链接） */}

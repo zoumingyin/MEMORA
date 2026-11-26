@@ -47,6 +47,8 @@ export interface NoteWindowSnapshot {
   knownTags: string[];
   /** 全部备忘便签清单（小窗解析 [[引用]] 胶囊用） */
   noteRefs: Array<{ id: string; title: string }>;
+  /** 可插入的已有涂鸦候选（小窗「插入涂鸦 → 选已有」用，按更新时间倒序截断） */
+  doodleRefs: Array<{ id: string; title: string; content: string }>;
   /** 主窗口侧是否置顶（小窗按同款哈希生成胶带/图钉装饰） */
   pinned: boolean;
 }
@@ -66,6 +68,23 @@ export function collectNoteRefs(): Array<{ id: string; title: string }> {
     .getState()
     .entries.filter((item) => item.kind === "note")
     .map((item) => ({ id: item.id, title: item.title }));
+}
+
+/** 涂鸦候选下发上限：content 是 base64 PNG，全量下发会拖慢 sync 事件，只带最近若干条 */
+const MAX_DOODLE_REFS = 12;
+
+/** 收集可插入的已有涂鸦（非空手绘条目，按更新时间倒序截断，小窗「选已有涂鸦」用） */
+export function collectDoodleRefs(): Array<{
+  id: string;
+  title: string;
+  content: string;
+}> {
+  return useEntryStore
+    .getState()
+    .entries.filter((item) => item.kind === "draw" && item.content)
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .slice(0, MAX_DOODLE_REFS)
+    .map((item) => ({ id: item.id, title: item.title, content: item.content }));
 }
 /** 小窗尺寸（CSS px）＝贴纸墙卡片 264×228 + 内边距（顶部 14 / 其余 8），可调大小 */
 export const NOTE_WIN_W = 280;
@@ -283,6 +302,7 @@ export async function openNoteWindow(id: string): Promise<boolean> {
       entry,
       knownTags: collectKnownTags(),
       noteRefs: collectNoteRefs(),
+      doodleRefs: collectDoodleRefs(),
       pinned: useUiStore.getState().pinnedIds.includes(id),
     });
     // 级联定位：主窗口所在工作区左上区域依次错开
@@ -315,6 +335,7 @@ export async function syncNoteWindow(entry: Entry): Promise<void> {
       entry,
       knownTags: collectKnownTags(),
       noteRefs: collectNoteRefs(),
+      doodleRefs: collectDoodleRefs(),
     });
   } catch {
     // 窗口可能正在关闭，忽略

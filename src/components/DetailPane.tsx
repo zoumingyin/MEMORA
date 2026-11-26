@@ -110,6 +110,8 @@ export interface DetailEditGateway {
   knownTags: string[];
   /** 全部备忘便签清单（[[引用]] 胶囊解析 / 插入候选 / 点击跳转用） */
   noteRefs?: Array<{ id: string; title: string }>;
+  /** 可插入的已有涂鸦候选（小窗「插入涂鸦 → 选已有」用） */
+  doodleRefs?: Array<{ id: string; title: string; content: string }>;
 }
 
 interface DetailPaneProps {
@@ -200,6 +202,19 @@ function DetailForm({ entry, onRemove, gateway }: DetailFormProps) {
       .filter((item) => item.kind === "note" && item.id !== entry.id)
       .map((item) => ({ id: item.id, title: item.title || "无标题" }));
   }, [entries, entry, gateway]);
+
+  // 插入涂鸦的「选已有」候选：主窗口模式从 entries 派生；网关模式用注入的 doodleRefs
+  const doodleTargets = useMemo(() => {
+    if (gateway) return gateway.doodleRefs ?? [];
+    return entries
+      .filter((item) => item.kind === "draw" && item.content)
+      .sort((a, b) => b.updatedAt - a.updatedAt)
+      .map((item) => ({
+        id: item.id,
+        title: item.title,
+        content: item.content,
+      }));
+  }, [entries, gateway]);
 
   // 本地编辑态：随 entry.id 重挂载重新初始化，不与 store 双向同步，避免打断输入
   const [title, setTitle] = useState(entry.title);
@@ -823,6 +838,7 @@ function DetailForm({ entry, onRemove, gateway }: DetailFormProps) {
           placeholder="支持 Markdown：**加粗**、# 标题、- 列表、> 引用、```代码```；输入 @ 引用其他便签"
           onChange={setContent}
           linkTargets={noteLinkTargets}
+          doodleTargets={doodleTargets}
         />
       )}
       {/* 双向链接：反链面板——点胶囊跳到引用本便签的那条便签 */}
