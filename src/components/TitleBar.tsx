@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Badge, Input } from "antd";
 import dayjs from "dayjs";
 import { CalendarDays, Pin, Search, Settings, Sparkles, Timer, X, Zap } from "lucide-react";
@@ -12,7 +12,6 @@ import { SettingsDialog } from "./SettingsDialog";
 import { BrandMark } from "./BrandLogo";
 import { QuickCapture } from "./QuickCapture";
 import { PomodoroDialog } from "./PomodoroDialog";
-import { FocusReviewDialog } from "./FocusReviewDialog";
 import type { PomodoroApi } from "../hooks/usePomodoro";
 
 interface TitleBarProps {
@@ -40,15 +39,6 @@ export function TitleBar({ quickOpen, setQuickOpen, pomodoro }: TitleBarProps) {
   const view = useEntryStore((state) => state.view);
   const setView = useEntryStore((state) => state.setView);
   const entries = useEntryStore((state) => state.entries);
-  /** 番茄钟绑定的待办（移入废纸篓 / 已换分类时自然失效） */
-  const linkedTodo = useMemo(() => {
-    const entry = pomodoro.linkedEntryId
-      ? entries.find((item) => item.id === pomodoro.linkedEntryId)
-      : undefined;
-    return entry?.kind === "todo" ? entry : null;
-  }, [entries, pomodoro.linkedEntryId]);
-  const pendingTodoCount =
-    linkedTodo?.items.filter((item) => !item.done).length ?? 0;
   /** 今天范围内尚未触发的提醒闹钟数（含今天到期未触发的），日历按钮徽标用 */
   const todayAlarmCount = useMemo(() => {
     const start = dayjs().startOf("day").valueOf();
@@ -64,18 +54,6 @@ export function TitleBar({ quickOpen, setQuickOpen, pomodoro }: TitleBarProps) {
     }
     return count;
   }, [entries]);
-  /** 专注结束后弹出勾选面板（仅绑定待办且还有未完成子任务时） */
-  const [focusReviewOpen, setFocusReviewOpen] = useState(false);
-  const completedRoundsRef = useRef(pomodoro.state.rounds);
-  useEffect(() => {
-    if (
-      pomodoro.state.rounds > completedRoundsRef.current &&
-      pendingTodoCount > 0
-    ) {
-      setFocusReviewOpen(true);
-    }
-    completedRoundsRef.current = pomodoro.state.rounds;
-  }, [pomodoro.state.rounds, pendingTodoCount]);
   /** 搜索框展开状态：点击搜索图标展开，点击空白区域收起 */
   const [searchOpen, setSearchOpen] = useState(false);
   /** 搜索过滤生效中（有关键字）：收起输入框后图标保持高亮提示，点击图标可回到搜索框 */
@@ -271,13 +249,6 @@ export function TitleBar({ quickOpen, setQuickOpen, pomodoro }: TitleBarProps) {
         linkedEntryId={pomodoro.linkedEntryId}
         todayStats={pomodoro.todayStats}
       />
-      {focusReviewOpen && linkedTodo && (
-        <FocusReviewDialog
-          open
-          entry={linkedTodo}
-          onClose={() => setFocusReviewOpen(false)}
-        />
-      )}
     </header>
   );
 }

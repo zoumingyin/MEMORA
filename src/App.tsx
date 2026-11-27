@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useMemo,
   useRef,
   useState,
   type CSSProperties,
@@ -88,7 +89,7 @@ import { isTauriRuntime } from "./repository";
 import { resetDatabaseCache } from "./repository/db";
 import { EntryWriteError, isEntryWriteError } from "./repository/errors";
 import { flushActiveEditor } from "./editor/editorRegistry";
-import type { AlarmItem, Entry, EntryKind, NewEntryInput } from "./types/entry";
+import type { AlarmItem, Entry, EntryKind, NewEntryInput, TodoEntry } from "./types/entry";
 import { TitleBar } from "./components/TitleBar";
 import { usePomodoro } from "./hooks/usePomodoro";
 import { CategoryTabs } from "./components/CategoryTabs";
@@ -96,6 +97,7 @@ import { SearchBar } from "./components/SearchBar";
 import { EntryList } from "./components/EntryList";
 import { DetailPane } from "./components/DetailPane";
 import { DockBar } from "./components/DockBar";
+import { FocusReviewDialog } from "./components/FocusReviewDialog";
 import { CalendarPane } from "./components/CalendarPane";
 import { CreateKindDialog } from "./components/CreateKindDialog";
 import { TrashPane } from "./components/TrashPane";
@@ -168,6 +170,24 @@ export default function App() {
   // 番茄钟状态在 App 顶层常驻持有：收纳窄条态会卸载 TitleBar（提前 return DockBar），
   // 若状态放标题栏，收纳再展开计时会复位；放这里则收纳期间计时继续走
   const pomodoro = usePomodoro();
+  // 专注轮结束 → 勾选面板：轮次监听也放在 App 常驻层（TitleBar 收纳期间被卸载，
+  // 放那里会导致收纳期间完成的轮次既不弹、展开后也不补弹）。
+  // 收纳窄条态只置位不渲染弹窗（窄条宽度弹不开），展开后随主界面补弹
+  const [focusReviewOpen, setFocusReviewOpen] = useState(false);
+  const linkedTodo = useMemo<TodoEntry | null>(() => {
+    const entry = pomodoro.linkedEntryId
+      ? entries.find((item) => item.id === pomodoro.linkedEntryId)
+      : undefined;
+    return entry?.kind === "todo" ? entry : null;
+  }, [entries, pomodoro.linkedEntryId]);
+  const linkedTodoPending = linkedTodo?.items.some((item) => !item.done) ?? false;
+  const completedRoundsRef = useRef(pomodoro.state.rounds);
+  useEffect(() => {
+    if (pomodoro.state.rounds > completedRoundsRef.current && linkedTodoPending) {
+      setFocusReviewOpen(true);
+    }
+    completedRoundsRef.current = pomodoro.state.rounds;
+  }, [pomodoro.state.rounds, linkedTodoPending]);
   // 电脑 / 手机模式切换（窗口跨 620px 断点）的内容过渡：
   // 变更 key 让内容层重挂载并播放一次淡入动画（view-mode-enter），
   // 首次挂载（animKey=0）不加动画类，不影响启动 / 收纳展开的既有动效
@@ -1505,13 +1525,21 @@ export default function App() {
         <p className="mt-0 mb-3 text-[12px] leading-relaxed text-[var(--text-muted)]">
           最小化到托盘会继续在后台运行，提醒仍会按时触发；退出将停止全部提醒。
         </p>
-        <Checkbox
-          checked={rememberClose}
-          onChange={(event) => setRememberClose(event.target.checked)}
-        >
-          记住我的选择（可在设置中恢复询问）
-        </Checkbox>
+      <Checkbox
+        checked={rememberClose}
+        onChange={(event) => setRememberClose(event.target.checked)}
+      >
+        记住我的选择（可在设置中恢复询问）
+      </Checkbox>
       </Modal>
+      {/* 专注轮结束勾选面板：App 常驻层持有（收纳期间置位，展开后补弹） */}
+      {focusReviewOpen && linkedTodo && (
+        <FocusReviewDialog
+          open
+          entry={linkedTodo}
+          onClose={() => setFocusReviewOpen(false)}
+        />
+      )}
     </>
   );
 }
