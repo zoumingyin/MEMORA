@@ -180,14 +180,16 @@ TAURI_SIGNING_PRIVATE_KEY=C:/Users/user/.tauri/memora-updater.key pnpm tauri:bui
 # 2. 生成更新清单（build-release/latest.json + latest-gitee.json，含签名串与 SHA256）
 node scripts/release-update.mjs [版本号]
 
-# 3. 上传（脚本会打印完整清单）
+# 3. 上传
 #    GitHub：Releases → tag v版本号 → latest.json + *-setup.exe + .sig
-#    Gitee ：发行版 tag「latest」→ 替换 latest-gitee.json（改名 latest.json）+ 安装包 + .sig
+#    Gitee ：一条命令自动替换 tag「latest」发行版附件（需 projects 权限私人令牌，
+#            写入 ~/.gitee/memora-token 或环境变量 GITEE_TOKEN）
+node scripts/release-gitee.mjs
 ```
 
-版本号发布前需同步修改三处：`package.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml`（`Cargo.lock` 由 `cargo check` 自动同步）。
+版本号发布前需同步修改三处：`package.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml`（`Cargo.lock` 由 `cargo update -p bianqian` 同步）；构建前先清 `src-tauri/target/release/bundle/nsis/` 旧产物，避免清单脚本挑错版本文件。
 
-⚠️ Gitee 端点读取 tag「latest」发行版的附件——**每次发版必须替换该发行版附件**，否则国内用户会拿到旧版本。
+⚠️ Gitee 端点读取 tag「latest」发行版的附件——**每次发版必须替换该发行版附件**（可用 `release-gitee.mjs` 自动完成），否则国内用户会拿到旧版本。
 
 ---
 
@@ -238,6 +240,7 @@ bianqian/
 │   └── keys/                    # 内置 OpenCode 免费网关密钥（可选）
 ├── scripts/
 │   ├── release-update.mjs       # 生成 latest.json（GitHub + Gitee 双份）
+│   ├── release-gitee.mjs        # 自动替换 Gitee tag=latest 发行版附件（需私人令牌）
 │   └── run-agent-tests.mjs      # Agent 工具链单测运行器
 ├── tests/                       # Agent / 闹钟 / 仓储并发等单测（21 个文件）
 └── docs/                        # 历史设计文档
