@@ -19,11 +19,10 @@
  *
  * owner/repo 从 build-release/latest-gitee.json 的下载 url 解析，无需硬编码。
  */
-import { readFileSync, createReadStream, statSync } from 'node:fs'
+import { readFileSync, statSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { homedir } from 'node:os'
-import { Readable } from 'node:stream'
 
 const API = 'https://gitee.com/api/v5'
 
@@ -77,8 +76,10 @@ async function api(path, init = {}) {
     data = text
   }
   if (!response.ok) {
-    const message = typeof data === 'object' && data?.message ? data.message : String(data).slice(0, 200)
-    throw new Error(`Gitee API ${response.status}（${path}）：${message}`)
+    // Gitee 错误结构不固定（message/error/error_base 等字段），整体脱敏后展示
+    const detail = JSON.stringify(data) ?? String(data)
+    const safePath = path.replace(/access_token=[^&]+/g, 'access_token=***')
+    throw new Error(`Gitee API ${response.status}（${safePath}）：${detail.slice(0, 300)}`)
   }
   return data
 }
@@ -97,24 +98,32 @@ for (const asset of assets) {
 
 console.log(`仓库：gitee.com/${owner}/${repo}，目标版本 v${version}`)
 
-/** 找 tag=latest 的发行版，不存在则创建 */
+/** 找 tag=latest 的发行版，不存在则创建。
+ * Gitee 语义：tag 无发行版时 GET 返回 200 + null（不是 404），两者都要走创建分支。 */
 async function findOrCreateRelease() {
+  let release = null
   try {
-    return await api('/releases/tags/latest?access_token=' + encodeURIComponent(token))
+    release = await api('/releases/tags/latest?access_token=' + encodeURIComponent(token))
   } catch (error) {
     if (!String(error).includes('404')) throw error
   }
+  if (release?.id) return release
   console.log('tag=latest 发行版不存在，创建中…')
-  return api(`/releases?access_token=${encodeURIComponent(token)}`, {
+  const created = await api(`/releases?access_token=${encodeURIComponent(token)}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
       tag_name: 'latest',
+      target_commitish: 'main',
       name: 'MEMORA 在线更新（滚动最新版）',
       body: 'updater Gitee 优先端点使用的滚动发行版，附件随每次发版替换。',
       prerelease: false,
     }),
   })
+  if (!created?.id) {
+    throw new Error(`创建发行版失败：${JSON.stringify(created).slice(0, 200)}`)
+  }
+  return created
 }
 
 const release = await findOrCreateRelease()
@@ -129,14 +138,14 @@ for (const file of existing) {
   console.log(`已删除旧附件：${file.name}`)
 }
 
-/** 上传附件（Gitee 附件端点只接受 multipart file 字段） */
+/** 上传附件（Gitee 附件端点只接受 multipart file 字段）。
+ * 必须用完整 Buffer 构造 Blob：流式 Blob 会被 undici 的 multipart 编码器
+ * 字符串化成 "[object ReadableStream]"（23 字节坏文件），Gitee 元数据 size 也只有 23。 */
 async function upload(asset) {
   const size = statSync(asset.path).size
   const form = new FormData()
-  // Node 22 无 File 全局替代品时退回 Blob 包装
-  const blob = new Blob([await Readable.toWeb(createReadStream(asset.path))])
   form.append('access_token', token)
-  form.append('file', blob, asset.name)
+  form.append('file', new Blob([readFileSync(asset.path)]), asset.name)
   const response = await fetch(`${base}/releases/${release.id}/attach_files`, {
     method: 'POST',
     body: form,
@@ -151,12 +160,22 @@ for (const asset of assets) {
   await upload(asset)
 }
 
-/** 回读校验 */
+/** 回读校验：文件名与字节数都要匹配（Gitee attach_files 的 size 字段为真实记录大小） */
 const verify = await api(`/releases/${release.id}/attach_files?access_token=${encodeURIComponent(token)}`)
-const missing = assets.filter((asset) => !verify.some((file) => file.name === asset.name))
-if (missing.length > 0) {
-  console.error(`✗ 校验失败，以下附件缺失：${missing.map((a) => a.name).join('、')}`)
+const problems = assets
+  .map((asset) => {
+    const remote = verify.find((file) => file.name === asset.name)
+    if (!remote) return `${asset.name}：附件缺失`
+    const remoteSize = Number(remote.size ?? remote.file_size ?? NaN)
+    if (remoteSize !== statSync(asset.path).size) {
+      return `${asset.name}：Gitee 记录 ${remoteSize} 字节 ≠ 本地 ${statSync(asset.path).size} 字节（上传可能损坏）`
+    }
+    return null
+  })
+  .filter(Boolean)
+if (problems.length > 0) {
+  console.error('✗ 校验失败：\n  ' + problems.join('\n  '))
   process.exit(1)
 }
-console.log(`✓ 校验通过：Gitee tag=latest 发行版附件已更新到 v${version}`)
+console.log(`✓ 校验通过（文件名与字节数一致）：Gitee tag=latest 发行版附件已更新到 v${version}`)
 console.log(`  端点：https://gitee.com/${owner}/${repo}/releases/download/latest/latest.json`)
