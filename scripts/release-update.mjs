@@ -18,7 +18,7 @@
  *   4. latest.json 中的 url 必须指向 Release 资产的可下载地址；
  *      updater 端点配置为 https://github.com/<owner>/<repo>/releases/latest/download/latest.json
  */
-import { readFileSync, writeFileSync, existsSync, readdirSync, statSync } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -33,21 +33,20 @@ if (!existsSync(nsisDir)) {
   process.exit(1)
 }
 
-// 产物：-x64-setup.exe（安装包）、.nsis.zip（updater 下载用）、.nsis.zip.sig（签名）
+// 产物：-setup.exe（安装包，Tauri v2 updater 直接下载安装）+ .exe.sig（minisign 签名）
 const files = readdirSync(nsisDir).filter((f) => statSync(join(nsisDir, f)).isFile())
-const zip = files.find((f) => f.endsWith('.nsis.zip'))
-const sig = files.find((f) => f.endsWith('.nsis.zip.sig'))
 const setup = files.find((f) => f.endsWith('-setup.exe'))
+const sig = files.find((f) => f === `${setup}.sig`)
 
-if (!zip || !sig || !setup) {
-  console.error('产物不完整，需要同时存在：\n  *-setup.exe\n  *.nsis.zip\n  *.nsis.zip.sig\n实际：', files)
+if (!setup || !sig) {
+  console.error('产物不完整，需要同时存在：\n  *-setup.exe\n  *-setup.exe.sig\n实际：', files)
   process.exit(1)
 }
 
 // v1.1.0 起版本号进入文件名；沿用产物名避免手工映射错误
 const releaseBase = `https://github.com/zoumingyin/MEMORA/releases/download/v${version}`
 const signature = readFileSync(join(nsisDir, sig), 'utf-8').trim()
-const url = `${releaseBase}/${encodeURIComponent(zip)}`
+const url = `${releaseBase}/${encodeURIComponent(setup)}`
 
 const latest = {
   version,
@@ -62,19 +61,17 @@ const latest = {
 }
 
 const outDir = join(root, 'build-release')
+mkdirSync(outDir, { recursive: true })
 writeFileSync(join(outDir, 'latest.json'), JSON.stringify(latest, null, 2) + '\n')
 
 const sha256 = (f) =>
   createHash('sha256').update(readFileSync(join(nsisDir, f))).digest('hex')
 
 console.log(`已生成 build-release/latest.json（v${version}）`)
-console.log(`  安装包: ${setup}`)
-console.log(`  更新包: ${zip}（updater 下载）`)
+console.log(`  安装包: ${setup}（updater 下载 + 完整安装共用）`)
 console.log(`  签 名: ${sig}`)
-console.log(`  zip SHA256: ${sha256(zip)}`)
 console.log(`  exe SHA256: ${sha256(setup)}`)
 console.log('\n上传清单（GitHub Release tag=v' + version + '，仓库 github.com/zoumingyin/MEMORA）：')
 console.log(`  1. build-release/latest.json`)
-console.log(`  2. ${join(nsisDir, zip)}`)
+console.log(`  2. ${join(nsisDir, setup)}`)
 console.log(`  3. ${join(nsisDir, sig)}`)
-console.log(`  4. ${join(nsisDir, setup)}（可选，供完整安装下载）`)
