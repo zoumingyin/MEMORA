@@ -2221,8 +2221,10 @@ pub async fn ai_transcribe(
         return Err("录音太短，未检测到有效语音".to_string());
     }
 
-    // URL 约定与 chat 同源：base 已含 /v1（或 /v4 等）时直接追加，否则补 /v1
+    // URL 约定与 chat 同源：base 已含 /v1（或 /v4 等）时直接追加，否则补 /v1；
+    // 个别用户把 base_url 配成完整 chat 路径，归一化去掉 chat 后缀再拼转写端点
     let base = resolved.base_url.trim().trim_end_matches('/').to_string();
+    let base = base.strip_suffix("/chat/completions").unwrap_or(&base).to_string();
     let url = if base.ends_with("/audio/transcriptions") {
         base.clone()
     } else if base.ends_with("/v1") || base.ends_with("/v4") || base.ends_with("/v3") {
@@ -2279,7 +2281,7 @@ pub async fn ai_transcribe(
             .collect::<String>()
             .replace(['\n', '\r'], " ");
         return Err(format!(
-            "语音转写失败（HTTP {}）：{preview}",
+            "语音转写失败（HTTP {}，端点 {url}）：{preview}。当前 AI 服务可能不支持语音识别接口，请确认服务商提供 audio/transcriptions 端点",
             status.as_u16()
         ));
     }

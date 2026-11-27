@@ -43,8 +43,13 @@ export function VoiceInputButton({ onText, onError, disabled }: VoiceInputButton
     if (state.transcribing) return;
     if (state.active) {
       void stop().catch((error: unknown) => {
+        // Tauri invoke 失败 reject 的是字符串，直接透传后端原始错误信息
         const message =
-          error instanceof Error ? error.message : "语音识别失败，请重试";
+          typeof error === "string"
+            ? error
+            : error instanceof Error
+              ? error.message
+              : "语音识别失败，请重试";
         showError(message);
         onError?.(message);
       });
@@ -53,7 +58,11 @@ export function VoiceInputButton({ onText, onError, disabled }: VoiceInputButton
     setError(null);
     void start().catch((error: unknown) => {
       const message =
-        error instanceof Error ? error.message : "无法启动录音，请重试";
+        typeof error === "string"
+          ? error
+          : error instanceof Error
+            ? error.message
+            : "无法启动录音，请重试";
       showError(message);
     });
   };
