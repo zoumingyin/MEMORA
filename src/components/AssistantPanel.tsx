@@ -30,6 +30,7 @@ import {
 import { markdownToHtml } from '../utils/markdown'
 import { parseAssistantActions, type AssistantAction } from '../utils/assistantActions'
 import { saveAiProfile } from '../services/aiClient'
+import { VoiceInputButton } from './VoiceInputButton'
 import {
   cancelDeleteProposal,
   confirmDeleteProposal,
@@ -1108,6 +1109,11 @@ function AssistantPanelBody() {
   const entryCount = useEntryStore((state) => state.entries.length)
   const setInput = useAssistantStore((state) => state.setInput)
   const send = useAssistantStore((state) => state.send)
+  /** 语音输入结果追加进提问框并聚焦，文本保持可编辑 */
+  const appendVoiceText = (text: string): void => {
+    setInput(input ? `${input}\n${text}` : text)
+    inputRef.current?.focus()
+  }
   const stop = useAssistantStore((state) => state.stop)
   const retry = useAssistantStore((state) => state.retry)
   const clear = useAssistantStore((state) => state.clear)
@@ -1433,6 +1439,12 @@ function AssistantPanelBody() {
             >
               <Globe size={13} />
             </button>
+
+            <VoiceInputButton
+              disabled={sending}
+              onText={appendVoiceText}
+              onError={(message) => antdMessage.warning(message)}
+            />
 
             {activeProfile && (
               <Dropdown

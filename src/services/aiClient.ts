@@ -60,6 +60,25 @@ const EMPTY_STORE: BrowserStore = { version: 2, activeId: null, profiles: [] }
 /** 浏览器端进行中的请求：取消时中断 fetch */
 const browserRequests = new Map<string, AbortController>()
 
+/**
+ * 浏览器预览的当前配置凭据（语音转写等直连请求用）。
+ * 桌面版返回 null——密钥只在 Rust 进程，转写走 ai_transcribe 代理命令。
+ */
+export function getBrowserCredentials(): {
+  baseUrl: string
+  apiKey: string
+} | null {
+  if (isTauriRuntime()) return null
+  const store = readBrowserStore()
+  const profile =
+    store.profiles.find((item) => item.id === store.activeId) ??
+    store.profiles[0]
+  const baseUrl = profile?.baseUrl?.trim().replace(/\/+$/, '') ?? ''
+  const apiKey = profile?.apiKey?.trim() ?? ''
+  if (!baseUrl || !apiKey) return null
+  return { baseUrl, apiKey }
+}
+
 const REASONING_VALUES: ReasoningEffort[] = ['none', 'low', 'medium', 'high']
 
 /** 推理强度只接受固定四档，其他取值按「未设置」处理 */

@@ -2191,6 +2191,112 @@ pub fn ai_cancel(state: State<'_, AiState>, request_id: String) {
     }
 }
 
+/// 语音转写：录音 base64 → 当前 AI 配置的 OpenAI 兼容 `/audio/transcriptions`（whisper 类模型）。
+/// 桌面版 WebView2 内置浏览器转写不可用时的降级通道；multipart 请求体手工拼接，不引入 reqwest multipart feature。
+#[tauri::command]
+pub async fn ai_transcribe(
+    app: AppHandle,
+    audio_base64: String,
+    mime: Option<String>,
+) -> Result<serde_json::Value, String> {
+    use base64::Engine as _;
+    let profile = target_profile(&app, None).ok_or_else(|| {
+        "尚未配置 AI 服务：语音转写需要支持语音识别的模型，请先在设置 → AI 助手中配置".to_string()
+    })?;
+    let resolved = resolve_profile(&profile);
+    if !resolved.is_complete() {
+        return Err(
+            "AI 服务配置不完整：语音转写需要可用的服务地址与密钥，请在设置 → AI 助手中补全".to_string(),
+        );
+    }
+
+    let audio = base64::engine::general_purpose::STANDARD
+        .decode(audio_base64.trim())
+        .map_err(|error| format!("音频数据解码失败：{error}"))?;
+    const MAX_AUDIO_BYTES: usize = 25 * 1024 * 1024;
+    if audio.len() > MAX_AUDIO_BYTES {
+        return Err("录音超过 25MB 上限，请缩短录音时长".to_string());
+    }
+    if audio.len() < 256 {
+        return Err("录音太短，未检测到有效语音".to_string());
+    }
+
+    // URL 约定与 chat 同源：base 已含 /v1（或 /v4 等）时直接追加，否则补 /v1
+    let base = resolved.base_url.trim().trim_end_matches('/').to_string();
+    let url = if base.ends_with("/audio/transcriptions") {
+        base.clone()
+    } else if base.ends_with("/v1") || base.ends_with("/v4") || base.ends_with("/v3") {
+        format!("{base}/audio/transcriptions")
+    } else {
+        format!("{base}/v1/audio/transcriptions")
+    };
+
+    let mime = mime.unwrap_or_else(|| "audio/webm".to_string()).to_lowercase();
+    let ext = match mime.as_str() {
+        "audio/mp4" | "audio/m4a" | "audio/aac" => "m4a",
+        "audio/ogg" | "audio/opus" => "ogg",
+        "audio/wav" | "audio/x-wav" | "audio/wave" => "wav",
+        "audio/mpeg" | "audio/mp3" => "mp3",
+        _ => "webm",
+    };
+
+    // 手工构造 multipart/form-data：model 在前，file 在后，边界随机性无硬要求但避免与音频内容重复
+    let boundary = "bianqian-audio-boundary-7f3d9c21";
+    let mut body: Vec<u8> = Vec::with_capacity(audio.len() + 512);
+    body.extend_from_slice(
+        format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\nwhisper-1\r\n"
+        )
+        .as_bytes(),
+    );
+    body.extend_from_slice(
+        format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"audio.{ext}\"\r\nContent-Type: {mime}\r\n\r\n"
+        )
+        .as_bytes(),
+    );
+    body.extend_from_slice(&audio);
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+
+    let client = http_client()?;
+    let mut request = client
+        .post(&url)
+        .header("Content-Type", format!("multipart/form-data; boundary={boundary}"))
+        .body(body);
+    if !resolved.api_key.is_empty() {
+        request = request.bearer_auth(&resolved.api_key);
+    }
+    let response = request
+        .send()
+        .await
+        .map_err(|error| format!("语音转写请求失败：{error}"))?;
+    let status = response.status();
+    let raw = response.text().await.unwrap_or_default();
+    if !status.is_success() {
+        let preview = raw
+            .chars()
+            .take(300)
+            .collect::<String>()
+            .replace(['\n', '\r'], " ");
+        return Err(format!(
+            "语音转写失败（HTTP {}）：{preview}",
+            status.as_u16()
+        ));
+    }
+    let json: serde_json::Value = serde_json::from_str(raw.trim())
+        .map_err(|_| format!("转写响应解析失败：{}", raw.chars().take(200).collect::<String>()))?;
+    let text = json
+        .get("text")
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if text.is_empty() {
+        return Err("未识别到语音内容，请离麦克风近一点后重试".to_string());
+    }
+    Ok(serde_json::json!({ "text": text }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

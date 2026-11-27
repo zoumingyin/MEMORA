@@ -95,6 +95,48 @@ fn apply_window_cloak(_window: &tauri::WebviewWindow, _cloaked: bool) -> Result<
     Ok(())
 }
 
+/// WebView2 默认对 getUserMedia 的设备权限请求静默拒绝，语音输入的麦克风
+/// 在此订阅 PermissionRequested 自动放行；系统级隐私开关仍由 Windows 设置约束。
+/// 仅主窗口需要（QuickCapture 与 AI 助手都在主窗口内）。
+#[cfg(windows)]
+fn grant_webview_microphone(window: &tauri::WebviewWindow) {
+    let _ = window.with_webview(|webview| {
+        use webview2_com::Microsoft::Web::WebView2::Win32::{
+            COREWEBVIEW2_PERMISSION_KIND, COREWEBVIEW2_PERMISSION_KIND_MICROPHONE,
+            COREWEBVIEW2_PERMISSION_STATE_ALLOW, ICoreWebView2_4,
+        };
+        use windows::core::Interface;
+
+        let controller = webview.controller();
+        let Ok(core) = (unsafe { controller.CoreWebView2() }) else {
+            return;
+        };
+        let Ok(core4) = core.cast::<ICoreWebView2_4>() else {
+            return;
+        };
+        let handler = webview2_com::PermissionRequestedEventHandler::create(Box::new(
+            |_sender, args| {
+                if let Some(args) = args {
+                    let mut kind = COREWEBVIEW2_PERMISSION_KIND(0);
+                    if unsafe { args.PermissionKind(&mut kind) }.is_ok()
+                        && kind == COREWEBVIEW2_PERMISSION_KIND_MICROPHONE
+                    {
+                        let _ = unsafe {
+                            args.SetState(COREWEBVIEW2_PERMISSION_STATE_ALLOW)
+                        };
+                    }
+                }
+                Ok(())
+            },
+        ));
+        let mut token: i64 = 0;
+        let _ = unsafe { core4.add_PermissionRequested(&handler, &mut token) };
+    });
+}
+
+#[cfg(not(windows))]
+fn grant_webview_microphone(_window: &tauri::WebviewWindow) {}
+
 /// 前端调用：启动就绪后揭开窗口 / 收纳缩窗时临时斗篷
 #[tauri::command]
 fn set_window_cloaked(window: tauri::WebviewWindow, cloaked: bool) -> Result<(), String> {
@@ -941,6 +983,8 @@ pub fn run() {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = apply_window_cloak(&window, true);
                 let _ = window.show();
+                // 语音输入前置：WebView2 默认拒绝麦克风权限，此处自动放行
+                grant_webview_microphone(&window);
                 let fallback_window = window.clone();
                 std::thread::spawn(move || {
                     std::thread::sleep(std::time::Duration::from_secs(5));
@@ -1073,6 +1117,7 @@ pub fn run() {
             ai::ai_list_models,
             ai::ai_chat,
             ai::ai_cancel,
+            ai::ai_transcribe,
             web_search::ai_web_search,
             get_autostart_enabled,
             get_system_theme,

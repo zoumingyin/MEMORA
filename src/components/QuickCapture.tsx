@@ -9,6 +9,7 @@ import { useEffect, useRef, useState } from "react";
 import { useEntryStore } from "../store/useEntryStore";
 import { isTauriRuntime } from "../repository";
 import { ENTRY_KIND_LABEL } from "../utils/entryLabels";
+import { VoiceInputButton } from "./VoiceInputButton";
 import type { EntryKind } from "../types/entry";
 
 interface QuickCaptureProps {
@@ -130,6 +131,13 @@ export function QuickCapture({ open, onClose }: QuickCaptureProps) {
           }}
         />
         <div className="quick-capture-kind">
+          <VoiceInputButton
+            onText={(text) =>
+              setText((prev) => (prev ? `${prev}\n${text}` : text))
+            }
+            onError={(message) => console.warn("语音输入不可用", message)}
+          />
+          <span className="min-w-0 flex-1" />
           <span>创建为</span>
           <Select
             size="small"

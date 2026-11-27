@@ -318,6 +318,7 @@ dependencies = [
  "tauri-plugin-sql",
  "tauri-plugin-updater",
  "tokio",
+ "webview2-com",
  "windows",
  "windows-registry",
 ]
