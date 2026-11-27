@@ -182,7 +182,7 @@ pnpm build    # tsc -b 类型检查 + vite 生产构建，产物在 dist/
   1. `TAURI_SIGNING_PRIVATE_KEY=C:/Users/zmy/.tauri/memora-updater.key pnpm tauri:build`（构建自动产出 NSIS 安装包、`.nsis.zip` 与 `.sig` 签名）
   2. `node scripts/release-update.mjs [版本号]`——生成 `build-release/latest.json`（含签名串与 SHA256）并打印上传清单
   3. 在 GitHub 仓库创建 Release（tag = `v版本号`），上传 `latest.json` + `.nsis.zip` + `.sig` + 安装包
-  - updater 端点配置为 `https://github.com/<owner>/<repo>/releases/latest/download/latest.json`（`endpoints` 数组支持多个端点按序回退，可追加 Gitee 镜像加速国内下载）。仓库建好后需把 `tauri.conf.json` 与 `scripts/release-update.mjs` 中的 `OWNER/REPO` 占位替换为实际地址。
+  - updater 端点配置为 `https://github.com/zoumingyin/MEMORA/releases/latest/download/latest.json`（`endpoints` 数组支持多个端点按序回退，可追加 Gitee 镜像加速国内下载）。
 - 浏览器预览环境不支持在线升级，设置页自动禁用；更新源不可达时 10 秒超时并给出错误提示，不影响应用其他功能。
 
 
@@ -399,7 +399,7 @@ bianqian/
 - 提醒优先级、拖拽排序、富文本 / 附件；
 - 多设备同步后端（仅有仓储抽象与 `sync_status` 字段预留）；
 - Linux / macOS 窗口表现（置顶、位置、吸附窄条走 Tauri 内置 Window API，未在这两个平台实测；背景透明度为纯 CSS 实现，不受平台限制）；
-- 在线升级端点目前为 `OWNER/REPO` 占位，需在建好 GitHub 仓库后替换并完成首次 Release；
+- 在线升级已配置 GitHub Releases 更新源（`zoumingyin/MEMORA`），首次发布需创建 v1.1.0 Release 并上传构建产物；
 - NSIS 安装包需执行 `pnpm tauri:build` 后生成，本仓库未附带成品安装包。
 
 

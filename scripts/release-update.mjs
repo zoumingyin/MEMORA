@@ -45,7 +45,7 @@ if (!zip || !sig || !setup) {
 }
 
 // v1.1.0 起版本号进入文件名；沿用产物名避免手工映射错误
-const releaseBase = `https://github.com/OWNER/REPO/releases/download/v${version}`
+const releaseBase = `https://github.com/zoumingyin/MEMORA/releases/download/v${version}`
 const signature = readFileSync(join(nsisDir, sig), 'utf-8').trim()
 const url = `${releaseBase}/${encodeURIComponent(zip)}`
 
@@ -73,8 +73,7 @@ console.log(`  更新包: ${zip}（updater 下载）`)
 console.log(`  签 名: ${sig}`)
 console.log(`  zip SHA256: ${sha256(zip)}`)
 console.log(`  exe SHA256: ${sha256(setup)}`)
-console.log('\n⚠️  latest.json 的 url 使用占位 OWNER/REPO，上传前请改成实际 GitHub 仓库地址。')
-console.log('上传清单（GitHub Release tag=v' + version + '）：')
+console.log('\n上传清单（GitHub Release tag=v' + version + '，仓库 github.com/zoumingyin/MEMORA）：')
 console.log(`  1. build-release/latest.json`)
 console.log(`  2. ${join(nsisDir, zip)}`)
 console.log(`  3. ${join(nsisDir, sig)}`)
