@@ -1443,6 +1443,7 @@ function AssistantPanelBody() {
             <VoiceInputButton
               disabled={sending}
               onText={appendVoiceText}
+              onBeforeTrigger={() => inputRef.current?.focus()}
               onError={(message) => antdMessage.warning(message)}
             />
 

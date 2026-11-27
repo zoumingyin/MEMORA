@@ -135,6 +135,7 @@ export function QuickCapture({ open, onClose }: QuickCaptureProps) {
             onText={(text) =>
               setText((prev) => (prev ? `${prev}\n${text}` : text))
             }
+            onBeforeTrigger={() => textareaRef.current?.focus()}
             onError={(message) => console.warn("语音输入不可用", message)}
           />
           <span className="min-w-0 flex-1" />

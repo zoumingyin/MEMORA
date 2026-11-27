@@ -137,6 +137,52 @@ fn grant_webview_microphone(window: &tauri::WebviewWindow) {
 #[cfg(not(windows))]
 fn grant_webview_microphone(_window: &tauri::WebviewWindow) {}
 
+/// 唤起 Windows 系统语音输入（Win+H 听写面板）：系统原生听写，免费、无需 AI 配置，
+/// 文本直接打进当前聚焦的输入框。前端调用前须先聚焦目标输入框。
+/// 实现：模拟 Win+H 按键序列（SendInput），系统面板自管录音状态与转写。
+#[tauri::command]
+fn open_system_voice_input() -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        use windows::Win32::UI::Input::KeyboardAndMouse::{
+            SendInput, INPUT, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, VIRTUAL_KEY, VK_LWIN,
+        };
+        const VK_H: u16 = 0x48;
+        let key = |vkey: VIRTUAL_KEY, keyup: bool| INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: windows::Win32::UI::Input::KeyboardAndMouse::INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: vkey,
+                    wScan: 0,
+                    dwFlags: if keyup { KEYEVENTF_KEYUP } else { KEYBDINPUT::default().dwFlags },
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
+            },
+        };
+        let inputs = [
+            key(VK_LWIN, false),
+            key(VIRTUAL_KEY(VK_H), false),
+            key(VIRTUAL_KEY(VK_H), true),
+            key(VK_LWIN, true),
+        ];
+        let sent = unsafe {
+            SendInput(
+                &inputs,
+                std::mem::size_of::<INPUT>() as i32,
+            )
+        };
+        if sent != inputs.len() as u32 {
+            return Err("唤起系统语音输入失败，请手动按 Win+H".to_string());
+        }
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        Err("系统语音输入仅 Windows 可用".to_string())
+    }
+}
+
 /// 前端调用：启动就绪后揭开窗口 / 收纳缩窗时临时斗篷
 #[tauri::command]
 fn set_window_cloaked(window: tauri::WebviewWindow, cloaked: bool) -> Result<(), String> {
@@ -1118,6 +1164,7 @@ pub fn run() {
             ai::ai_chat,
             ai::ai_cancel,
             ai::ai_transcribe,
+            open_system_voice_input,
             web_search::ai_web_search,
             get_autostart_enabled,
             get_system_theme,

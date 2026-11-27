@@ -57,6 +57,7 @@ windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_Graphics_Dwm",
     "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Input_KeyboardAndMouse",
 ] }
 # 语音输入：订阅 WebView2 PermissionRequested 自动放行麦克风（版本对齐依赖树，离线不引入新下载）
 webview2-com = "0.39.1"
