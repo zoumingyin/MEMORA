@@ -115,6 +115,31 @@ async function openReminderDialog(entry: ReminderEntry, alarm: AlarmItem): Promi
   }
 }
 
+/** 通知正文最长字符数：过长截断，避免 toast 被超大正文撑爆 */
+const NOTIFY_BODY_MAX = 200
+
+/**
+ * 组装通知文案：标题 = 便签标题（空则「提醒」）；
+ * 正文 = 【闹钟名】 HH:mm + 正文摘要（剔除图片语法（可能是超长 base64）后截断）。
+ */
+function buildNotificationContent(
+  entry: ReminderEntry,
+  alarm: AlarmItem,
+): { title: string; body: string } {
+  const time = new Date(alarm.remindAt)
+  const pad = (n: number): string => String(n).padStart(2, '0')
+  const timeText = `${pad(time.getHours())}:${pad(time.getMinutes())}`
+  const title = entry.title.trim() || '提醒'
+  const head = alarm.name?.trim()
+    ? `【${alarm.name.trim()}】${timeText}`
+    : timeText
+  const text = (entry.content ?? '')
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
+    .trim()
+    .slice(0, NOTIFY_BODY_MAX)
+  return { title: `⏰ ${title}`, body: [head, text].filter(Boolean).join('\n') }
+}
+
 /** 浏览器预览兜底：环境内无法创建独立窗口，退化为 Web Notification */
 function fallbackNotify(title: string, body: string): void {
   if (
@@ -135,6 +160,35 @@ async function notifySystem(title: string, body: string): Promise<void> {
     if (permission !== 'granted') throw new Error('系统通知权限未授予')
   }
   sendNotification({ title, body: body || title })
+}
+
+/**
+ * 确认闹钟（版本冲突时基于 store 最新状态重试一次）。
+ * 通知是「先弹出、后记账」：confirmAlarm 走乐观并发（WHERE version = ?），
+ * 若该条提醒正被编辑（防抖自动保存 bump version）会冲突失败——
+ * 此时通知已经发出，不能按触达失败冷却 60s 后重发（否则用户看到两条相同通知）。
+ * 重试前校验：条目/闹钟仍存在且触发时间未被用户改动；已 notified 视为已处理。
+ */
+async function confirmAlarmWithRetry(
+  entryId: string,
+  alarmId: string,
+  firedRemindAt: number,
+): Promise<void> {
+  try {
+    await useEntryStore.getState().confirmAlarm(entryId, alarmId)
+  } catch (error) {
+    const entry = useEntryStore
+      .getState()
+      .entries.find((item) => item.id === entryId)
+    const alarm =
+      entry?.kind === 'reminder'
+        ? entry.alarms.find((item) => item.id === alarmId)
+        : undefined
+    if (!entry || entry.kind !== 'reminder' || !alarm) throw error
+    if (alarm.notified) return
+    if (alarm.remindAt !== firedRemindAt) throw error
+    await useEntryStore.getState().confirmAlarm(entryId, alarmId)
+  }
 }
 
 /**
@@ -171,13 +225,14 @@ export function startReminderScheduler(): () => void {
 
           if (alarm.method === 'notification') {
             try {
+              const { title, body } = buildNotificationContent(entry, alarm)
               if (isTauriRuntime()) {
-                await notifySystem(entry.title, entry.content)
+                await notifySystem(title, body)
               } else {
-                fallbackNotify(entry.title, entry.content)
+                fallbackNotify(title, body)
               }
               // 通知已发出：原子确认本次到期（重复模式推进到下一次）
-              await state.confirmAlarm(entry.id, alarm.id)
+              await confirmAlarmWithRetry(entry.id, alarm.id, alarm.remindAt)
             } catch (error) {
               const message =
                 error instanceof Error ? error.message : String(error)
@@ -199,14 +254,16 @@ export function startReminderScheduler(): () => void {
                 alarm.id,
                 '无法创建提醒弹窗',
               )
-              fallbackNotify(entry.title, entry.content)
+              const { title, body } = buildNotificationContent(entry, alarm)
+              fallbackNotify(title, body)
             } else {
               dialogOpen = true
             }
           } else {
-            fallbackNotify(entry.title, entry.content)
+            const { title, body } = buildNotificationContent(entry, alarm)
+            fallbackNotify(title, body)
             try {
-              await state.confirmAlarm(entry.id, alarm.id)
+              await confirmAlarmWithRetry(entry.id, alarm.id, alarm.remindAt)
             } catch (error) {
               retryAfter.set(key, now + FAILURE_COOLDOWN_MS)
               await state.recordAlarmFailure(

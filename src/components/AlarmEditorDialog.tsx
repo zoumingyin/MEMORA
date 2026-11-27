@@ -130,6 +130,8 @@ export function AlarmEditorDialog({ alarm, onSave, onClose }: AlarmEditorDialogP
       cancelText="取消"
       width={300}
       centered
+      // 小窗口（如 320x380 独立便签小窗）下弹窗高于视口：body 限高滚动，保证「确定」可达
+      styles={{ body: { maxHeight: 'calc(100vh - 140px)', overflowY: 'auto' } }}
       onOk={() => {
         const totalMin = Math.max(
           1,
@@ -246,7 +248,10 @@ export function AlarmEditorDialog({ alarm, onSave, onClose }: AlarmEditorDialogP
             <DatePicker
               size="small"
               classNames={{ popup: { root: 'alarm-picker-dropdown' } }}
-              showTime={{ format: 'HH:mm' }}
+              // changeOnScroll:false：时间列滚轮只浏览不改值。
+              // 默认开启时滚轮会把「列中央的分钟」写成选中值——选完分钟再滚一下，
+              // 值就被弹回当前分钟附近（用户反馈「选择分钟后自动滚动当前的分钟」）
+              showTime={{ format: 'HH:mm', changeOnScroll: false }}
               format="YYYY-MM-DD HH:mm"
               value={dayjs(remindAt)}
               // 日期格显示农历 / 节气 / 节日小字，与日历视图网格观感一致

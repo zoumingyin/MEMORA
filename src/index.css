@@ -629,7 +629,7 @@ textarea {
   flex: none;
   border-right: 1px solid var(--border);
   background: rgba(var(--panel-soft-rgb), var(--chrome-alpha));
-  padding-bottom:0.5rem;
+  padding-bottom: 0.5rem;
 }
 
 /* 分类筛选胶囊：独立成行（参考浅色风，active 蓝填充 / 非 active 灰底） */
@@ -1109,7 +1109,7 @@ textarea {
 
 .fc-chip i {
   flex: none;
-  width: 5px;
+  width: 2px;
   height: 11px;
   border-radius: 2px;
 }
@@ -1170,8 +1170,7 @@ textarea {
   --wall-card-w: 264px;
   --wall-card-h: 228px;
   --wall-card-shadow:
-    0 2px 6px rgba(16, 24, 40, 0.07),
-    0 14px 30px rgba(16, 24, 40, 0.07);
+    0 2px 6px rgba(16, 24, 40, 0.07), 0 14px 30px rgba(16, 24, 40, 0.07);
 }
 
 :root.dark-glass {
@@ -1180,23 +1179,38 @@ textarea {
   --card-hover-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
   --wall-dot: color-mix(in srgb, var(--memora-text) 13%, transparent);
   --wall-card-shadow:
-    0 3px 8px rgba(0, 0, 0, 0.3),
-    0 16px 34px rgba(0, 0, 0, 0.28);
+    0 3px 8px rgba(0, 0, 0, 0.3), 0 16px 34px rgba(0, 0, 0, 0.28);
 }
 
 div.note-row.note-card,
 div.note-row.wall-note {
   background-image: linear-gradient(
-    color-mix(in srgb, var(--card-tint, transparent) var(--card-tint-alpha), transparent),
-    color-mix(in srgb, var(--card-tint, transparent) var(--card-tint-alpha), transparent)
+    color-mix(
+      in srgb,
+      var(--card-tint, transparent) var(--card-tint-alpha),
+      transparent
+    ),
+    color-mix(
+      in srgb,
+      var(--card-tint, transparent) var(--card-tint-alpha),
+      transparent
+    )
   );
 }
 
 /* 列表模式条目：同样是卡片底色淡染，但为单行紧凑布局，不叠加纸张纹理 */
 button.note-list-row {
   background-image: linear-gradient(
-    color-mix(in srgb, var(--card-tint, transparent) var(--card-tint-alpha), transparent),
-    color-mix(in srgb, var(--card-tint, transparent) var(--card-tint-alpha), transparent)
+    color-mix(
+      in srgb,
+      var(--card-tint, transparent) var(--card-tint-alpha),
+      transparent
+    ),
+    color-mix(
+      in srgb,
+      var(--card-tint, transparent) var(--card-tint-alpha),
+      transparent
+    )
   );
 }
 
@@ -1319,7 +1333,8 @@ button.note-list-row {
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
-  box-shadow: 0 4px 12px color-mix(in srgb, var(--memora-primary) 32%, transparent);
+  box-shadow: 0 4px 12px
+    color-mix(in srgb, var(--memora-primary) 32%, transparent);
   transition:
     background 0.15s ease,
     transform 0.12s ease,
@@ -1329,7 +1344,8 @@ button.note-list-row {
 .wall-new-btn:hover {
   background: var(--memora-primary-hover);
   transform: translateY(-1px);
-  box-shadow: 0 6px 16px color-mix(in srgb, var(--memora-primary) 40%, transparent);
+  box-shadow: 0 6px 16px
+    color-mix(in srgb, var(--memora-primary) 40%, transparent);
 }
 
 .wall-new-btn:active {
@@ -1863,8 +1879,16 @@ button.note-list-row {
 :is(div.note-row.note-card, div.note-row.wall-note)[data-paper="ruled"] {
   background-image:
     linear-gradient(
-      color-mix(in srgb, var(--card-tint, transparent) var(--card-tint-alpha), transparent),
-      color-mix(in srgb, var(--card-tint, transparent) var(--card-tint-alpha), transparent)
+      color-mix(
+        in srgb,
+        var(--card-tint, transparent) var(--card-tint-alpha),
+        transparent
+      ),
+      color-mix(
+        in srgb,
+        var(--card-tint, transparent) var(--card-tint-alpha),
+        transparent
+      )
     ),
     repeating-linear-gradient(
       to bottom,
@@ -1878,22 +1902,43 @@ button.note-list-row {
 :is(div.note-row.note-card, div.note-row.wall-note)[data-paper="grid"] {
   background-image:
     linear-gradient(
-      color-mix(in srgb, var(--card-tint, transparent) var(--card-tint-alpha), transparent),
-      color-mix(in srgb, var(--card-tint, transparent) var(--card-tint-alpha), transparent)
+      color-mix(
+        in srgb,
+        var(--card-tint, transparent) var(--card-tint-alpha),
+        transparent
+      ),
+      color-mix(
+        in srgb,
+        var(--card-tint, transparent) var(--card-tint-alpha),
+        transparent
+      )
     ),
     linear-gradient(var(--paper-line) 1px, transparent 1px),
     linear-gradient(90deg, var(--paper-line) 1px, transparent 1px);
-  background-size: auto, 16px 16px, 16px 16px;
+  background-size:
+    auto,
+    16px 16px,
+    16px 16px;
 }
 
 :is(div.note-row.note-card, div.note-row.wall-note)[data-paper="dots"] {
   background-image:
     linear-gradient(
-      color-mix(in srgb, var(--card-tint, transparent) var(--card-tint-alpha), transparent),
-      color-mix(in srgb, var(--card-tint, transparent) var(--card-tint-alpha), transparent)
+      color-mix(
+        in srgb,
+        var(--card-tint, transparent) var(--card-tint-alpha),
+        transparent
+      ),
+      color-mix(
+        in srgb,
+        var(--card-tint, transparent) var(--card-tint-alpha),
+        transparent
+      )
     ),
     radial-gradient(var(--paper-dot) 1px, transparent 1.4px);
-  background-size: auto, 12px 12px;
+  background-size:
+    auto,
+    12px 12px;
 }
 
 .row-icon {
@@ -1924,8 +1969,12 @@ button.note-list-row {
   word-break: break-word;
   overflow-wrap: anywhere;
 }
-.note-md > :first-child { margin-top: 0; }
-.note-md > :last-child { margin-bottom: 0; }
+.note-md > :first-child {
+  margin-top: 0;
+}
+.note-md > :last-child {
+  margin-bottom: 0;
+}
 .note-md h1,
 .note-md h2,
 .note-md h3,
@@ -1937,22 +1986,52 @@ button.note-list-row {
   margin: 6px 0 3px;
   color: var(--text);
 }
-.note-md h1 { font-size: 15px; }
-.note-md h2 { font-size: 14px; }
-.note-md h3 { font-size: 13px; }
+.note-md h1 {
+  font-size: 15px;
+}
+.note-md h2 {
+  font-size: 14px;
+}
+.note-md h3 {
+  font-size: 13px;
+}
 .note-md h4,
 .note-md h5,
-.note-md h6 { font-size: 12.5px; }
-.note-md p { margin: 4px 0; }
-.note-md strong { font-weight: 700; color: var(--text); }
-.note-md em { font-style: italic; }
-.note-md del { text-decoration: line-through; opacity: 0.7; }
+.note-md h6 {
+  font-size: 12.5px;
+}
+.note-md p {
+  margin: 4px 0;
+}
+.note-md strong {
+  font-weight: 700;
+  color: var(--text);
+}
+.note-md em {
+  font-style: italic;
+}
+.note-md del {
+  text-decoration: line-through;
+  opacity: 0.7;
+}
 .note-md ul,
-.note-md ol { margin: 4px 0; padding-left: 18px; }
-.note-md li { margin: 1px 0; }
-.note-md ul { list-style: disc; }
-.note-md ol { list-style: decimal; }
-.note-md a { color: var(--note); text-decoration: underline; }
+.note-md ol {
+  margin: 4px 0;
+  padding-left: 18px;
+}
+.note-md li {
+  margin: 1px 0;
+}
+.note-md ul {
+  list-style: disc;
+}
+.note-md ol {
+  list-style: decimal;
+}
+.note-md a {
+  color: var(--note);
+  text-decoration: underline;
+}
 .note-md code {
   font-family: var(--mono-font, ui-monospace, SFMono-Regular, Menlo, monospace);
   font-size: 11px;
@@ -1967,7 +2046,10 @@ button.note-list-row {
   overflow-x: auto;
   margin: 4px 0;
 }
-.note-md pre code { background: none; padding: 0; }
+.note-md pre code {
+  background: none;
+  padding: 0;
+}
 .note-md blockquote {
   margin: 4px 0;
   padding: 2px 8px;
@@ -1981,8 +2063,15 @@ button.note-list-row {
   margin: 2px 0;
   object-fit: contain;
 }
-.note-md hr { border: none; border-top: 1px solid var(--border); margin: 6px 0; }
-.note-md table { border-collapse: collapse; font-size: 11px; }
+.note-md hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 6px 0;
+}
+.note-md table {
+  border-collapse: collapse;
+  font-size: 11px;
+}
 .note-md th,
 .note-md td {
   border: 1px solid var(--border);
@@ -2085,7 +2174,8 @@ button.note-list-row {
 
 /* 方格：22px 双向网格 */
 .detail-pane[data-paper="grid"] {
-  background-image: linear-gradient(var(--paper-line) 1px, transparent 1px),
+  background-image:
+    linear-gradient(var(--paper-line) 1px, transparent 1px),
     linear-gradient(90deg, var(--paper-line) 1px, transparent 1px);
   background-size: 22px 22px;
 }
@@ -2105,7 +2195,7 @@ button.note-list-row {
 .detail-title.ant-input {
   width: 100%;
   border-radius: 10px;
-  background:transparent;
+  background: transparent;
   font-size: 17px;
   font-weight: 700;
   color: var(--text);
@@ -3912,7 +4002,9 @@ button.note-list-row {
   color: var(--text-muted);
   font-size: 12px;
   cursor: pointer;
-  transition: background 0.12s, color 0.12s;
+  transition:
+    background 0.12s,
+    color 0.12s;
 }
 
 .md-ctx-emoji-tab:hover {
@@ -3945,7 +4037,9 @@ button.note-list-row {
   font-size: 18px;
   line-height: 1;
   cursor: pointer;
-  transition: background 0.12s, transform 0.06s;
+  transition:
+    background 0.12s,
+    transform 0.06s;
 }
 
 .md-ctx-emoji-cell:hover {
@@ -4039,8 +4133,7 @@ button.note-list-row {
   cursor: pointer;
   /* 收缩时窗口边界一步到位，观感上的过渡由这一层淡入补足 */
   animation: dock-strip-in 0.18s ease-out;
-  transition:
-    color 0.2s;
+  transition: color 0.2s;
 }
 
 /* 上边缘收纳：窄条横放，胶囊横向排列 */
@@ -4702,21 +4795,23 @@ button.note-list-row {
 }
 
 /* 带农历小字的日期格：数字 + 农历两行布局，格高放宽 */
+/* 26px 紧凑高度：面板过高会在小窗口（422x540 / 320x380 小窗）被窗口边缘裁剪，
+   时间列的上午时段会滚到可视区外，用户只能点到「此刻」——见 2026-11-27 修复 */
 .alarm-picker-dropdown .ant-picker-cell-inner.alarm-cell-lunar {
   display: flex;
   height: auto;
-  min-height: 34px;
+  min-height: 26px;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 1px 2px 2px;
-  line-height: 1.15;
+  padding: 0 2px 1px;
+  line-height: 1.1;
 }
 
 .alarm-picker-dropdown .ant-picker-cell-inner.alarm-cell-lunar .alarm-cell-day {
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 600;
-  line-height: 15px;
+  line-height: 13px;
 }
 
 .alarm-picker-dropdown
@@ -4724,11 +4819,17 @@ button.note-list-row {
   .alarm-cell-lunar-sub {
   max-width: 26px;
   overflow: hidden;
-  font-size: 9px;
-  line-height: 11px;
+  font-size: 8.5px;
+  line-height: 10px;
   color: var(--text-muted);
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* 日期下拉面板限高：超出可视区时面板内部滚动，保证日期格与时间列全部可达 */
+.alarm-picker-dropdown {
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
 }
 
 /* 选中态：农历小字跟随反色 */
@@ -4933,7 +5034,8 @@ body.img-viewer-window .ant-image-preview {
 .assistant-scroll {
   overscroll-behavior: contain;
   scrollbar-width: thin;
-  scrollbar-color: color-mix(in srgb, var(--text-muted) 40%, transparent) transparent;
+  scrollbar-color: color-mix(in srgb, var(--text-muted) 40%, transparent)
+    transparent;
 }
 .assistant-scroll::-webkit-scrollbar {
   width: 6px;
@@ -5097,4 +5199,3 @@ body.img-viewer-window .ant-image-preview {
   outline-offset: 1px;
   border-radius: 999px;
 }
-
