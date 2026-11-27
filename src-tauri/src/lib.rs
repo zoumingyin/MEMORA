@@ -768,6 +768,10 @@ pub fn run() {
         )))
         .manage(db_safety::AutoBackupState::default())
         .plugin(tauri_plugin_notification::init())
+        // 在线升级：检查更新 / 下载签名安装包 / 重启安装（密钥与端点见 tauri.conf.json plugins.updater）
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        // 配套 relaunch：安装完更新后重启应用
+        .plugin(tauri_plugin_process::init())
         .plugin(
             tauri_plugin_sql::Builder::default()
                 .add_migrations("sqlite:bianqian.db", migrations)

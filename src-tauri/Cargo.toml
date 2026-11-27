@@ -1,6 +1,6 @@
 [package]
 name = "bianqian"
-version = "1.0.0"
+version = "1.1.0"
 description = "MEMORA — 个人桌面效率工具：备忘、提醒、待办、AI 助手"
 edition = "2021"
 
@@ -46,6 +46,8 @@ reqwest = { version = "0.13.5", default-features = false, features = [
     "charset",
 ] }
 futures-util = "0.3.34"
+tauri-plugin-updater = "2.14.1"
+tauri-plugin-process = "2.4.0"
 
 # Windows 专用：原子下发窗口位置+尺寸（单个 SetWindowPos）。
 # 版本对齐依赖树中 tauri 已带的 0.62，离线构建不引入新下载；

@@ -9,8 +9,10 @@ import {
   Tree,
 } from "antd";
 import type { InputRef, TreeDataNode } from "antd";
-import { ExportOutlined } from "@ant-design/icons";
+import { ExportOutlined, SyncOutlined } from "@ant-design/icons";
 import { disable, enable } from "@tauri-apps/plugin-autostart";
+import { getVersion } from "@tauri-apps/api/app";
+import { Progress } from "antd";
 import {
   open as dialogOpen,
   save as dialogSave,
@@ -67,6 +69,12 @@ import {
   saveCloseBehavior,
   type CloseBehavior,
 } from "../window/closeBehavior";
+import {
+  checkForUpdate,
+  downloadAndInstall,
+  relaunch,
+} from "../services/updater";
+import type { Update } from "@tauri-apps/plugin-updater";
 
 interface SettingsDialogProps {
   open: boolean;
@@ -190,7 +198,7 @@ const SETTING_TREE: SettingGroup[] = [
       },
       {
         key: "close-behavior",
-        label: "关闭窗口行为",
+        label: "关闭窗口时",
         hint: "每次询问 / 最小化到托盘 / 退出并停止提醒",
       },
     ],
@@ -206,7 +214,7 @@ const SETTING_TREE: SettingGroup[] = [
       },
       {
         key: "ai-privacy",
-        label: "上下文与隐私",
+        label: "上下文",
         hint: "控制 AI 可读取的便签内容",
       },
       {
@@ -252,6 +260,11 @@ const SETTING_TREE: SettingGroup[] = [
     key: "about",
     label: "关于",
     children: [
+      {
+        key: "update",
+        label: "软件更新",
+        hint: "在线检查并安装新版本",
+      },
       {
         key: "about-info",
         label: "关于与友链",
@@ -356,6 +369,169 @@ function describeBackup(meta: BackupMetadata): string {
       ? "校验通过"
       : `校验异常（quick=${meta.quickCheck}，integrity=${meta.integrityCheck}）`;
   return `schema v${meta.schemaVersion}，${sizeKb} KB，SHA256 ${meta.sha256.slice(0, 12)}…，${checks}，WAL：${meta.walHandled}`;
+}
+
+/** 软件更新设置：在线检查 → 下载（带进度）→ 安装重启 */
+function UpdateSetting() {
+  const [currentVersion, setCurrentVersion] = useState("");
+  const [phase, setPhase] = useState<
+    "idle" | "checking" | "available" | "latest" | "downloading" | "installing"
+  >("idle");
+  const [error, setError] = useState<string | null>(null);
+  const [info, setInfo] = useState<{
+    version: string;
+    body?: string;
+    currentVersion: string;
+  } | null>(null);
+  const [progress, setProgress] = useState<{
+    downloaded: number;
+    total: number;
+  } | null>(null);
+  const updateRef = useRef<Update | null>(null);
+
+  useEffect(() => {
+    if (!isTauriRuntime()) {
+      setCurrentVersion("浏览器预览");
+      return;
+    }
+    getVersion()
+      .then(setCurrentVersion)
+      .catch(() => setCurrentVersion("未知"));
+    return () => {
+      // Update 持有 Rust 侧资源：不安装也要释放
+      void updateRef.current?.close().catch(() => undefined);
+    };
+  }, []);
+
+  const handleCheck = async (): Promise<void> => {
+    setError(null);
+    setPhase("checking");
+    try {
+      const update = await checkForUpdate();
+      if (update) {
+        updateRef.current = update;
+        setInfo({
+          version: update.version,
+          body: update.body,
+          currentVersion: update.currentVersion,
+        });
+        setPhase("available");
+      } else {
+        setPhase("latest");
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setPhase("idle");
+    }
+  };
+
+  const handleInstall = async (): Promise<void> => {
+    const update = updateRef.current;
+    if (!update) return;
+    setError(null);
+    setPhase("downloading");
+    let downloaded = 0;
+    let total = 0;
+    try {
+      await downloadAndInstall(update, (progress) => {
+        if (progress.event === "started") {
+          total = progress.totalBytes ?? 0;
+          setProgress({ downloaded: 0, total });
+        } else if (progress.event === "progress") {
+          downloaded += progress.chunkLength ?? 0;
+          setProgress({ downloaded, total });
+        } else {
+          setProgress({ downloaded: total, total });
+        }
+      });
+      setPhase("installing");
+      // Windows NSIS 静默安装包默认 restartAfterInstall；此处兜底重启
+      setTimeout(() => void relaunch(), 800);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setPhase("available");
+    }
+  };
+
+  const pct =
+    progress && progress.total > 0
+      ? Math.min(100, Math.round((progress.downloaded / progress.total) * 100))
+      : 0;
+
+  return (
+    <div className="flex flex-col gap-2.5">
+      <div className="settings-item">
+        <div className="settings-item-main">
+          <span className="settings-item-label">当前版本</span>
+          <span className="settings-item-hint">
+            {currentVersion ? `MEMORA v${currentVersion}` : "读取中…"}
+          </span>
+        </div>
+        <Button
+          size="small"
+          icon={<SyncOutlined spin={phase === "checking"} />}
+          disabled={
+            !isTauriRuntime() ||
+            phase === "checking" ||
+            phase === "downloading" ||
+            phase === "installing"
+          }
+          onClick={() => void handleCheck()}
+        >
+          检查更新
+        </Button>
+      </div>
+      {phase === "latest" && (
+        <div className="settings-item">
+          <div className="settings-item-main">
+            <span className="settings-item-label">已是最新版本</span>
+            <span className="settings-item-hint">当前没有可用更新</span>
+          </div>
+        </div>
+      )}
+      {phase === "available" && info && (
+        <div className="settings-item grid gap-2">
+          <div className="settings-item-main">
+            <span className="settings-item-label">
+              发现新版本 v{info.version}（当前 v{info.currentVersion}）
+            </span>
+            {info.body && (
+              <span className="settings-item-hint whitespace-pre-wrap break-all">
+                {info.body}
+              </span>
+            )}
+          </div>
+          <Button type="primary" size="small" onClick={() => void handleInstall()}>
+            下载并安装
+          </Button>
+        </div>
+      )}
+      {(phase === "downloading" || phase === "installing") && (
+        <div className="settings-item grid gap-1">
+          <span className="settings-item-label">
+            {phase === "downloading"
+              ? `正在下载更新… ${
+                  progress && progress.total > 0
+                    ? `${(progress.downloaded / 1024 / 1024).toFixed(1)} / ${(progress.total / 1024 / 1024).toFixed(1)} MB`
+                    : ""
+                }`
+              : "安装完成，即将重启应用…"}
+          </span>
+          {phase === "downloading" && progress && progress.total > 0 && (
+            <Progress percent={pct} size="small" />
+          )}
+        </div>
+      )}
+      {error && (
+        <div className="settings-item">
+          <div className="settings-item-main">
+            <span className="settings-item-label">检查更新失败</span>
+            <span className="settings-item-hint break-all">{error}</span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 /** 关闭窗口行为设置：每次询问 / 记住最小化到托盘 / 记住退出并停止提醒 */
@@ -1738,6 +1914,8 @@ export function SettingsDialog({
           </div>
         );
       }
+      case "update":
+        return <UpdateSetting />;
       case "about-info":
         return (
           <div className="flex flex-col gap-2.5">
