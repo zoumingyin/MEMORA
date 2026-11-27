@@ -43,10 +43,14 @@ if (!setup || !sig) {
   process.exit(1)
 }
 
-// v1.1.0 起版本号进入文件名；沿用产物名避免手工映射错误
+// v1.1.0 起版本号进入文件名；沿用产物名避免手工映射错误。
+// 双端点：Gitee（tag=latest 的滚动发行版，国内快）优先，GitHub Release 兜底。
+// 同一安装包上传两平台，签名串相同，仅 url 不同 → 生成两份 latest.json。
 const releaseBase = `https://github.com/zoumingyin/MEMORA/releases/download/v${version}`
+const giteeBase = `https://gitee.com/zoumingyin/MEMORA/releases/download/latest`
 const signature = readFileSync(join(nsisDir, sig), 'utf-8').trim()
 const url = `${releaseBase}/${encodeURIComponent(setup)}`
+const giteeUrl = `${giteeBase}/${encodeURIComponent(setup)}`
 
 const latest = {
   version,
@@ -60,18 +64,36 @@ const latest = {
   },
 }
 
+const giteeLatest = {
+  ...latest,
+  platforms: {
+    'windows-x86_64': {
+      signature,
+      url: giteeUrl,
+    },
+  },
+}
+
 const outDir = join(root, 'build-release')
 mkdirSync(outDir, { recursive: true })
 writeFileSync(join(outDir, 'latest.json'), JSON.stringify(latest, null, 2) + '\n')
+writeFileSync(join(outDir, 'latest-gitee.json'), JSON.stringify(giteeLatest, null, 2) + '\n')
 
 const sha256 = (f) =>
   createHash('sha256').update(readFileSync(join(nsisDir, f))).digest('hex')
 
-console.log(`已生成 build-release/latest.json（v${version}）`)
+console.log(`已生成 build-release/latest.json（GitHub，v${version}）与 latest-gitee.json（Gitee）`)
 console.log(`  安装包: ${setup}（updater 下载 + 完整安装共用）`)
-console.log(`  签 名: ${sig}`)
+console.log(`  签 名: ${sig}（两平台通用，同一文件同一签名）`)
 console.log(`  exe SHA256: ${sha256(setup)}`)
-console.log('\n上传清单（GitHub Release tag=v' + version + '，仓库 github.com/zoumingyin/MEMORA）：')
+console.log('\n上传清单（两平台都要传，tag=v' + version + '）：')
+console.log('【GitHub】github.com/zoumingyin/MEMORA → Releases → v' + version + '：')
 console.log(`  1. build-release/latest.json`)
 console.log(`  2. ${join(nsisDir, setup)}`)
 console.log(`  3. ${join(nsisDir, sig)}`)
+console.log('【Gitee】gitee.com/zoumingyin/MEMORA → 发行版 → tag「latest」（滚动更新，编辑既有发行版替换附件）：')
+console.log(`  1. build-release/latest-gitee.json（重命名为 latest.json 上传）`)
+console.log(`  2. ${join(nsisDir, setup)}`)
+console.log(`  3. ${join(nsisDir, sig)}`)
+console.log('\n⚠️  Gitee 端点读取的是 tag「latest」的发行版附件，每次发版记得替换该发行版的三个附件，')
+console.log('   否则 Gitee 优先的端点会让用户拿到旧版本。')

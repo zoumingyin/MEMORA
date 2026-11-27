@@ -176,13 +176,14 @@ pnpm build    # tsc -b 类型检查 + vite 生产构建，产物在 dist/
 
 ### 在线升级（设置 → 关于 → 软件更新）
 
-- **应用内检查更新**：点击「检查更新」向更新源（GitHub Releases 的 `latest.json`）查询新版本；有更新则展示版本号与更新说明，点「下载并安装」带 MB 级进度条，完成后静默安装并自动重启（NSIS `restartAfterInstall`）。
+- **应用内检查更新**：点击「检查更新」向更新源（Gitee 优先、GitHub 兜底的 `latest.json`）查询新版本；有更新则展示版本号与更新说明，点「下载并安装」带 MB 级进度条，完成后静默安装并自动重启（NSIS `restartAfterInstall`）。
 - **签名与安全**：更新包由 minisign 密钥对签名（私钥在本机 `C:\Users\zmy\.tauri\memora-updater.key`，**已 gitignore、绝不入库；丢失私钥则已安装用户无法再收到更新**），应用内置公钥（`tauri.conf.json plugins.updater.pubkey`），安装前验签，第三方替换的安装包会被拒绝。
 - **发布流程**：
-  1. `TAURI_SIGNING_PRIVATE_KEY=C:/Users/zmy/.tauri/memora-updater.key pnpm tauri:build`（构建自动产出 NSIS 安装包、`.nsis.zip` 与 `.sig` 签名）
-  2. `node scripts/release-update.mjs [版本号]`——生成 `build-release/latest.json`（含签名串与 SHA256）并打印上传清单
-  3. 在 GitHub 仓库创建 Release（tag = `v版本号`），上传 `latest.json` + `.nsis.zip` + `.sig` + 安装包
-  - updater 端点配置为 `https://github.com/zoumingyin/MEMORA/releases/latest/download/latest.json`（`endpoints` 数组支持多个端点按序回退，可追加 Gitee 镜像加速国内下载）。
+  1. `TAURI_SIGNING_PRIVATE_KEY=C:/Users/zmy/.tauri/memora-updater.key pnpm tauri:build`（构建自动产出 NSIS 安装包与 `.sig` 签名）
+  2. `node scripts/release-update.mjs [版本号]`——生成 `build-release/latest.json`（GitHub）与 `latest-gitee.json`（Gitee），打印 SHA256 与双平台上传清单
+  3. 在 GitHub 仓库创建 Release（tag = `v版本号`），上传 `latest.json` + 安装包 + `.sig`；同时在 **Gitee 发行版（tag = `latest`，滚动更新）** 替换上传 `latest-gitee.json`（重命名为 latest.json）+ 安装包 + `.sig`
+  - `endpoints` 双端点按序回退：**Gitee 优先**（`gitee.com/zoumingyin/MEMORA/releases/download/latest/latest.json`，国内快）→ GitHub 兜底（`github.com/zoumingyin/MEMORA/releases/latest/download/latest.json`）。两平台的安装包是同一文件，签名串通用，仅 url 不同。
+  - ⚠️ Gitee 端点读取 tag「latest」发行版的附件：**每次发版都要编辑该发行版替换三个附件**，否则 Gitee 优先会让用户拿到旧版本。
 - 浏览器预览环境不支持在线升级，设置页自动禁用；更新源不可达时 10 秒超时并给出错误提示，不影响应用其他功能。
 
 
