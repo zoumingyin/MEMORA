@@ -105,6 +105,8 @@ interface EntryState {
   moveToTrash: (id: string) => Promise<void>
   restoreEntry: (id: string) => Promise<void>
   purgeEntry: (id: string) => Promise<void>
+  /** 清理废纸篓中 deletedAt 超过保留期的条目，返回清理数量（启动时自动执行） */
+  purgeExpiredTrash: (retentionDays: number) => Promise<number>
   emptyTrash: () => Promise<void>
   updateEntry: (id: string, patch: Partial<Entry>, expectedVersion?: number) => Promise<Entry>
   markNotified: (id: string) => Promise<void>
@@ -331,6 +333,24 @@ export const useEntryStore = create<EntryState>((set, get) => ({
       console.error('彻底删除条目失败', error)
       throw toWriteError(error)
     }
+  },
+
+  purgeExpiredTrash: async (retentionDays) => {
+    const cutoff = Date.now() - retentionDays * 86_400_000
+    // deletedAt 缺失时保守跳过（脏数据宁可多留不误删）
+    const expired = get().trash.filter(
+      (entry) => entry.deletedAt != null && entry.deletedAt <= cutoff,
+    )
+    for (const entry of expired) {
+      try {
+        await getRepository().purge(entry.id)
+        set((state) => ({ trash: state.trash.filter((item) => item.id !== entry.id) }))
+      } catch (error) {
+        console.error('自动清理废纸篓条目失败', entry.id, error)
+        // 单条失败跳过继续，不阻塞其余清理
+      }
+    }
+    return expired.length
   },
 
   emptyTrash: async () => {

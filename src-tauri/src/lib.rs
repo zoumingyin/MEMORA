@@ -326,11 +326,17 @@ fn write_image_file(path: String, data: String) -> Result<(), String> {
 #[serde(rename_all = "camelCase")]
 struct AutoBackupConfig {
     enabled: bool,
+    /// 用户自定义镜像目录（如网盘同步文件夹）；None 时仅备份到应用数据目录
+    #[serde(default)]
+    custom_dir: Option<String>,
 }
 
 impl Default for AutoBackupConfig {
     fn default() -> Self {
-        Self { enabled: true }
+        Self {
+            enabled: true,
+            custom_dir: None,
+        }
     }
 }
 
@@ -387,9 +393,11 @@ fn auto_backup_status(
     app: tauri::AppHandle,
     state: tauri::State<'_, db_safety::AutoBackupState>,
 ) -> Result<db_safety::AutoBackupStatus, String> {
+    let config = load_backup_config(&app);
     Ok(db_safety::auto_backup_status(
         &app,
-        load_backup_config(&app).enabled,
+        config.enabled,
+        config.custom_dir.as_deref(),
         &state,
     ))
 }
@@ -400,14 +408,59 @@ async fn set_auto_backup(
     enabled: bool,
     state: tauri::State<'_, db_safety::AutoBackupState>,
 ) -> Result<db_safety::AutoBackupStatus, String> {
-    save_backup_config(&app, &AutoBackupConfig { enabled })?;
+    // 只改开关，保留已配置的镜像目录
+    let mut config = load_backup_config(&app);
+    config.enabled = enabled;
+    save_backup_config(&app, &config)?;
     if enabled {
-        if let Err(error) = db_safety::run_daily_backup(&app, true, &state).await {
+        if let Err(error) =
+            db_safety::run_daily_backup(&app, true, config.custom_dir.as_deref(), &state).await
+        {
             *state.0.lock().unwrap() = Some(error.clone());
             return Err(error);
         }
     }
-    Ok(db_safety::auto_backup_status(&app, enabled, &state))
+    Ok(db_safety::auto_backup_status(
+        &app,
+        enabled,
+        config.custom_dir.as_deref(),
+        &state,
+    ))
+}
+
+/// 设置 / 清除每日备份的镜像目录（如网盘同步文件夹，实现异地备份）。
+/// Some(dir)：校验目录可写后保存；None：清除。
+#[tauri::command]
+async fn set_backup_dir(
+    app: tauri::AppHandle,
+    dir: Option<String>,
+    state: tauri::State<'_, db_safety::AutoBackupState>,
+) -> Result<db_safety::AutoBackupStatus, String> {
+    if let Some(path) = &dir {
+        let target = std::path::Path::new(path);
+        std::fs::create_dir_all(target).map_err(|error| format!("创建目录失败：{error}"))?;
+        // 可写探测：写删一个探针文件
+        let probe = target.join(".bianqian-write-test");
+        std::fs::write(&probe, b"ok")
+            .and_then(|_| std::fs::remove_file(&probe))
+            .map_err(|error| format!("目录不可写：{error}"))?;
+    }
+    let mut config = load_backup_config(&app);
+    config.custom_dir = dir;
+    save_backup_config(&app, &config)?;
+    if config.enabled {
+        if let Err(error) =
+            db_safety::run_daily_backup(&app, true, config.custom_dir.as_deref(), &state).await
+        {
+            *state.0.lock().unwrap() = Some(error.clone());
+        }
+    }
+    Ok(db_safety::auto_backup_status(
+        &app,
+        config.enabled,
+        config.custom_dir.as_deref(),
+        &state,
+    ))
 }
 
 #[tauri::command]
@@ -415,8 +468,10 @@ async fn run_auto_backup_now(
     app: tauri::AppHandle,
     state: tauri::State<'_, db_safety::AutoBackupState>,
 ) -> Result<db_safety::AutoBackupStatus, String> {
-    let enabled = load_backup_config(&app).enabled;
-    match db_safety::run_backup_now(&app, enabled, &state).await {
+    let config = load_backup_config(&app);
+    match db_safety::run_backup_now(&app, config.enabled, config.custom_dir.as_deref(), &state)
+        .await
+    {
         Ok(status) => Ok(status),
         Err(error) => {
             *state.0.lock().unwrap() = Some(error.clone());
@@ -474,7 +529,8 @@ async fn db_gate_retry(
 }
 
 async fn run_startup_auto_backup(app: tauri::AppHandle) {
-    if !load_backup_config(&app).enabled {
+    let config = load_backup_config(&app);
+    if !config.enabled {
         return;
     }
     let gate = app.state::<db_safety::DbGateState>();
@@ -482,7 +538,9 @@ async fn run_startup_auto_backup(app: tauri::AppHandle) {
         return;
     }
     let auto = app.state::<db_safety::AutoBackupState>();
-    if let Err(error) = db_safety::run_daily_backup(&app, true, &auto).await {
+    if let Err(error) = db_safety::run_daily_backup(&app, true, config.custom_dir.as_deref(), &auto)
+        .await
+    {
         *auto.0.lock().unwrap() = Some(error);
     }
 }
@@ -999,6 +1057,7 @@ pub fn run() {
             write_image_file,
             auto_backup_status,
             set_auto_backup,
+            set_backup_dir,
             run_auto_backup_now,
             db_gate_status,
             db_gate_migration_complete,

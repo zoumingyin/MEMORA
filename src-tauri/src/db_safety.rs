@@ -74,6 +74,8 @@ pub struct BackupMetadata {
 pub struct AutoBackupStatus {
     pub enabled: bool,
     pub dir: String,
+    /// 用户自定义镜像目录（如网盘同步文件夹）；每日备份会额外复制一份到这里
+    pub custom_dir: Option<String>,
     pub last_backup_at: Option<i64>,
     pub count: usize,
     pub last_error: Option<String>,
@@ -524,6 +526,29 @@ fn prune_auto_backups_in(dir: &Path) {
     }
 }
 
+/// 把本次备份（db + json 元数据）镜像到自定义目录，并按保留策略清理旧镜像。
+/// 用于把备份同步进网盘文件夹实现异地备份；失败不影响主备份结果。
+pub fn mirror_backup_to(
+    backup_dir: &Path,
+    metadata: &BackupMetadata,
+    mirror_dir: &Path,
+) -> Result<(), String> {
+    let db_source = backup_dir.join(&metadata.file_name);
+    if !db_source.is_file() {
+        return Err(format!("备份文件不存在：{}", db_source.display()));
+    }
+    fs::create_dir_all(mirror_dir).map_err(|error| format!("创建镜像目录失败：{error}"))?;
+    let db_dest = mirror_dir.join(&metadata.file_name);
+    fs::copy(&db_source, &db_dest).map_err(|error| format!("复制备份失败：{error}"))?;
+    let json_source = json_path(&db_source);
+    if json_source.is_file() {
+        fs::copy(&json_source, json_path(&db_dest))
+            .map_err(|error| format!("复制备份元数据失败：{error}"))?;
+    }
+    prune_auto_backups_in(mirror_dir);
+    Ok(())
+}
+
 async fn run_daily_backup_at(
     source: &Path,
     dir: &Path,
@@ -547,6 +572,7 @@ async fn run_daily_backup_at(
 pub async fn run_daily_backup(
     app: &AppHandle,
     enabled: bool,
+    mirror_dir: Option<&str>,
     state: &AutoBackupState,
 ) -> Result<Option<BackupMetadata>, String> {
     if !enabled {
@@ -564,12 +590,19 @@ pub async fn run_daily_backup(
     if metadata.is_some() {
         *state.0.lock().unwrap() = None;
     }
+    if let (Some(metadata), Some(mirror)) = (&metadata, mirror_dir) {
+        // 镜像失败不回滚主备份，记入状态供设置页展示（须在清除 last_error 之后）
+        if let Err(error) = mirror_backup_to(&dir, metadata, Path::new(mirror)) {
+            *state.0.lock().unwrap() = Some(format!("镜像备份失败：{error}"));
+        }
+    }
     Ok(metadata)
 }
 
 pub fn auto_backup_status(
     app: &AppHandle,
     enabled: bool,
+    custom_dir: Option<&str>,
     state: &AutoBackupState,
 ) -> AutoBackupStatus {
     let dir = backup_dir(app)
@@ -580,6 +613,7 @@ pub fn auto_backup_status(
     AutoBackupStatus {
         enabled,
         dir,
+        custom_dir: custom_dir.map(|path| path.to_string()),
         last_backup_at: last.as_ref().map(|metadata| metadata.backup_at),
         count: backups.len(),
         last_error: state.0.lock().unwrap().clone(),
@@ -1002,15 +1036,20 @@ pub fn gate_snapshot(state: &DbGateState) -> DbGateStatus {
 pub async fn run_backup_now(
     app: &AppHandle,
     enabled: bool,
+    custom_dir: Option<&str>,
     state: &AutoBackupState,
 ) -> Result<AutoBackupStatus, String> {
     if enabled {
         let (_, metadata) = create_named_backup(app, "bianqian", "manual").await?;
         prune_auto_backups(app);
-        *state.0.lock().unwrap() = None;
-        let _ = metadata;
+        // 镜像成功清空上次错误；失败则保留错误信息供设置页展示
+        match custom_dir.map(|mirror| mirror_backup_to(&backup_dir(app)?, &metadata, Path::new(mirror))) {
+            Some(Ok(())) => *state.0.lock().unwrap() = None,
+            Some(Err(error)) => *state.0.lock().unwrap() = Some(format!("镜像备份失败：{error}")),
+            None => *state.0.lock().unwrap() = None,
+        }
     }
-    Ok(auto_backup_status(app, enabled, state))
+    Ok(auto_backup_status(app, enabled, custom_dir, state))
 }
 
 #[cfg(test)]

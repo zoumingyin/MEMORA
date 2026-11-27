@@ -26,6 +26,8 @@ export const SPOTLIGHT_READY_EVENT = "spotlight:ready";
 export const SPOTLIGHT_PING_EVENT = "spotlight:ping";
 /** 搜索窗口 → 主窗口：选中某条便签，主窗口跳转详情 */
 export const SPOTLIGHT_JUMP_EVENT = "spotlight:jump";
+/** 搜索窗口 → 主窗口：无匹配结果时回车，用输入文字新建备忘（payload: { title }） */
+export const SPOTLIGHT_CREATE_EVENT = "spotlight:create";
 
 /** 搜索窗口尺寸（CSS px）：顶部搜索框 + 下方结果列表的最大高度 */
 export const SPOTLIGHT_WIN_W = 560;

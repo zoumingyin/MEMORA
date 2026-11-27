@@ -31,6 +31,7 @@ import { FreeBadge } from "./FreeBadge";
 import { ModalityBadge } from "./ModalityBadge";
 import { TagManager } from "./TagManager";
 import { AutoBackupSetting } from "./AutoBackupSetting";
+import { TrashAutoCleanSetting } from "./TrashAutoCleanSetting";
 import { BrandLogo } from "./BrandLogo";
 import { ThemeModePicker } from "./ThemeModePicker";
 import {
@@ -253,6 +254,11 @@ const SETTING_TREE: SettingGroup[] = [
         key: "auto-backup",
         label: "自动备份",
         hint: "每日备份数据库并保留最近 7 份",
+      },
+      {
+        key: "trash-clean",
+        label: "废纸篓自动清理",
+        hint: "启动时彻底删除 30 天前的软删除条目",
       },
     ],
   },
@@ -1499,6 +1505,8 @@ export function SettingsDialog({
         return <TagManager />;
       case "auto-backup":
         return <AutoBackupSetting />;
+      case "trash-clean":
+        return <TrashAutoCleanSetting />;
       case "ai-config": {
         return (
           <div className="flex flex-col gap-3 py-1">

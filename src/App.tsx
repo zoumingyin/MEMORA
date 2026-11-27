@@ -59,6 +59,7 @@ import {
 } from "./window/edgeDock";
 import { prewarmCtxMenuWindow } from "./window/ctxMenuWindow";
 import {
+  SPOTLIGHT_CREATE_EVENT,
   SPOTLIGHT_JUMP_EVENT,
   hideSpotlightWindow,
   prewarmSpotlightWindow,
@@ -102,6 +103,10 @@ import { CalendarPane } from "./components/CalendarPane";
 import { CreateKindDialog } from "./components/CreateKindDialog";
 import { TrashPane } from "./components/TrashPane";
 import { AssistantPanel } from "./components/AssistantPanel";
+import {
+  readTrashAutoCleanEnabled,
+  TRASH_RETENTION_DAYS,
+} from "./utils/trashAutoClean";
 
 /** 移动事件停止多久后再判定贴边收纳，避免读到拖拽中的旧坐标 */
 const DOCK_DEBOUNCE_MS = 160;
@@ -352,7 +357,19 @@ export default function App() {
           ? null
           : "本地便签数据读取失败，界面可能为空。可在设置 → 数据管理中恢复备份后重启。",
       );
-    void useEntryStore.getState().loadTrash();
+    // 废纸篓计数加载后执行自动清理（deletedAt 超过保留期的彻底删除，开关默认开）
+    void useEntryStore
+      .getState()
+      .loadTrash()
+      .then(() => {
+        if (!readTrashAutoCleanEnabled()) return;
+        return useEntryStore
+          .getState()
+          .purgeExpiredTrash(TRASH_RETENTION_DAYS)
+          .catch((error) => {
+            console.error("废纸篓自动清理失败", error);
+          });
+      });
     // 启动到期提醒轮询，返回的清理函数随组件卸载执行
     const stopScheduler = startReminderScheduler();
     // 启动 AI 日/周总结调度器（内部 30s 轮询，未开启时每轮空转）
@@ -404,6 +421,7 @@ export default function App() {
     let detachWindowShown: () => void = () => undefined;
     let detachSpotlight: () => void = () => undefined;
     let detachSpotlightJump: () => void = () => undefined;
+    let detachSpotlightCreate: () => void = () => undefined;
     let detachNotePatch: () => void = () => undefined;
     let detachNoteRemove: () => void = () => undefined;
     let detachNoteOpenRef: () => void = () => undefined;
@@ -614,6 +632,36 @@ export default function App() {
       );
       spotlightJumpPromise.then((detach) => {
         detachSpotlightJump = detach;
+      });
+      // 搜索窗口无匹配结果回车：用输入文字新建备忘并进详情
+      const spotlightCreatePromise = listen<{ title: string }>(
+        SPOTLIGHT_CREATE_EVENT,
+        (event) => {
+          const title = event.payload.title.trim();
+          if (!title) return;
+          void useEntryStore
+            .getState()
+            .addEntry({ title, content: "" }, "note")
+            .then((entry) => {
+              if (!entry) return;
+              const entryState = useEntryStore.getState();
+              entryState.setFilter("note");
+              entryState.setSearch("");
+              entryState.setTagFilter(null);
+              entryState.setSelectedId(entry.id);
+              useUiStore.getState().setDetailView(true);
+              expandIfDocked();
+              void getCurrentWindow().setFocus();
+            })
+            .catch((error) => {
+              message.error(
+                error instanceof Error ? `新建便签失败：${error.message}` : "新建便签失败"
+              );
+            });
+        }
+      );
+      spotlightCreatePromise.then((detach) => {
+        detachSpotlightCreate = detach;
       });
       // 便签小窗点击正文 [[引用]]：小窗没有全量条目清单，转发到这里按 id/标题解析，
       // 跳转主窗口对应便签并进详情；主窗口可能被隐藏/最小化，先唤起再聚焦
@@ -857,6 +905,7 @@ export default function App() {
       detachFocusShown();
       detachSpotlight();
       detachSpotlightJump();
+      detachSpotlightCreate();
       detachNotePatch();
       detachNoteRemove();
       detachNoteOpenRef();

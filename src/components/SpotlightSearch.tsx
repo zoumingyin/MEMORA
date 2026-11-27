@@ -3,6 +3,7 @@ import { getCurrentWindow, PhysicalPosition } from "@tauri-apps/api/window";
 import { emitTo, listen } from "@tauri-apps/api/event";
 import { SearchOutlined } from "@ant-design/icons";
 import {
+  SPOTLIGHT_CREATE_EVENT,
   SPOTLIGHT_JUMP_EVENT,
   SPOTLIGHT_OPEN_EVENT,
   SPOTLIGHT_PING_EVENT,
@@ -151,6 +152,13 @@ export function SpotlightSearch() {
     hideSelf();
   };
 
+  /** 无匹配结果时回车：把输入文字作为标题新建备忘，主窗口创建并进详情 */
+  const createNew = (title: string): void => {
+    if (!title) return;
+    void emitTo("main", SPOTLIGHT_CREATE_EVENT, { title });
+    hideSelf();
+  };
+
   const handleKeyDown = (event: React.KeyboardEvent<HTMLInputElement>): void => {
     if (event.key === "Escape") {
       event.preventDefault();
@@ -176,7 +184,12 @@ export function SpotlightSearch() {
     if (event.key === "Enter") {
       event.preventDefault();
       const target = results[safeIndex];
-      if (target) jump(target.id);
+      if (target) {
+        jump(target.id);
+        return;
+      }
+      // 有关键词但无匹配（或无任何便签）：回车直接新建
+      if (hasKeyword) createNew(keyword.trim());
     }
   };
 
@@ -214,9 +227,22 @@ export function SpotlightSearch() {
         {/* 结果列表 */}
         <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto p-1.5">
           {results.length === 0 ? (
-            <div className="flex h-full min-h-[80px] items-center justify-center text-[12.5px] text-[var(--text-muted)]">
-              {hasKeyword ? "没有匹配的便签" : "还没有便签"}
-            </div>
+            <button
+              type="button"
+              className="flex h-full min-h-[80px] w-full cursor-pointer flex-col items-center justify-center gap-1 border-0 bg-transparent text-[12.5px] text-[var(--text-muted)] hover:text-[var(--text)]"
+              onClick={() => hasKeyword && createNew(keyword.trim())}
+            >
+              {hasKeyword ? (
+                <>
+                  <span>没有匹配的便签</span>
+                  <span className="text-[11.5px] text-[var(--note)]">
+                    回车或点击新建「{keyword.trim()}」
+                  </span>
+                </>
+              ) : (
+                <span>还没有便签</span>
+              )}
+            </button>
           ) : (
             results.map((entry, index) => (
               <button
@@ -269,7 +295,11 @@ export function SpotlightSearch() {
 
         {/* 底部提示行 */}
         <div className="flex shrink-0 items-center justify-between border-0 border-t border-t-solid border-[var(--border)] px-3 py-1.5 text-[10.5px] text-[var(--text-muted)]">
-          <span>↑↓ 选择 · Enter 打开</span>
+          <span>
+            {hasKeyword && results.length === 0
+              ? "Enter 新建便签"
+              : "↑↓ 选择 · Enter 打开"}
+          </span>
           <span>{hasKeyword ? `${results.length} 条结果` : "最近便签"}</span>
         </div>
       </div>

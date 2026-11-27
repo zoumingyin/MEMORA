@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { App as AntdApp, Button, Switch } from 'antd'
 import { invoke } from '@tauri-apps/api/core'
+import { open as dialogOpen } from '@tauri-apps/plugin-dialog'
 import dayjs from 'dayjs'
 import { isTauriRuntime } from '../repository'
 
@@ -17,6 +18,7 @@ interface BackupMetadata {
 interface AutoBackupStatus {
   enabled: boolean
   dir: string
+  customDir: string | null
   lastBackupAt: number | null
   count: number
   lastError: string | null
@@ -87,6 +89,41 @@ export function AutoBackupSetting() {
     }
   }
 
+  /** 更改镜像目录：系统目录选择器 → 校验并保存 → 立即补一次当日备份镜像 */
+  const handlePickMirror = async (): Promise<void> => {
+    const picked = await dialogOpen({ directory: true, multiple: false })
+    if (typeof picked !== 'string' || !picked.trim()) return
+    setBusy(true)
+    try {
+      const next = await invoke<AutoBackupStatus>('set_backup_dir', {
+        dir: picked.trim(),
+      })
+      setStatus(next)
+      if (next.customDir) message.success(`备份将镜像到 ${next.customDir}`)
+    } catch (error) {
+      console.error('设置镜像目录失败', error)
+      message.error(
+        error instanceof Error ? `设置失败：${error.message}` : '设置镜像目录失败'
+      )
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const handleClearMirror = async (): Promise<void> => {
+    setBusy(true)
+    try {
+      const next = await invoke<AutoBackupStatus>('set_backup_dir', { dir: null })
+      setStatus(next)
+      message.success('已清除镜像目录，备份仅保存在应用数据目录')
+    } catch (error) {
+      console.error('清除镜像目录失败', error)
+      message.error('清除镜像目录失败')
+    } finally {
+      setBusy(false)
+    }
+  }
+
   return (
     <div className="flex flex-col">
       <div className="settings-item">
@@ -113,6 +150,26 @@ export function AutoBackupSetting() {
         <span className="settings-item-hint shrink-0">
           {status ? `${status.count} 份` : ''}
         </span>
+      </div>
+      <div className="settings-item">
+        <div className="settings-item-main">
+          <span className="settings-item-label">镜像目录</span>
+          <span className="settings-item-hint break-all">
+            {status?.customDir
+              ? status.customDir
+              : '未设置。可选填网盘同步文件夹（OneDrive / 坚果云等），每日备份会额外复制一份到这里实现异地备份'}
+          </span>
+        </div>
+        <div className="flex shrink-0 items-center gap-1.5">
+          {status?.customDir && (
+            <Button size="small" disabled={busy} onClick={() => void handleClearMirror()}>
+              清除
+            </Button>
+          )}
+          <Button size="small" disabled={busy} onClick={() => void handlePickMirror()}>
+            更改
+          </Button>
+        </div>
       </div>
       <div className="settings-item">
         <div className="settings-item-main">
