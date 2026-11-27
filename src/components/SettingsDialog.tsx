@@ -1344,7 +1344,7 @@ export function SettingsDialog({
                   发送消息 / 换行 / 关闭面板
                 </span>
               </div>
-              <span className="shrink-0 whitespace-nowrap rounded-md border border-[var(--border)] px-2 py-1 font-mono text-[11px] text-[var(--text-muted)]">
+              <span className="shrink-0 whitespace-nowrap whitespace-pre-line rounded-md border border-[var(--border)] px-2 py-1 font-mono text-[11px] text-[var(--text-muted)]">
                 Enter · Shift + Enter · Esc
               </span>
             </div>
@@ -1839,7 +1839,7 @@ export function SettingsDialog({
               <div className="flex items-center gap-2">
                 <Select
                   size="small"
-                  style={{ width: 72 }}
+                  style={{ width: 60 }}
                   value={summarySettings.weeklyWeekday}
                   options={WEEKDAY_LABELS.map((label, index) => ({
                     value: index,
@@ -1850,7 +1850,7 @@ export function SettingsDialog({
                 />
                 <Select
                   size="small"
-                  style={{ width: 88 }}
+                  style={{ width: 70 }}
                   value={summarySettings.weeklyTime}
                   options={SUMMARY_TIME_OPTIONS}
                   disabled={!summarySettings.weeklyEnabled}
