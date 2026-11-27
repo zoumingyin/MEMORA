@@ -6,11 +6,12 @@ import { alarmLoopIntervalMs } from '../reminder/nextAlarm'
 import { toMinuteStart } from '../utils/format'
 import { lunarMonthDay, lunarText } from '../utils/lunar'
 
-/** 闹钟提醒模式选项（存储值 → 界面文案），对齐参考图：单次/循环/每天/每周/每月/每年阳历/每年农历 */
+/** 闹钟提醒模式选项（存储值 → 界面文案）：单次/循环/每天/工作日（含调休）/每周/每月/每年阳历/每年农历 */
 const MODE_OPTIONS: Array<{ value: AlarmMode; label: string }> = [
   { value: 'once', label: '单次提醒' },
   { value: 'loop', label: '循环提醒' },
   { value: 'daily', label: '每天提醒' },
+  { value: 'workday', label: '工作日提醒' },
   { value: 'weekly', label: '每周提醒' },
   { value: 'monthly', label: '每月提醒' },
   { value: 'yearly', label: '每年阳历' },
@@ -46,8 +47,9 @@ interface AlarmEditorDialogProps {
 
 /**
  * 「设置闹钟」编辑弹窗（antd Modal）：双击闹钟列表行（或点添加）后弹出，
- * 提醒模式（7 种）/ 提醒方式下拉 + 日期时间选择器 + 设为当前时间 + 确定。
- * 选择「循环提醒」时追加显示「X 时 Y 分」复合间隔输入。
+ * 提醒模式（单次/循环/每天/工作日/每周/每月/每年阳历/每年农历）/ 提醒方式下拉 +
+ * 日期时间选择器 + 设为当前时间 + 确定。
+ * 选择「循环提醒」时追加显示「X 时 Y 分」复合间隔输入（两栏全 0 会立即 clamp 为 1 分）。
  */
 export function AlarmEditorDialog({ alarm, onSave, onClose }: AlarmEditorDialogProps) {
   const [name, setName] = useState<string>(alarm.name ?? '')
@@ -64,6 +66,13 @@ export function AlarmEditorDialog({ alarm, onSave, onClose }: AlarmEditorDialogP
     const totalMin = Math.max(1, Math.round(alarmLoopIntervalMs(alarm) / 60_000))
     return totalMin % 60
   })
+
+  // 循环间隔变更：两栏都为 0 时立即 clamp 到 1 分，输入框直接反映实际生效的间隔
+  const applyInterval = (h: number, m: number): void => {
+    if (h <= 0 && m <= 0) m = 1
+    setIntervalHours(h)
+    setIntervalMinutes(m)
+  }
 
   // 每月提醒锚定「几号」：短月临时落月末，下月恢复（与 scheduler 的 anchorDay 配套）
   const [monthDay, setMonthDay] = useState<number>(() => dayjs(alarm.remindAt).date())
@@ -89,8 +98,13 @@ export function AlarmEditorDialog({ alarm, onSave, onClose }: AlarmEditorDialogP
     switch (mode) {
       case 'loop': {
         const totalMin = Math.max(1, (intervalHours || 0) * 60 + (intervalMinutes || 0))
-        return `自首次提醒时间起，每 ${Math.floor(totalMin / 60)} 时 ${totalMin % 60} 分重复一次`
+        const h = Math.floor(totalMin / 60)
+        const m = totalMin % 60
+        const span = h > 0 && m > 0 ? `${h} 时 ${m} 分` : h > 0 ? `${h} 时` : `${m} 分`
+        return `自首次提醒时间起，每 ${span}重复一次`
       }
+      case 'workday':
+        return `每个法定工作日 ${t} 重复（自动跳过周末与节假日，调休补班的周末照常提醒）`
       case 'daily':
         return `每天 ${t} 重复（日期部分忽略）`
       case 'weekly': {
@@ -172,7 +186,7 @@ export function AlarmEditorDialog({ alarm, onSave, onClose }: AlarmEditorDialogP
                 min={0}
                 max={999}
                 value={intervalHours}
-                onChange={(value) => setIntervalHours(value ?? 0)}
+                onChange={(value) => applyInterval(value ?? 0, intervalMinutes)}
               />
               <span className="alarm-interval-unit">时</span>
               <InputNumber
@@ -180,7 +194,7 @@ export function AlarmEditorDialog({ alarm, onSave, onClose }: AlarmEditorDialogP
                 min={0}
                 max={59}
                 value={intervalMinutes}
-                onChange={(value) => setIntervalMinutes(value ?? 0)}
+                onChange={(value) => applyInterval(intervalHours, value ?? 0)}
               />
               <span className="alarm-interval-unit">分</span>
             </div>

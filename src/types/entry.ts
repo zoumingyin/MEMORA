@@ -65,7 +65,7 @@ export interface TodoEntry extends BaseEntry {
   items: TodoItem[]
 }
 
-/** 闹钟提醒模式：单次 / 循环（每隔 N 天）/ 每天 / 每周 / 每月 / 每年阳历 / 每年农历（workday 仅为旧数据兼容） */
+/** 闹钟提醒模式：单次 / 循环（每隔 N 分钟）/ 每天 / 工作日（含节假日调休）/ 每周 / 每月 / 每年阳历 / 每年农历 */
 export type AlarmMode =
   | 'once'
   | 'loop'

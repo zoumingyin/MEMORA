@@ -42,6 +42,7 @@
     "@tiptap/suggestion": "^3.35.0",
     "@types/turndown": "^5.0.6",
     "antd": "^6.6.7",
+    "chinese-days": "^2.0.0",
     "dayjs": "^1.11.23",
     "dompurify": "^3.4.17",
     "lucide-react": "^1.61.0",

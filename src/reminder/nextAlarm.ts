@@ -1,4 +1,5 @@
 import { Lunar } from 'lunar-javascript'
+import { isWorkday } from 'chinese-days'
 import type { AlarmIntervalUnit, AlarmItem } from '../types/entry'
 
 const INTERVAL_UNIT_MS: Record<AlarmIntervalUnit, number> = {
@@ -42,11 +43,15 @@ export function nextAlarmAt(alarm: AlarmItem): number {
   const base = new Date(alarm.remindAt)
   switch (alarm.mode) {
     case 'workday': {
+      // 逐日推进到下一个法定工作日：chinese-days 数据含节假日放假与调休补班
+      // （周末撞补班算工作日、工作日撞法定假期跳过）；数据范围外按周末判断降级
       const next = new Date(base)
-      do {
+      for (let i = 0; i < 30; i++) {
         next.setDate(next.getDate() + 1)
-      } while (next.getDay() === 0 || next.getDay() === 6)
-      return next.getTime()
+        if (isWorkday(next)) return next.getTime()
+      }
+      // 兜底：连续 30 天无工作日只可能是数据异常，退回行为退化为原「跳周末」
+      return addDays(base, 1)
     }
     case 'daily':
       return addDays(base, 1)
