@@ -10,8 +10,6 @@
 
 MEMORA 把**备忘（note）、提醒（reminder）、待办（todo）、涂鸦（draw）**四类条目统一存放在本地 SQLite，提供主从编辑、全文搜索、贴纸墙、月/周/日三视图日历（农历 + 节气）、多闹钟提醒调度、番茄钟，以及基于 function calling 的 AI 助手（可自动读写便签、一次生成多闹钟、定时生成日/周总结）。应用内置**签名验签的在线升级**。
 
-> 更细的模块级功能说明见 [FEATURES.md](FEATURES.md)（基于源码逐模块核对）。
-
 ---
 
 ## 一、功能特性
@@ -176,8 +174,8 @@ npx oxlint             # Lint
 更新包托管双平台：**Gitee（tag=`latest` 滚动发行版，国内快）优先，GitHub Releases 兜底**。两平台上传同一个安装包——签名串通用，仅 latest.json 中的下载 url 不同。
 
 ```bash
-# 1. 签名构建（私钥在本机 C:/Users/zmy/.tauri/memora-updater.key，丢失则无法再签发更新）
-TAURI_SIGNING_PRIVATE_KEY=C:/Users/zmy/.tauri/memora-updater.key pnpm tauri:build
+# 1. 签名构建（私钥在本机 C:/Users/user/.tauri/memora-updater.key，丢失则无法再签发更新）
+TAURI_SIGNING_PRIVATE_KEY=C:/Users/user/.tauri/memora-updater.key pnpm tauri:build
 
 # 2. 生成更新清单（build-release/latest.json + latest-gitee.json，含签名串与 SHA256）
 node scripts/release-update.mjs [版本号]
@@ -242,8 +240,7 @@ bianqian/
 │   ├── release-update.mjs       # 生成 latest.json（GitHub + Gitee 双份）
 │   └── run-agent-tests.mjs      # Agent 工具链单测运行器
 ├── tests/                       # Agent / 闹钟 / 仓储并发等单测（21 个文件）
-├── docs/                        # 历史设计文档
-└── FEATURES.md                  # 模块级功能说明（基于源码核对）
+└── docs/                        # 历史设计文档
 ```
 
 ---
@@ -268,4 +265,4 @@ bianqian/
 - 无多设备同步（仓储抽象与 `sync_status` 字段已预留，尚无后端）。
 - 触达语义不承诺 exactly-once（崩溃恢复下保证「不静默丢弃、失败可追踪」）。
 - 免费模型网关可能记录提示词，勿发送敏感内容；内置密钥可从二进制提取，仅适合个人自用。
-- 签名私钥（`C:/Users/zmy/.tauri/memora-updater.key`）丢失后无法再向已安装用户推送更新，请备份。
+- 签名私钥（`C:/Users/user/.tauri/memora-updater.key`）丢失后无法再向已安装用户推送更新，请备份。
