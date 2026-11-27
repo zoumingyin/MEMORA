@@ -48,6 +48,7 @@ reqwest = { version = "0.13.5", default-features = false, features = [
 futures-util = "0.3.34"
 tauri-plugin-updater = "2.14.1"
 tauri-plugin-process = "2.4.0"
+tauri-plugin-stt = "0.1"
 
 # Windows 专用：原子下发窗口位置+尺寸（单个 SetWindowPos）。
 # 版本对齐依赖树中 tauri 已带的 0.62，离线构建不引入新下载；
@@ -57,10 +58,7 @@ windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_Graphics_Dwm",
     "Win32_UI_WindowsAndMessaging",
-    "Win32_UI_Input_KeyboardAndMouse",
 ] }
-# 语音输入：订阅 WebView2 PermissionRequested 自动放行麦克风（版本对齐依赖树，离线不引入新下载）
-webview2-com = "0.39.1"
 
 # 仅测试 / 示例使用（examples/search_probe.rs），不影响发布产物
 [dev-dependencies]

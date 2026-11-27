@@ -95,94 +95,6 @@ fn apply_window_cloak(_window: &tauri::WebviewWindow, _cloaked: bool) -> Result<
     Ok(())
 }
 
-/// WebView2 默认对 getUserMedia 的设备权限请求静默拒绝，语音输入的麦克风
-/// 在此订阅 PermissionRequested 自动放行；系统级隐私开关仍由 Windows 设置约束。
-/// 仅主窗口需要（QuickCapture 与 AI 助手都在主窗口内）。
-#[cfg(windows)]
-fn grant_webview_microphone(window: &tauri::WebviewWindow) {
-    let _ = window.with_webview(|webview| {
-        use webview2_com::Microsoft::Web::WebView2::Win32::{
-            COREWEBVIEW2_PERMISSION_KIND, COREWEBVIEW2_PERMISSION_KIND_MICROPHONE,
-            COREWEBVIEW2_PERMISSION_STATE_ALLOW, ICoreWebView2_4,
-        };
-        use windows::core::Interface;
-
-        let controller = webview.controller();
-        let Ok(core) = (unsafe { controller.CoreWebView2() }) else {
-            return;
-        };
-        let Ok(core4) = core.cast::<ICoreWebView2_4>() else {
-            return;
-        };
-        let handler = webview2_com::PermissionRequestedEventHandler::create(Box::new(
-            |_sender, args| {
-                if let Some(args) = args {
-                    let mut kind = COREWEBVIEW2_PERMISSION_KIND(0);
-                    if unsafe { args.PermissionKind(&mut kind) }.is_ok()
-                        && kind == COREWEBVIEW2_PERMISSION_KIND_MICROPHONE
-                    {
-                        let _ = unsafe {
-                            args.SetState(COREWEBVIEW2_PERMISSION_STATE_ALLOW)
-                        };
-                    }
-                }
-                Ok(())
-            },
-        ));
-        let mut token: i64 = 0;
-        let _ = unsafe { core4.add_PermissionRequested(&handler, &mut token) };
-    });
-}
-
-#[cfg(not(windows))]
-fn grant_webview_microphone(_window: &tauri::WebviewWindow) {}
-
-/// 唤起 Windows 系统语音输入（Win+H 听写面板）：系统原生听写，免费、无需 AI 配置，
-/// 文本直接打进当前聚焦的输入框。前端调用前须先聚焦目标输入框。
-/// 实现：模拟 Win+H 按键序列（SendInput），系统面板自管录音状态与转写。
-#[tauri::command]
-fn open_system_voice_input() -> Result<(), String> {
-    #[cfg(windows)]
-    {
-        use windows::Win32::UI::Input::KeyboardAndMouse::{
-            SendInput, INPUT, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, VIRTUAL_KEY, VK_LWIN,
-        };
-        const VK_H: u16 = 0x48;
-        let key = |vkey: VIRTUAL_KEY, keyup: bool| INPUT {
-            r#type: INPUT_KEYBOARD,
-            Anonymous: windows::Win32::UI::Input::KeyboardAndMouse::INPUT_0 {
-                ki: KEYBDINPUT {
-                    wVk: vkey,
-                    wScan: 0,
-                    dwFlags: if keyup { KEYEVENTF_KEYUP } else { KEYBDINPUT::default().dwFlags },
-                    time: 0,
-                    dwExtraInfo: 0,
-                },
-            },
-        };
-        let inputs = [
-            key(VK_LWIN, false),
-            key(VIRTUAL_KEY(VK_H), false),
-            key(VIRTUAL_KEY(VK_H), true),
-            key(VK_LWIN, true),
-        ];
-        let sent = unsafe {
-            SendInput(
-                &inputs,
-                std::mem::size_of::<INPUT>() as i32,
-            )
-        };
-        if sent != inputs.len() as u32 {
-            return Err("唤起系统语音输入失败，请手动按 Win+H".to_string());
-        }
-        Ok(())
-    }
-    #[cfg(not(windows))]
-    {
-        Err("系统语音输入仅 Windows 可用".to_string())
-    }
-}
-
 /// 前端调用：启动就绪后揭开窗口 / 收纳缩窗时临时斗篷
 #[tauri::command]
 fn set_window_cloaked(window: tauri::WebviewWindow, cloaked: bool) -> Result<(), String> {
@@ -914,6 +826,8 @@ pub fn run() {
         )))
         .manage(db_safety::AutoBackupState::default())
         .plugin(tauri_plugin_notification::init())
+        // 语音输入：whisper.cpp 本地转写（模型首次使用时下载，离线识别）
+        .plugin(tauri_plugin_stt::init())
         // 在线升级：检查更新 / 下载签名安装包 / 重启安装（密钥与端点见 tauri.conf.json plugins.updater）
         .plugin(tauri_plugin_updater::Builder::new().build())
         // 配套 relaunch：安装完更新后重启应用
@@ -1029,8 +943,6 @@ pub fn run() {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = apply_window_cloak(&window, true);
                 let _ = window.show();
-                // 语音输入前置：WebView2 默认拒绝麦克风权限，此处自动放行
-                grant_webview_microphone(&window);
                 let fallback_window = window.clone();
                 std::thread::spawn(move || {
                     std::thread::sleep(std::time::Duration::from_secs(5));
@@ -1164,7 +1076,6 @@ pub fn run() {
             ai::ai_chat,
             ai::ai_cancel,
             ai::ai_transcribe,
-            open_system_voice_input,
             web_search::ai_web_search,
             get_autostart_enabled,
             get_system_theme,

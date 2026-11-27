@@ -31,6 +31,7 @@
     "global-shortcut:allow-unregister",
     "dialog:allow-save",
     "dialog:allow-open",
+    "stt:default",
     "updater:default",
     "process:allow-restart",
     {

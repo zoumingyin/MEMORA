@@ -1,9 +1,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import type { UnlistenFn } from "@tauri-apps/api/event";
+import {
+  checkPermission,
+  isAvailable,
+  onError as onSttError,
+  onResult as onSttResult,
+  onStateChange as onSttStateChange,
+  requestPermission,
+  startListening,
+  stopListening,
+} from "tauri-plugin-stt-api";
 import { isTauriRuntime } from "../repository";
 import { getBrowserCredentials } from "../services/aiClient";
 
-export type VoiceEngine = "speech" | "whisper";
+export type VoiceEngine = "speech" | "whisper" | "stt";
 
 export interface VoiceInputState {
   /** 录音会话进行中（含转写阶段） */
@@ -14,15 +25,17 @@ export interface VoiceInputState {
   engine: VoiceEngine | null;
   /** 录音时长（毫秒） */
   elapsedMs: number;
-  /** 实时音量 0..1（驱动音量动效） */
+  /** 实时音量 0..1（驱动音量动效；桌面版由 STT 插件占麦，恒为 0） */
   volume: number;
-  /** 实时中间结果（仅 speech 引擎） */
+  /** 实时中间结果 */
   interim: string;
 }
 
 interface UseVoiceInputOptions {
   /** 识别出的文本（追加语义，由调用方拼进输入框） */
   onText: (text: string) => void;
+  /** 识别过程中的严重错误（桌面 STT 事件），由调用方展示 */
+  onError?: (message: string) => void;
 }
 
 const POLL_INTERVAL_MS = 200;
@@ -45,7 +58,7 @@ function describeMediaError(error: unknown): string {
   return "无法访问麦克风：请检查设备连接与系统隐私设置后重试";
 }
 
-/** blob → base64（分块编码避免超大 call stack） */
+/** blob → base64（FileReader dataURL 中转，避免手拼编码） */
 function blobToBase64(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -62,15 +75,14 @@ function blobToBase64(blob: Blob): Promise<string> {
  * 语音输入引擎 hook。
  *
  * 转写通道按环境自动选择：
- * - 浏览器（Chrome/Edge）有 Web Speech API → 实时转写（中间结果即时上屏）；
- * - Web Speech 缺失或启动失败（WebView2 / Firefox / Safari）→ 录完整段，
- *   经 OpenAI 兼容 /audio/transcriptions（whisper）转写：桌面走 ai_transcribe
- *   Rust 代理（密钥不出进程），浏览器直连用户配置。
- *
- * 录音全程 MediaRecorder 兜底采集：speech 引擎正常产出文本时丢弃录音，
- * 产出不足时用录音转写补位。所有资源在会话结束/组件卸载时显式释放。
+ * - 桌面版：tauri-plugin-stt（Vosk 离线识别，中文模型首次使用自动下载），
+ *   实时 interim 结果上屏，无需任何 AI 配置；
+ * - 浏览器（Chrome/Edge）：Web Speech API 实时转写；
+ * - 浏览器无 Web Speech 或实时通道失败：录完整段经 OpenAI 兼容
+ *   /audio/transcriptions（whisper）转写——桌面密钥不出进程（ai_transcribe
+ *   代理命令），浏览器直连用户配置。
  */
-export function useVoiceInput({ onText }: UseVoiceInputOptions) {
+export function useVoiceInput({ onText, onError }: UseVoiceInputOptions) {
   const [state, setState] = useState<VoiceInputState>({
     active: false,
     transcribing: false,
@@ -90,9 +102,15 @@ export function useVoiceInput({ onText }: UseVoiceInputOptions) {
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const speechBrokenRef = useRef(false);
   const speechFinalRef = useRef("");
+  // 桌面 STT 插件的监听注销器
+  const unlistenSttRef = useRef<Array<() => void>>([]);
   const onTextRef = useRef(onText);
   onTextRef.current = onText;
+  const onErrorRef = useRef(onError);
+  onErrorRef.current = onError;
   const transcribingRef = useRef(false);
+  const activeRef = useRef(false);
+  activeRef.current = state.active;
 
   // 卸载兜底：录音中的组件被卸载（弹窗关闭等）时释放全部资源
   useEffect(() => {
@@ -144,10 +162,22 @@ export function useVoiceInput({ onText }: UseVoiceInputOptions) {
     streamRef.current = null;
   }
 
+  function unlistenStt(): void {
+    unlistenSttRef.current.forEach((un) => {
+      try {
+        un();
+      } catch {
+        // 已注销时忽略
+      }
+    });
+    unlistenSttRef.current = [];
+  }
+
   function teardown(): void {
     stopAudioMeter();
     stopTimer();
     stopRecognition();
+    unlistenStt();
     const recorder = recorderRef.current;
     recorderRef.current = null;
     if (recorder && recorder.state !== "inactive") {
@@ -160,14 +190,21 @@ export function useVoiceInput({ onText }: UseVoiceInputOptions) {
     }
     releaseStream();
     chunksRef.current = [];
+    if (isTauriRuntime() && activeRef.current) {
+      // 卸载时兜底停掉桌面识别会话
+      void stopListening().catch(() => undefined);
+    }
+    transcribingRef.current = false;
+    activeRef.current = false;
   }
 
   const finishTranscribing = useCallback((): void => {
     setState((prev) => ({ ...prev, active: false, transcribing: false }));
     transcribingRef.current = false;
+    activeRef.current = false;
   }, []);
 
-  /** whisper 降级：把录音 blob 发给 OpenAI 兼容转写端点 */
+  /** whisper 降级：把录音 blob 发给 OpenAI 兼容转写端点（仅浏览器降级用） */
   const transcribeBlob = useCallback(
     async (blob: Blob, mime: string): Promise<void> => {
       setState((prev) => ({ ...prev, transcribing: true, volume: 0 }));
@@ -223,8 +260,133 @@ export function useVoiceInput({ onText }: UseVoiceInputOptions) {
     [finishTranscribing],
   );
 
-  const start = useCallback(async (): Promise<void> => {
-    if (state.active || transcribingRef.current) return;
+  // ===== 桌面版：tauri-plugin-stt（Vosk 离线识别） =====
+
+  const startDesktop = useCallback(async (): Promise<void> => {
+    const availability = await isAvailable();
+    if (!availability.available) {
+      throw new Error(
+        availability.reason || "语音识别暂不可用（首次使用需下载识别模型），请稍后重试",
+      );
+    }
+    const permission = await checkPermission();
+    if (
+      permission.microphone !== "granted" ||
+      permission.speechRecognition !== "granted"
+    ) {
+      const requested = await requestPermission();
+      if (
+        requested.microphone !== "granted" ||
+        requested.speechRecognition !== "granted"
+      ) {
+        throw new Error(
+          "麦克风权限被拒绝：请到 Windows 设置 → 隐私和安全性 → 麦克风，允许本应用访问后重试",
+        );
+      }
+    }
+
+    startedAtRef.current = Date.now();
+    setState({
+      active: true,
+      transcribing: false,
+      engine: "stt",
+      elapsedMs: 0,
+      volume: 0,
+      interim: "",
+    });
+    activeRef.current = true;
+    timerRef.current = window.setInterval(() => {
+      patch({ elapsedMs: Date.now() - startedAtRef.current });
+    }, POLL_INTERVAL_MS);
+
+    // 事件注册先于 startListening，避免首条结果早于监听
+    const unResult = await onSttResult((result) => {
+      const trimmed = result.transcript.trim();
+      if (result.isFinal) {
+        if (trimmed) onTextRef.current(trimmed);
+        patch({ interim: "" });
+      } else {
+        patch({ interim: trimmed });
+      }
+    });
+    const unState = await onSttStateChange((event) => {
+      patch({ active: event.state !== "idle" || activeRef.current });
+    });
+    const unError = await onSttError((error) => {
+      if (error.code === "NO_SPEECH" || error.code === "CANCELLED") return;
+      const message = error.message || "语音识别失败，请重试";
+      onErrorRef.current?.(message);
+      // 严重错误直接结束会话（模型缺失/网络失败等由插件自行重试）
+      if (
+        error.code === "NOT_AVAILABLE" ||
+        error.code === "AUDIO_ERROR" ||
+        error.code === "NETWORK_ERROR"
+      ) {
+        teardown();
+        setState({
+          active: false,
+          transcribing: false,
+          engine: null,
+          elapsedMs: 0,
+          volume: 0,
+          interim: "",
+        });
+      }
+    });
+    unlistenSttRef.current = [unResult as UnlistenFn, unState as UnlistenFn, unError as UnlistenFn];
+
+    try {
+      await startListening({
+        language: "zh-CN",
+        interimResults: true,
+        continuous: true,
+        maxDuration: 0,
+      });
+    } catch (error) {
+      unlistenStt();
+      stopTimer();
+      setState({
+        active: false,
+        transcribing: false,
+        engine: null,
+        elapsedMs: 0,
+        volume: 0,
+        interim: "",
+      });
+      activeRef.current = false;
+      const message = typeof error === "string" ? error : error instanceof Error ? error.message : "";
+      // 首次使用模型自动下载失败（网络）时的友好提示
+      throw new Error(
+        message || "语音识别启动失败：首次使用需联网下载识别模型，请检查网络后重试",
+      );
+    }
+  }, [patch]);
+
+  const stopDesktop = useCallback(async (): Promise<void> => {
+    stopTimer();
+    patch({ volume: 0, interim: "" });
+    try {
+      await stopListening();
+    } catch {
+      // 已停止时忽略
+    }
+    // continuous 模式下 stop 后仍可能补一条 final 结果，延迟注销监听
+    window.setTimeout(() => {
+      unlistenStt();
+    }, 500);
+    setState((prev) => ({
+      ...prev,
+      active: false,
+      transcribing: false,
+      volume: 0,
+      interim: "",
+    }));
+    activeRef.current = false;
+  }, [patch]);
+
+  // ===== 浏览器版：Web Speech 实时 + whisper 降级 =====
+
+  const startBrowser = useCallback(async (): Promise<void> => {
     if (!navigator.mediaDevices?.getUserMedia) {
       throw new Error("当前环境不支持麦克风录音");
     }
@@ -277,7 +439,6 @@ export function useVoiceInput({ onText }: UseVoiceInputOptions) {
       // 音量动效失败不影响录音主流程
     }
 
-    // 计时
     timerRef.current = window.setInterval(() => {
       patch({ elapsedMs: Date.now() - startedAtRef.current });
     }, POLL_INTERVAL_MS);
@@ -313,7 +474,7 @@ export function useVoiceInput({ onText }: UseVoiceInputOptions) {
             if (result.isFinal) {
               const trimmed = transcript.trim();
               if (trimmed) {
-                speechFinalRef.current += (speechFinalRef.current ? "" : "") + trimmed;
+                speechFinalRef.current += trimmed;
                 onTextRef.current(trimmed);
               }
             } else {
@@ -349,10 +510,18 @@ export function useVoiceInput({ onText }: UseVoiceInputOptions) {
         speechBrokenRef.current = true;
       }
     }
-  }, [state.active, patch]);
+  }, [patch]);
+
+  const start = useCallback(async (): Promise<void> => {
+    if (state.active || transcribingRef.current) return;
+    if (isTauriRuntime()) return startDesktop();
+    return startBrowser();
+  }, [state.active, startDesktop, startBrowser]);
 
   const stop = useCallback(async (): Promise<void> => {
     if (!state.active || transcribingRef.current) return;
+    if (isTauriRuntime()) return stopDesktop();
+
     stopTimer();
     stopAudioMeter();
     stopRecognition();
@@ -418,7 +587,7 @@ export function useVoiceInput({ onText }: UseVoiceInputOptions) {
       finishTranscribing();
       throw error;
     }
-  }, [state.active, patch, transcribeBlob, finishTranscribing]);
+  }, [state.active, patch, transcribeBlob, finishTranscribing, stopDesktop]);
 
   const cancel = useCallback((): void => {
     teardown();
@@ -432,13 +601,8 @@ export function useVoiceInput({ onText }: UseVoiceInputOptions) {
     });
   }, []);
 
-  const reset = useCallback((): void => {
-    if (!state.active && !transcribingRef.current) return;
-    cancel();
-  }, [cancel, state.active]);
-
   return useMemo(
-    () => ({ state, start, stop, cancel, reset }),
-    [state, start, stop, cancel, reset],
+    () => ({ state, start, stop, cancel }),
+    [state, start, stop, cancel],
   );
 }
